@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.env
+*.local
+/src/generated/
+
+# Claude Code local tooling config
+.claude/

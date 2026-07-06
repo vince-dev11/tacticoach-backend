@@ -1,0 +1,226 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+}
+
+model User {
+  id               Int       @id @default(autoincrement())
+  name             String    @db.VarChar(100)
+  surname          String    @db.VarChar(100)
+  email            String    @unique @db.VarChar(255)
+  phone            String?   @db.VarChar(30)
+  passwordHash     String    @map("password_hash") @db.VarChar(255)
+  clubName         String?   @map("club_name") @db.VarChar(150)
+  clubLogoUrl      String?   @map("club_logo_url") @db.VarChar(500)
+  clubLogoKey      String?   @map("club_logo_key") @db.VarChar(500)
+  // Social links shown on exported drill sheets.
+  instagramUrl     String?   @map("instagram_url") @db.VarChar(300)
+  youtubeUrl       String?   @map("youtube_url") @db.VarChar(300)
+  twitterUrl       String?   @map("twitter_url") @db.VarChar(300)
+  facebookUrl      String?   @map("facebook_url") @db.VarChar(300)
+  stripeCustomerId String?   @unique @map("stripe_customer_id") @db.VarChar(255)
+  emailVerifiedAt  DateTime? @map("email_verified_at")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+
+  subscription    UserSubscription?
+  boards          CanvasBoard[]
+  refreshTokens   RefreshToken[]
+  boardLikes      BoardLike[]
+  ownedClub       Club?             @relation("ClubOwner")
+  clubMembership  ClubMember?
+  drillSheets     DrillSheet[]
+  drillSheetLikes DrillSheetLike[]
+
+  @@map("users")
+}
+
+model RefreshToken {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @map("user_id")
+  token     String   @unique @db.VarChar(500)
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+// Membership plans — pricing to be decided; price fields nullable until set.
+model MembershipPlan {
+  id             Int      @id @default(autoincrement())
+  name           String   @db.VarChar(100)
+  slug           String   @unique @db.VarChar(50)
+  description    String?  @db.Text
+  monthlyPrice   Decimal? @map("monthly_price") @db.Decimal(10, 2)
+  annualPrice    Decimal? @map("annual_price") @db.Decimal(10, 2)
+  currency       String   @default("EUR") @db.VarChar(3)
+  features       Json     @default("[]")
+  maxBoards      Int?     @map("max_boards")
+  maxTeamMembers Int?     @map("max_team_members")
+  isActive       Boolean  @default(true) @map("is_active")
+  sortOrder      Int      @default(0) @map("sort_order")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  subscriptions UserSubscription[]
+
+  @@map("membership_plans")
+}
+
+model UserSubscription {
+  id                     Int                @id @default(autoincrement())
+  userId                 Int                @unique @map("user_id")
+  planId                 Int                @map("plan_id")
+  status                 SubscriptionStatus @default(trial)
+  billingCycle           BillingCycle?      @map("billing_cycle")
+  startedAt              DateTime           @default(now()) @map("started_at")
+  expiresAt              DateTime?          @map("expires_at")
+  cancelledAt            DateTime?          @map("cancelled_at")
+  paymentProvider        String?            @map("payment_provider") @db.VarChar(50)
+  providerSubscriptionId String?            @map("provider_subscription_id") @db.VarChar(255)
+  createdAt              DateTime           @default(now()) @map("created_at")
+  updatedAt              DateTime           @updatedAt @map("updated_at")
+
+  user User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  plan MembershipPlan @relation(fields: [planId], references: [id])
+
+  @@index([planId])
+  @@map("user_subscriptions")
+}
+
+enum SubscriptionStatus {
+  trial
+  active
+  cancelled
+  expired
+}
+
+enum BillingCycle {
+  monthly
+  annual
+}
+
+model CanvasBoard {
+  id           Int       @id @default(autoincrement())
+  userId       Int       @map("user_id")
+  title        String    @db.VarChar(255)
+  pitchKey     String?   @map("pitch_key") @db.VarChar(50)
+  state        Json      @default("{}")
+  // S3 object keys — URLs are presigned on read, never stored.
+  thumbnailKey String?   @map("thumbnail_key") @db.VarChar(500)
+  videoKey     String?   @map("video_key") @db.VarChar(500)
+  // Legacy column kept for compatibility with earlier clients.
+  thumbnailUrl String?   @map("thumbnail_url") @db.VarChar(500)
+  published    Boolean   @default(false)
+  publishedAt  DateTime? @map("published_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  user  User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  likes BoardLike[]
+
+  @@index([userId])
+  @@index([published, publishedAt])
+  @@map("canvas_boards")
+}
+
+model BoardLike {
+  id        Int      @id @default(autoincrement())
+  boardId   Int      @map("board_id")
+  userId    Int      @map("user_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  board CanvasBoard @relation(fields: [boardId], references: [id], onDelete: Cascade)
+  user  User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([boardId, userId])
+  @@index([userId])
+  @@map("board_likes")
+}
+
+// ---- Clubs (Club plan: owner buys seats, invites coaches) -------------------
+
+model Club {
+  id        Int      @id @default(autoincrement())
+  ownerId   Int      @unique @map("owner_id")
+  name      String   @db.VarChar(150)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  owner   User         @relation("ClubOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  members ClubMember[]
+  invites ClubInvite[]
+
+  @@map("clubs")
+}
+
+model ClubMember {
+  id        Int      @id @default(autoincrement())
+  clubId    Int      @map("club_id")
+  userId    Int      @unique @map("user_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  club Club @relation(fields: [clubId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([clubId])
+  @@map("club_members")
+}
+
+model ClubInvite {
+  id         Int       @id @default(autoincrement())
+  clubId     Int       @map("club_id")
+  email      String    @db.VarChar(255)
+  token      String    @unique @db.VarChar(100)
+  acceptedAt DateTime? @map("accepted_at")
+  expiresAt  DateTime  @map("expires_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  club Club @relation(fields: [clubId], references: [id], onDelete: Cascade)
+
+  @@index([clubId])
+  @@map("club_invites")
+}
+
+// ---- Drill sheets (data sheets — publishable, likeable) ---------------------
+
+model DrillSheet {
+  id          Int       @id @default(autoincrement())
+  userId      Int       @map("user_id")
+  title       String    @db.VarChar(255)
+  description String?   @db.Text
+  data        Json      @default("{}")
+  // S3 key of the rendered sheet image (preview shown in the gallery).
+  imageKey    String?   @map("image_key") @db.VarChar(500)
+  published   Boolean   @default(false)
+  publishedAt DateTime? @map("published_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  user  User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  likes DrillSheetLike[]
+
+  @@index([userId])
+  @@index([published, publishedAt])
+  @@map("drill_sheets")
+}
+
+model DrillSheetLike {
+  id        Int      @id @default(autoincrement())
+  sheetId   Int      @map("sheet_id")
+  userId    Int      @map("user_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  sheet DrillSheet @relation(fields: [sheetId], references: [id], onDelete: Cascade)
+  user  User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([sheetId, userId])
+  @@index([userId])
+  @@map("drill_sheet_likes")
+}
