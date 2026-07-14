@@ -13,10 +13,24 @@ export interface Entitlements {
   expiresAt: Date | null
 }
 
-function subIsActive(sub: { status: string; expiresAt: Date | null } | null | undefined): boolean {
+export function subIsActive(sub: { status: string; expiresAt: Date | null } | null | undefined): boolean {
   if (!sub) return false
   if (sub.status !== 'active' && sub.status !== 'trial') return false
   return !sub.expiresAt || sub.expiresAt > new Date()
+}
+
+/**
+ * Whether a club's branding may be shown publicly: the club OWNER must hold an
+ * active subscription. The moment the owner stops paying, the public club page
+ * and all branded share strips disappear — and come back automatically on
+ * renewal (approval status is untouched).
+ */
+export async function clubBrandingActive(ownerId: number): Promise<boolean> {
+  const sub = await db.userSubscription.findUnique({
+    where: { userId: ownerId },
+    select: { status: true, expiresAt: true },
+  })
+  return subIsActive(sub)
 }
 
 /**

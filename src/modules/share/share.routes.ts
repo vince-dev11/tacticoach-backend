@@ -7,18 +7,21 @@
 import type { FastifyInstance } from 'fastify'
 import { db } from '../../config/database.js'
 import { presignUrl } from '../../config/s3.js'
+import { clubBrandingActive } from '../../lib/entitlements.js'
 
 /** Brand strip for the author's club (own club or via seat), when branded. */
 async function clubStripFor(userId: number) {
   const user = await db.user.findUnique({
     where: { id: userId },
     select: {
-      ownedClub: { select: { name: true, badgeKey: true, primaryColor: true, slug: true, pageStatus: true } },
-      clubMembership: { select: { club: { select: { name: true, badgeKey: true, primaryColor: true, slug: true, pageStatus: true } } } },
+      ownedClub: { select: { ownerId: true, name: true, badgeKey: true, primaryColor: true, slug: true, pageStatus: true } },
+      clubMembership: { select: { club: { select: { ownerId: true, name: true, badgeKey: true, primaryColor: true, slug: true, pageStatus: true } } } },
     },
   })
   const club = user?.ownedClub ?? user?.clubMembership?.club ?? null
   if (!club || !club.badgeKey) return null
+  // Branding rides on the owner's subscription — lapsed plan, no brand strip.
+  if (!(await clubBrandingActive(club.ownerId))) return null
   return {
     name: club.name,
     badgeUrl: await presignUrl(club.badgeKey),

@@ -240,9 +240,19 @@ describe('CRM approvals', () => {
   })
 })
 
+/** The club owner's subscription is active (branding rides on the plan). */
+function mockOwnerPlanActive(active = true) {
+  dbMock.userSubscription.findUnique.mockResolvedValue(
+    (active
+      ? { status: 'active', expiresAt: null }
+      : { status: 'expired', expiresAt: new Date(Date.now() - 86_400_000) }) as never,
+  )
+}
+
 describe('public club page', () => {
   it('serves an approved page with content from all coaches', async () => {
     const app = await getApp()
+    mockOwnerPlanActive()
     dbMock.club.findFirst.mockResolvedValue({
       ...clubRow({ pageStatus: 'approved' }),
       owner: { id: 1, name: 'Vince', surname: 'Coach' },
@@ -274,11 +284,28 @@ describe('public club page', () => {
     const res = await app.inject({ method: 'GET', url: '/api/c/nope' })
     expect(res.statusCode).toBe(404)
   })
+
+  it('goes dark (404) when the owner\'s subscription has lapsed — approval untouched', async () => {
+    const app = await getApp()
+    mockOwnerPlanActive(false)
+    dbMock.club.findFirst.mockResolvedValue({
+      ...clubRow({ pageStatus: 'approved' }),
+      owner: { id: 1, name: 'Vince', surname: 'Coach' },
+      members: [],
+      photos: [],
+    } as never)
+
+    const res = await app.inject({ method: 'GET', url: '/api/c/fc-united' })
+    expect(res.statusCode).toBe(404)
+    // pageStatus is never mutated — renewal brings the page straight back
+    expect(dbMock.club.update).not.toHaveBeenCalled()
+  })
 })
 
 describe('branded share strip', () => {
   it('share board includes the club strip when the author club has a badge', async () => {
     const app = await getApp()
+    mockOwnerPlanActive()
     dbMock.canvasBoard.findFirst.mockResolvedValue({
       id: 7, userId: 5, title: 'High press', publishedAt: new Date(),
       thumbnailKey: null, videoKey: null,
@@ -287,7 +314,7 @@ describe('branded share strip', () => {
     } as never)
     dbMock.user.findUnique.mockResolvedValue({
       ownedClub: null,
-      clubMembership: { club: { name: 'FC United', badgeKey: 'clubs/1/badge.png', primaryColor: '#fbbf24', slug: 'fc-united', pageStatus: 'approved' } },
+      clubMembership: { club: { ownerId: 9, name: 'FC United', badgeKey: 'clubs/1/badge.png', primaryColor: '#fbbf24', slug: 'fc-united', pageStatus: 'approved' } },
     } as never)
 
     const res = await app.inject({ method: 'GET', url: '/api/share/board/7' })
@@ -300,17 +327,35 @@ describe('branded share strip', () => {
 
   it('omits the public-page link while the page is not approved', async () => {
     const app = await getApp()
+    mockOwnerPlanActive()
     dbMock.canvasBoard.findFirst.mockResolvedValue({
       id: 7, userId: 5, title: 'x', publishedAt: new Date(), thumbnailKey: null, videoKey: null,
       user: { name: 'A', surname: 'M', clubName: null }, _count: { likes: 0 },
     } as never)
     dbMock.user.findUnique.mockResolvedValue({
-      ownedClub: { name: 'FC United', badgeKey: 'clubs/1/badge.png', primaryColor: null, slug: 'fc-united', pageStatus: 'pending' },
+      ownedClub: { ownerId: 5, name: 'FC United', badgeKey: 'clubs/1/badge.png', primaryColor: null, slug: 'fc-united', pageStatus: 'pending' },
       clubMembership: null,
     } as never)
 
     const res = await app.inject({ method: 'GET', url: '/api/share/board/7' })
     expect(res.json().club.slug).toBeNull()
+  })
+
+  it('drops the strip entirely when the owner\'s plan has lapsed', async () => {
+    const app = await getApp()
+    mockOwnerPlanActive(false)
+    dbMock.canvasBoard.findFirst.mockResolvedValue({
+      id: 7, userId: 5, title: 'x', publishedAt: new Date(), thumbnailKey: null, videoKey: null,
+      user: { name: 'A', surname: 'M', clubName: null }, _count: { likes: 0 },
+    } as never)
+    dbMock.user.findUnique.mockResolvedValue({
+      ownedClub: { ownerId: 5, name: 'FC United', badgeKey: 'clubs/1/badge.png', primaryColor: '#fbbf24', slug: 'fc-united', pageStatus: 'approved' },
+      clubMembership: null,
+    } as never)
+
+    const res = await app.inject({ method: 'GET', url: '/api/share/board/7' })
+    expect(res.statusCode).toBe(200) // the content itself still shares
+    expect(res.json().club).toBeNull() // …but carries no branding
   })
 })
 
@@ -357,6 +402,7 @@ describe('gallery photos', () => {
 
   it('public page includes the gallery with presigned urls', async () => {
     const app = await getApp()
+    mockOwnerPlanActive()
     dbMock.club.findFirst.mockResolvedValue({
       ...{
         id: 1, ownerId: 1, name: 'FC United', badgeKey: null, primaryColor: null, secondaryColor: null,

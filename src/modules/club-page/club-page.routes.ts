@@ -5,6 +5,7 @@
 import type { FastifyInstance } from 'fastify'
 import { db } from '../../config/database.js'
 import { presignUrl } from '../../config/s3.js'
+import { clubBrandingActive } from '../../lib/entitlements.js'
 
 export async function clubPageRoutes(app: FastifyInstance) {
   // GET /c/:slug — club identity + published content from all its coaches
@@ -19,6 +20,12 @@ export async function clubPageRoutes(app: FastifyInstance) {
       },
     })
     if (!club) {
+      return reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'Club page not found' })
+    }
+
+    // Branding is part of the subscription: if the owner's plan has lapsed the
+    // page goes dark (404) until they renew — approval status is preserved.
+    if (!(await clubBrandingActive(club.owner.id))) {
       return reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'Club page not found' })
     }
 
