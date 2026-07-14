@@ -1,5 +1,6 @@
 import { db } from '../../config/database.js'
 import { stripe } from '../../config/stripe.js'
+import { sendPurchaseEmail } from '../../lib/emails.js'
 
 /** Get or create the user's Stripe customer id. */
 export async function ensureStripeCustomer(userId: number): Promise<string> {
@@ -53,17 +54,27 @@ export async function activateSubscription(params: {
     },
   })
 
-  const plan = await db.membershipPlan.findUnique({ where: { id: planId }, select: { slug: true } })
+  const plan = await db.membershipPlan.findUnique({
+    where: { id: planId },
+    select: { name: true, slug: true },
+  })
+  const user = await db.user.findUniqueOrThrow({
+    where: { id: userId },
+    select: { name: true, email: true, clubName: true },
+  })
+
   if (plan?.slug === 'club') {
-    const user = await db.user.findUniqueOrThrow({
-      where: { id: userId },
-      select: { name: true, clubName: true },
-    })
     await db.club.upsert({
       where: { ownerId: userId },
       update: {},
       create: { ownerId: userId, name: user.clubName || `${user.name}'s Club` },
     })
+  }
+
+  // Purchase confirmation — fire-and-forget so email trouble never makes the
+  // Stripe webhook fail (Stripe would retry and we'd re-activate needlessly).
+  if (plan) {
+    void sendPurchaseEmail(user, plan, billingCycle, expiresAt)
   }
 }
 
