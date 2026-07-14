@@ -10,7 +10,7 @@ model User {
   id               Int       @id @default(autoincrement())
   name             String    @db.VarChar(100)
   surname          String    @db.VarChar(100)
-  email            String    @unique @db.VarChar(255)
+  email            String    @unique @db.VarChar(191)
   phone            String?   @db.VarChar(30)
   passwordHash     String    @map("password_hash") @db.VarChar(255)
   clubName         String?   @map("club_name") @db.VarChar(150)
@@ -21,7 +21,7 @@ model User {
   youtubeUrl       String?   @map("youtube_url") @db.VarChar(300)
   twitterUrl       String?   @map("twitter_url") @db.VarChar(300)
   facebookUrl      String?   @map("facebook_url") @db.VarChar(300)
-  stripeCustomerId String?   @unique @map("stripe_customer_id") @db.VarChar(255)
+  stripeCustomerId String?   @unique @map("stripe_customer_id") @db.VarChar(191)
   emailVerifiedAt  DateTime? @map("email_verified_at")
   createdAt        DateTime  @default(now()) @map("created_at")
   updatedAt        DateTime  @updatedAt @map("updated_at")
@@ -41,7 +41,7 @@ model User {
 model RefreshToken {
   id        Int      @id @default(autoincrement())
   userId    Int      @map("user_id")
-  token     String   @unique @db.VarChar(500)
+  token     String   @unique @db.VarChar(191)
   expiresAt DateTime @map("expires_at")
   createdAt DateTime @default(now()) @map("created_at")
 

@@ -12,10 +12,12 @@ const schema = z.object({
   JWT_ACCESS_EXPIRES_IN: z.string().default('15m'),
   JWT_REFRESH_EXPIRES_IN: z.string().default('30d'),
 
-  AWS_REGION: z.string().min(1),
-  AWS_ACCESS_KEY_ID: z.string().min(1),
-  AWS_SECRET_ACCESS_KEY: z.string().min(1),
-  S3_BUCKET: z.string().min(1),
+  // S3 is optional for local development. Upload routes return 503 until it
+  // is configured, but the server itself can boot without these values.
+  AWS_REGION: z.string().optional(),
+  AWS_ACCESS_KEY_ID: z.string().optional(),
+  AWS_SECRET_ACCESS_KEY: z.string().optional(),
+  S3_BUCKET: z.string().optional(),
 
   CORS_ORIGINS: z.string().default('http://localhost:5280'),
 
@@ -37,4 +39,30 @@ if (!parsed.success) {
 }
 
 export const env = parsed.data
-export const corsOrigins = env.CORS_ORIGINS.split(',').map((o) => o.trim())
+
+export const corsOrigins = env.CORS_ORIGINS.split(',')
+  .map((o) => o.trim())
+  .filter(Boolean)
+
+const LOCALHOST_HOSTNAMES = new Set(['localhost', '127.0.0.1', '[::1]'])
+
+export function isAllowedCorsOrigin(origin: string | undefined) {
+  if (!origin) {
+    return true
+  }
+
+  if (corsOrigins.includes(origin)) {
+    return true
+  }
+
+  if (env.NODE_ENV !== 'production') {
+    try {
+      const parsedOrigin = new URL(origin)
+      return LOCALHOST_HOSTNAMES.has(parsedOrigin.hostname)
+    } catch {
+      return false
+    }
+  }
+
+  return false
+}

@@ -5,7 +5,7 @@ import fastifyMultipart from '@fastify/multipart'
 import fastifyRateLimit from '@fastify/rate-limit'
 import fastifyHelmet from '@fastify/helmet'
 
-import { env, corsOrigins } from './config/env.js'
+import { env, isAllowedCorsOrigin } from './config/env.js'
 import { db } from './config/database.js'
 import { errorHandler } from './middleware/error-handler.js'
 import { authRoutes } from './modules/auth/auth.routes.js'
@@ -23,7 +23,15 @@ const app = Fastify({ logger: env.NODE_ENV !== 'test' })
 await app.register(fastifyHelmet)
 
 await app.register(fastifyCors, {
-  origin: corsOrigins,
+  origin: (origin, cb) => {
+    if (isAllowedCorsOrigin(origin)) {
+      cb(null, true)
+      return
+    }
+
+    cb(new Error(`CORS blocked for origin: ${origin ?? 'unknown'}`), false)
+  },
+  methods: ['GET', 'HEAD', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
   credentials: true,
 })
 

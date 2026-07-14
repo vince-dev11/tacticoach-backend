@@ -19,7 +19,8 @@ npm install
 
 # 2. Configure environment
 cp .env.example .env
-# Fill in DATABASE_URL, JWT secrets, and AWS/S3 values.
+# Fill in DATABASE_URL and JWT secrets.
+# Add AWS/S3 values only if you want uploads and presigned media URLs.
 # Generate JWT secrets with:
 node -e "console.log(require('crypto').randomBytes(64).toString('hex'))"
 
@@ -50,5 +51,6 @@ Health check: `curl http://localhost:3001/health` → `{"status":"ok",...}`
 ## Environment variables
 
 See [.env.example](.env.example). Required: `DATABASE_URL`, `JWT_ACCESS_SECRET`,
-`JWT_REFRESH_SECRET`, `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`,
-`S3_BUCKET`. Stripe keys are optional — billing routes return `503` until they are set.
+`JWT_REFRESH_SECRET`. AWS/S3 variables are optional for local development:
+upload routes return `503` until they are configured, but the server will boot
+without them. Stripe keys are optional — billing routes return `503` until they are set.
