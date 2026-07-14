@@ -93,6 +93,16 @@ export async function drillSheetsRoutes(app: FastifyInstance) {
     return reply.status(201).send(sheet)
   })
 
+  // GET /drill-sheets/:id — a single owned sheet, with its full `data` so it can
+  // be reopened/edited in the builder.
+  app.get('/:id', async (request, reply) => {
+    const userId = (request.user as any).sub as number
+    const { id } = request.params as { id: string }
+    const sheet = await db.drillSheet.findFirst({ where: { id: Number(id), userId } })
+    if (!sheet) return reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'Sheet not found' })
+    return reply.send(await withImageUrl(sheet))
+  })
+
   // PATCH /drill-sheets/:id — editor access required
   app.patch('/:id', { preHandler: requireEditorAccess }, async (request, reply) => {
     const userId = (request.user as any).sub as number

@@ -23,8 +23,29 @@ const schema = z.object({
   // billing routes return 503 until both are set.
   STRIPE_SECRET_KEY: z.string().optional(),
   STRIPE_WEBHOOK_SECRET: z.string().optional(),
-  // Frontend base URL for checkout redirects and club invite links.
+  // Frontend base URL for checkout redirects, club invites and reset links.
   FRONTEND_URL: z.string().default('http://localhost:5280'),
+
+  // SMTP — optional so the API still boots without email configured. Password
+  // reset emails are only sent when SMTP_HOST + SMTP_USER + SMTP_PASS are set
+  // (works with Gmail, Resend, SendGrid, SES, Postmark — anything SMTP).
+  SMTP_HOST: z.string().optional(),
+  SMTP_PORT: z.coerce.number().default(587),
+  SMTP_USER: z.string().optional(),
+  SMTP_PASS: z.string().optional(),
+  SMTP_SECURE: z.coerce.boolean().default(false),
+  MAIL_FROM: z.string().default('TactiCoach <no-reply@tacticoach.co.uk>'),
+  // Where contact-form submissions are delivered. Defaults to MAIL_FROM.
+  SUPPORT_EMAIL: z.string().optional(),
+
+  // The account with this email is promoted to the 'owner' role at boot and
+  // on registration — it unlocks the /admin area (blog CMS + CRM).
+  OWNER_EMAIL: z.string().optional(),
+
+  // Gemini — optional so the API still boots without AI configured; the AI
+  // tactics routes return 503 until GEMINI_API_KEY is set.
+  GEMINI_API_KEY: z.string().optional(),
+  GEMINI_MODEL: z.string().default('gemini-2.5-flash'),
 })
 
 const parsed = schema.safeParse(process.env)

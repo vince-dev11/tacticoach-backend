@@ -13,6 +13,7 @@ import { authGuard } from '../../middleware/auth-guard.js'
 import { db } from '../../config/database.js'
 import { env } from '../../config/env.js'
 import { getEntitlements } from '../../lib/entitlements.js'
+import { sendClubInviteEmail } from '../../lib/emails.js'
 
 const INVITE_TTL_MS = 14 * 24 * 60 * 60 * 1000 // 14 days
 
@@ -113,13 +114,27 @@ export async function clubsRoutes(app: FastifyInstance) {
         expiresAt: new Date(Date.now() + INVITE_TTL_MS),
       },
     })
-    // Share the accept link with the invited coach (email delivery can be
-    // added later; the owner copies the link for now).
+
+    // Email the accept link to the invited coach (fire-and-forget — the owner
+    // still gets the acceptUrl below to share manually either way).
+    const acceptUrl = `${env.FRONTEND_URL}/club/join/${invite.token}`
+    const inviter = await db.user.findUnique({
+      where: { id: userId },
+      select: { name: true, surname: true },
+    })
+    void sendClubInviteEmail({
+      to: invite.email,
+      clubName: club.name,
+      inviterName: inviter ? `${inviter.name} ${inviter.surname}`.trim() : 'A coach',
+      acceptUrl,
+      expiresAt: invite.expiresAt,
+    })
+
     return reply.status(201).send({
       id: invite.id,
       email: invite.email,
       expiresAt: invite.expiresAt,
-      acceptUrl: `${env.FRONTEND_URL}/club/join/${invite.token}`,
+      acceptUrl,
     })
   })
 

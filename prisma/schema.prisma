@@ -8,6 +8,9 @@ datasource db {
 
 model User {
   id               Int       @id @default(autoincrement())
+  // 'owner' unlocks the /admin area (blog CMS + CRM). Assigned only via the
+  // OWNER_EMAIL env var — never through the API.
+  role             Role      @default(user)
   name             String    @db.VarChar(100)
   surname          String    @db.VarChar(100)
   email            String    @unique @db.VarChar(255)
@@ -26,10 +29,11 @@ model User {
   createdAt        DateTime  @default(now()) @map("created_at")
   updatedAt        DateTime  @updatedAt @map("updated_at")
 
-  subscription    UserSubscription?
-  boards          CanvasBoard[]
-  refreshTokens   RefreshToken[]
-  boardLikes      BoardLike[]
+  subscription        UserSubscription?
+  boards              CanvasBoard[]
+  refreshTokens       RefreshToken[]
+  passwordResetTokens PasswordResetToken[]
+  boardLikes          BoardLike[]
   ownedClub       Club?             @relation("ClubOwner")
   clubMembership  ClubMember?
   drillSheets     DrillSheet[]
@@ -49,6 +53,22 @@ model RefreshToken {
 
   @@index([userId])
   @@map("refresh_tokens")
+}
+
+// Single-use password-reset tokens. Only the SHA-256 hash of the token is stored,
+// so a DB leak can't be used to reset accounts. Expires after a short window.
+model PasswordResetToken {
+  id        Int       @id @default(autoincrement())
+  userId    Int       @map("user_id")
+  tokenHash String    @unique @map("token_hash") @db.VarChar(255)
+  expiresAt DateTime  @map("expires_at")
+  usedAt    DateTime? @map("used_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("password_reset_tokens")
 }
 
 // Membership plans — pricing to be decided; price fields nullable until set.
@@ -81,6 +101,8 @@ model UserSubscription {
   billingCycle           BillingCycle?      @map("billing_cycle")
   startedAt              DateTime           @default(now()) @map("started_at")
   expiresAt              DateTime?          @map("expires_at")
+  // Set once the "trial ends in 2 days" reminder email has gone out (dedupe).
+  trialReminderSentAt    DateTime?          @map("trial_reminder_sent_at")
   cancelledAt            DateTime?          @map("cancelled_at")
   paymentProvider        String?            @map("payment_provider") @db.VarChar(50)
   providerSubscriptionId String?            @map("provider_subscription_id") @db.VarChar(255)
@@ -117,7 +139,8 @@ model CanvasBoard {
   videoKey     String?   @map("video_key") @db.VarChar(500)
   // Legacy column kept for compatibility with earlier clients.
   thumbnailUrl String?   @map("thumbnail_url") @db.VarChar(500)
-  published    Boolean   @default(false)
+  // Boards are public by default (the create route also sets this explicitly).
+  published    Boolean   @default(true)
   publishedAt  DateTime? @map("published_at")
   createdAt    DateTime  @default(now()) @map("created_at")
   updatedAt    DateTime  @updatedAt @map("updated_at")
@@ -198,7 +221,8 @@ model DrillSheet {
   data        Json      @default("{}")
   // S3 key of the rendered sheet image (preview shown in the gallery).
   imageKey    String?   @map("image_key") @db.VarChar(500)
-  published   Boolean   @default(false)
+  // Sheets are public by default (the create route also sets this explicitly).
+  published   Boolean   @default(true)
   publishedAt DateTime? @map("published_at")
   createdAt   DateTime  @default(now()) @map("created_at")
   updatedAt   DateTime  @updatedAt @map("updated_at")
@@ -223,4 +247,60 @@ model DrillSheetLike {
   @@unique([sheetId, userId])
   @@index([userId])
   @@map("drill_sheet_likes")
+}
+
+enum Role {
+  user
+  owner
+}
+
+// ---- Blog (marketing content, owner-managed) --------------------------------
+
+model BlogPost {
+  id             Int       @id @default(autoincrement())
+  slug           String    @unique @db.VarChar(200)
+  title          String    @db.VarChar(255)
+  excerpt        String?   @db.Text
+  // Markdown source; rendered client-side.
+  content        String    @db.LongText
+  coverImageKey  String?   @map("cover_image_key") @db.VarChar(500)
+  tags           Json      @default("[]")
+  status         PostStatus @default(draft)
+  publishedAt    DateTime? @map("published_at")
+  authorId       Int       @map("author_id")
+  seoTitle       String?   @map("seo_title") @db.VarChar(255)
+  seoDescription String?   @map("seo_description") @db.VarChar(320)
+  readMinutes    Int       @default(3) @map("read_minutes")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  @@index([status, publishedAt])
+  @@map("blog_posts")
+}
+
+enum PostStatus {
+  draft
+  published
+}
+
+// ---- CRM leads (contact form submissions) ------------------------------------
+
+model ContactMessage {
+  id        Int           @id @default(autoincrement())
+  firstName String        @map("first_name") @db.VarChar(100)
+  lastName  String        @map("last_name") @db.VarChar(100)
+  email     String        @db.VarChar(255)
+  message   String        @db.Text
+  status    LeadStatus    @default(new)
+  createdAt DateTime      @default(now()) @map("created_at")
+  updatedAt DateTime      @updatedAt @map("updated_at")
+
+  @@index([status, createdAt])
+  @@map("contact_messages")
+}
+
+enum LeadStatus {
+  new
+  replied
+  closed
 }

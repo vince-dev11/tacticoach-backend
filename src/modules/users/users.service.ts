@@ -4,6 +4,7 @@ import type { UpdateProfileInput } from './users.schema.js'
 
 const USER_SELECT = {
   id: true,
+  role: true,
   name: true,
   surname: true,
   email: true,
