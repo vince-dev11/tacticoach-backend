@@ -173,12 +173,25 @@ model Club {
   id        Int      @id @default(autoincrement())
   ownerId   Int      @unique @map("owner_id")
   name      String   @db.VarChar(150)
+  // ---- Brand kit (set once by the owner in Club → Branding) ----
+  badgeKey       String?    @map("badge_key") @db.VarChar(500)
+  primaryColor   String?    @map("primary_color") @db.VarChar(9)
+  secondaryColor String?    @map("secondary_color") @db.VarChar(9)
+  slug           String?    @unique @db.VarChar(80)
+  bio            String?    @db.Text
+  location       String?    @db.VarChar(150)
+  foundedYear    Int?       @map("founded_year")
+  // Public page lifecycle: content gate + owner submission + CRM approval.
+  pageStatus      PageStatus @default(none) @map("page_status")
+  pageSubmittedAt DateTime?  @map("page_submitted_at")
+  pageReviewNote  String?    @map("page_review_note") @db.VarChar(500)
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
   owner   User         @relation("ClubOwner", fields: [ownerId], references: [id], onDelete: Cascade)
   members ClubMember[]
   invites ClubInvite[]
+  photos  ClubPhoto[]
 
   @@map("clubs")
 }
@@ -303,4 +316,28 @@ enum LeadStatus {
   new
   replied
   closed
+}
+
+enum PageStatus {
+  none
+  pending
+  approved
+  rejected
+  suspended
+}
+
+// Gallery photos on the public club page — awards, trophies, team photos,
+// facilities. Capped at 8 per club in the upload route.
+model ClubPhoto {
+  id        Int      @id @default(autoincrement())
+  clubId    Int      @map("club_id")
+  imageKey  String   @map("image_key") @db.VarChar(500)
+  caption   String?  @db.VarChar(200)
+  sortOrder Int      @default(0) @map("sort_order")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  club Club @relation(fields: [clubId], references: [id], onDelete: Cascade)
+
+  @@index([clubId, sortOrder])
+  @@map("club_photos")
 }

@@ -21,6 +21,8 @@ import { contactRoutes } from './modules/contact/contact.routes.js'
 import { aiRoutes } from './modules/ai/ai.routes.js'
 import { blogRoutes } from './modules/blog/blog.routes.js'
 import { adminRoutes } from './modules/admin/admin.routes.js'
+import { shareRoutes } from './modules/share/share.routes.js'
+import { clubPageRoutes } from './modules/club-page/club-page.routes.js'
 
 export async function buildApp(): Promise<FastifyInstance> {
   const app = Fastify({ logger: env.NODE_ENV !== 'test' })
@@ -73,6 +75,8 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(aiRoutes, { prefix: '/api/canvas' })
   await app.register(blogRoutes, { prefix: '/api/blog' })
   await app.register(adminRoutes, { prefix: '/api/admin' })
+  await app.register(shareRoutes, { prefix: '/api/share' })
+  await app.register(clubPageRoutes, { prefix: '/api/c' })
 
   // ---- Health ---------------------------------------------------------------
 

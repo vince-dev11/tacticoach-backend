@@ -9,6 +9,9 @@ import { requireOwner } from '../../middleware/owner-guard.js'
 import { db } from '../../config/database.js'
 import { uploadToS3, deleteFromS3, presignUrl } from '../../config/s3.js'
 import { readUpload } from '../../lib/multipart.js'
+import { presignUrl as presign } from '../../config/s3.js'
+import { env } from '../../config/env.js'
+import { sendClubPageApprovedEmail, sendClubPageRejectedEmail } from '../../lib/emails.js'
 
 // ---- Schemas -----------------------------------------------------------------
 
@@ -289,6 +292,80 @@ export async function adminRoutes(app: FastifyInstance) {
       },
     })
     return reply.send(updated)
+  })
+
+  // ===== Club page approvals ====================================================
+
+  // GET /admin/club-pages?status= — review queue (default: pending)
+  app.get('/club-pages', async (request, reply) => {
+    const { status = 'pending' } = request.query as Record<string, string>
+    const where =
+      status === 'all'
+        ? { pageStatus: { not: 'none' as const } }
+        : { pageStatus: (['pending', 'approved', 'rejected', 'suspended'].includes(status) ? status : 'pending') as 'pending' | 'approved' | 'rejected' | 'suspended' }
+    const clubs = await db.club.findMany({
+      where,
+      orderBy: { pageSubmittedAt: 'desc' },
+      include: {
+        owner: { select: { id: true, name: true, surname: true, email: true } },
+        members: { select: { userId: true } },
+      },
+    })
+    const rows = await Promise.all(
+      clubs.map(async (c) => {
+        const coachIds = [c.ownerId, ...c.members.map((m) => m.userId)]
+        const [boards, sheets] = await Promise.all([
+          db.canvasBoard.count({ where: { userId: { in: coachIds }, published: true } }),
+          db.drillSheet.count({ where: { userId: { in: coachIds }, published: true } }),
+        ])
+        return {
+          id: c.id,
+          name: c.name,
+          slug: c.slug,
+          bio: c.bio,
+          badgeUrl: c.badgeKey ? await presign(c.badgeKey) : null,
+          pageStatus: c.pageStatus,
+          pageSubmittedAt: c.pageSubmittedAt,
+          pageReviewNote: c.pageReviewNote,
+          owner: c.owner,
+          publishedBoards: boards,
+          publishedSheets: sheets,
+        }
+      }),
+    )
+    return reply.send(rows)
+  })
+
+  // PATCH /admin/club-pages/:id { action, note? } — approve / reject / suspend
+  app.patch('/club-pages/:id', async (request, reply) => {
+    const id = Number((request.params as { id: string }).id)
+    const { action, note } = z
+      .object({ action: z.enum(['approve', 'reject', 'suspend']), note: z.string().max(500).optional() })
+      .parse(request.body)
+
+    const club = await db.club.findUnique({
+      where: { id },
+      include: { owner: { select: { name: true, email: true } } },
+    })
+    if (!club) return reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'Club not found' })
+    if (action === 'reject' && !note) {
+      return reply.status(422).send({ statusCode: 422, error: 'Unprocessable Entity', message: 'A note is required when rejecting — the owner needs to know why' })
+    }
+
+    const status = action === 'approve' ? 'approved' : action === 'reject' ? 'rejected' : 'suspended'
+    const updated = await db.club.update({
+      where: { id },
+      data: { pageStatus: status, pageReviewNote: note ?? null },
+    })
+
+    // Notify the owner (fire-and-forget).
+    if (action === 'approve' && club.slug) {
+      void sendClubPageApprovedEmail(club.owner, club.name, `${env.FRONTEND_URL}/c/${club.slug}`)
+    } else if (action === 'reject') {
+      void sendClubPageRejectedEmail(club.owner, club.name, note!)
+    }
+
+    return reply.send({ id: updated.id, pageStatus: updated.pageStatus })
   })
 
   // GET /admin/leads — contact form inbox

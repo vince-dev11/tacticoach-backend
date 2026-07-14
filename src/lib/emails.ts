@@ -225,6 +225,60 @@ export async function sendClubInviteEmail(params: {
   )
 }
 
+// ---- Club page review results ---------------------------------------------------
+
+export async function sendClubPageApprovedEmail(
+  owner: { name: string; email: string },
+  clubName: string,
+  pageUrl: string,
+): Promise<void> {
+  await sendSafely(
+    {
+      to: owner.email,
+      subject: `${clubName} is live on TactiCoach 🎉`,
+      text:
+        `Hi ${owner.name},\n\n` +
+        `Great news — ${clubName}'s public page has been approved and is now live:\n${pageUrl}\n\n` +
+        `Share it with your players, parents and socials. Everything you and your coaches publish appears there automatically.\n\n` +
+        `The TactiCoach team`,
+      html: layout(
+        `${clubName}'s public page is approved and live.`,
+        `<h1 style="margin:0 0 12px;font-size:20px">${clubName} is live 🎉</h1>
+         <p style="margin:0 0 4px">Hi ${owner.name}, your club's public page has been approved:</p>
+         ${button(pageUrl, 'View your club page')}
+         <p style="margin:0;color:#6b7280;font-size:13px">Share it with players, parents and on your socials — everything your coaches publish appears there automatically.</p>`,
+      ),
+    },
+    'club page approved',
+  )
+}
+
+export async function sendClubPageRejectedEmail(
+  owner: { name: string; email: string },
+  clubName: string,
+  note: string,
+): Promise<void> {
+  await sendSafely(
+    {
+      to: owner.email,
+      subject: `About ${clubName}'s public page on TactiCoach`,
+      text:
+        `Hi ${owner.name},\n\n` +
+        `We couldn't approve ${clubName}'s public page yet.\n\nReviewer note: ${note}\n\n` +
+        `Update your branding or content and submit again — it only takes a minute.\n\n` +
+        `The TactiCoach team`,
+      html: layout(
+        `We couldn't approve ${clubName}'s page yet.`,
+        `<h1 style="margin:0 0 12px;font-size:20px">Almost there</h1>
+         <p style="margin:0 0 10px">Hi ${owner.name}, we couldn't approve <strong>${clubName}</strong>'s public page yet.</p>
+         <p style="margin:0 0 10px;padding:10px 14px;background:#f4f6f8;border-radius:8px;color:#1a2332"><strong>Reviewer note:</strong> ${note}</p>
+         <p style="margin:0;color:#6b7280;font-size:13px">Update your branding or content and submit again — it only takes a minute.</p>`,
+      ),
+    },
+    'club page rejected',
+  )
+}
+
 // ---- Contact form → support inbox ----------------------------------------------
 
 /**
