@@ -1,3 +1,4 @@
+import crypto from 'node:crypto'
 import { describe, it, expect } from 'vitest'
 import bcrypt from 'bcryptjs'
 import { dbMock } from './setup.js'
@@ -134,9 +135,23 @@ describe('POST /api/auth/refresh', () => {
     const res = await app.inject({ method: 'POST', url: '/api/auth/refresh', payload: { refreshToken: token } })
     expect(res.statusCode).toBe(200)
     expect(res.json().accessToken).toBeTruthy()
-    // Old token revoked, new one persisted
-    expect(dbMock.refreshToken.deleteMany).toHaveBeenCalledWith({ where: { token } })
+    // Old token revoked (stored/looked up as a sha256 hash — the raw token
+    // never touches the DB), new one persisted.
+    const hashed = crypto.createHash('sha256').update(token).digest('hex')
+    expect(dbMock.refreshToken.deleteMany).toHaveBeenCalledWith({ where: { token: hashed } })
+    expect(dbMock.refreshToken.findUnique).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { token: hashed } }),
+    )
     expect(dbMock.refreshToken.create).toHaveBeenCalled()
+  })
+
+  it('rejects an ACCESS token used as a refresh token (type check)', async () => {
+    const app = await getApp()
+    const accessOnly = app.jwt.sign({ sub: 1, email: 'v@t.dev' }, { expiresIn: '15m' })
+    const res = await app.inject({ method: 'POST', url: '/api/auth/refresh', payload: { refreshToken: accessOnly } })
+    expect(res.statusCode).toBe(401)
+    // Never even reaches the DB.
+    expect(dbMock.refreshToken.findUnique).not.toHaveBeenCalled()
   })
 
   it('rejects a token missing from the DB (revoked) with 401', async () => {

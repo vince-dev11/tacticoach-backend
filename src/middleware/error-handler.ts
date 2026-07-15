@@ -33,9 +33,15 @@ export function errorHandler(error: FastifyError, _req: FastifyRequest, reply: F
     console.error(error)
   }
 
+  // Unexpected 500s must not leak internals (Prisma/driver messages can name
+  // tables, hosts or queries). Deliberate 5xx errors thrown by our routes
+  // (502 "AI generation failed", 503 "not configured") keep their curated,
+  // user-facing messages.
+  const message = status === 500 ? 'Internal Server Error' : (error.message ?? 'Internal Server Error')
+
   reply.status(status).send({
     statusCode: status,
-    error: error.name ?? 'Error',
-    message: error.message ?? 'Internal Server Error',
+    error: status === 500 ? 'Internal Server Error' : (error.name ?? 'Error'),
+    message,
   })
 }

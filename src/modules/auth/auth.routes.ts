@@ -23,6 +23,15 @@ import { sendWelcomeEmail, sendVerificationEmail } from '../../lib/emails.js'
 import { authGuard } from '../../middleware/auth-guard.js'
 import { db } from '../../config/database.js'
 
+/**
+ * Per-route rate limits, tighter than the global 100/min: these endpoints are
+ * unauthenticated and guard credentials (brute force) or send email (spam).
+ * Relaxed under test so suites can hammer them.
+ */
+const limit = (max: number, timeWindow: string) => ({
+  config: { rateLimit: { max: env.NODE_ENV === 'test' ? 10_000 : max, timeWindow } },
+})
+
 export async function authRoutes(app: FastifyInstance) {
   /** Stateless email-verification link: a 24h signed JWT, no DB table needed. */
   const verifyUrlFor = (userId: number, email: string) => {
@@ -31,7 +40,7 @@ export async function authRoutes(app: FastifyInstance) {
   }
 
   // POST /auth/register
-  app.post('/register', async (request, reply) => {
+  app.post('/register', limit(20, '1 hour'), async (request, reply) => {
     const input = RegisterSchema.parse(request.body)
     const user = await registerUser(input)
     const accessToken = app.jwt.sign({ sub: user.id, email: user.email }, { expiresIn: '15m' })
@@ -66,7 +75,7 @@ export async function authRoutes(app: FastifyInstance) {
   })
 
   // POST /auth/resend-verification — logged-in users can request a fresh link.
-  app.post('/resend-verification', { preHandler: authGuard }, async (request, reply) => {
+  app.post('/resend-verification', { preHandler: authGuard, ...limit(5, '15 minutes') }, async (request, reply) => {
     const userId = (request.user as { sub: number }).sub
     const user = await db.user.findUnique({
       where: { id: userId },
@@ -82,8 +91,9 @@ export async function authRoutes(app: FastifyInstance) {
     return reply.send({ message: 'Verification email sent. Check your inbox.' })
   })
 
-  // POST /auth/login
-  app.post('/login', async (request, reply) => {
+  // POST /auth/login — 10/min/IP keeps online password guessing impractical
+  // while never bothering a real coach with a forgotten password.
+  app.post('/login', limit(10, '1 minute'), async (request, reply) => {
     const input = LoginSchema.parse(request.body)
     const user = await validateCredentials(input)
     if (!user) {
@@ -98,10 +108,16 @@ export async function authRoutes(app: FastifyInstance) {
   // POST /auth/refresh
   app.post('/refresh', async (request, reply) => {
     const { refreshToken } = RefreshSchema.parse(request.body)
-    let payload: any
+    let payload: { sub?: number; type?: string }
     try {
       payload = app.jwt.verify(refreshToken)
     } catch {
+      return reply.status(401).send({ statusCode: 401, error: 'Unauthorized', message: 'Invalid refresh token' })
+    }
+    // Only tokens minted AS refresh tokens may refresh — an access or
+    // email-verification JWT must never be accepted here, even though the DB
+    // lookup below would also reject it (defence in depth).
+    if (payload.type !== 'refresh') {
       return reply.status(401).send({ statusCode: 401, error: 'Unauthorized', message: 'Invalid refresh token' })
     }
     const stored = await findRefreshToken(refreshToken)
@@ -123,7 +139,7 @@ export async function authRoutes(app: FastifyInstance) {
 
   // POST /auth/forgot-password — email a reset link. Always returns the same
   // generic 200 (whether or not the email is registered) to prevent enumeration.
-  app.post('/forgot-password', async (request, reply) => {
+  app.post('/forgot-password', limit(5, '15 minutes'), async (request, reply) => {
     const { email } = ForgotPasswordSchema.parse(request.body)
     const generic = { message: 'If that email is registered, a reset link is on its way.' }
 
@@ -141,8 +157,9 @@ export async function authRoutes(app: FastifyInstance) {
         } catch (err) {
           request.log.error({ err }, 'Failed to send password reset email')
         }
-      } else {
-        // No SMTP configured — log the link so the flow is still testable in dev.
+      } else if (env.NODE_ENV !== 'production') {
+        // No SMTP configured — log the link so the flow is still testable in
+        // dev. NEVER in production: a reset link in log output is a credential.
         request.log.warn(`SMTP not configured. Password reset link for ${email}: ${link}`)
       }
     }
@@ -150,7 +167,7 @@ export async function authRoutes(app: FastifyInstance) {
   })
 
   // POST /auth/reset-password — consume a token and set a new password.
-  app.post('/reset-password', async (request, reply) => {
+  app.post('/reset-password', limit(10, '15 minutes'), async (request, reply) => {
     const { token, password } = ResetPasswordSchema.parse(request.body)
     const ok = await resetPasswordWithToken(token, password)
     if (!ok) {

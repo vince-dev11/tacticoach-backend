@@ -61,28 +61,31 @@ export async function validateCredentials(input: LoginInput) {
   return valid ? user : null
 }
 
+// Refresh tokens are stored HASHED (like the reset tokens below): a leaked
+// database dump must not hand an attacker every user's live session. The raw
+// token only ever exists client-side; we hash on the way in and look up by hash.
 export async function saveRefreshToken(userId: number, token: string) {
   await db.refreshToken.create({
     data: {
       userId,
-      token,
+      token: sha256(token),
       expiresAt: new Date(Date.now() + REFRESH_TTL_MS),
     },
   })
 }
 
 export async function rotateRefreshToken(oldToken: string, userId: number, newToken: string) {
-  await db.refreshToken.deleteMany({ where: { token: oldToken } })
+  await db.refreshToken.deleteMany({ where: { token: sha256(oldToken) } })
   await saveRefreshToken(userId, newToken)
 }
 
 export async function revokeRefreshToken(token: string) {
-  await db.refreshToken.deleteMany({ where: { token } })
+  await db.refreshToken.deleteMany({ where: { token: sha256(token) } })
 }
 
 export async function findRefreshToken(token: string) {
   return db.refreshToken.findUnique({
-    where: { token },
+    where: { token: sha256(token) },
     include: { user: true },
   })
 }
