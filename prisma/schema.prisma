@@ -34,12 +34,37 @@ model User {
   refreshTokens       RefreshToken[]
   passwordResetTokens PasswordResetToken[]
   boardLikes          BoardLike[]
+  // Purchased top-up credits (never expire) — spent only after the plan's
+  // monthly allowance is exhausted.
+  bonusCredits Int @default(0) @map("bonus_credits")
+
   ownedClub       Club?             @relation("ClubOwner")
   clubMembership  ClubMember?
   drillSheets     DrillSheet[]
   drillSheetLikes DrillSheetLike[]
+  aiUsage         AiUsage[]
 
   @@map("users")
+}
+
+/// One row per successful AI generation — the plan's monthly allowance is
+/// enforced by counting rows in the current calendar month (no refill job).
+model AiUsage {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @map("user_id")
+  kind      AiKind
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@map("ai_usage")
+}
+
+enum AiKind {
+  layout
+  animation
+  reel
 }
 
 model RefreshToken {

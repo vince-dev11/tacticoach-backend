@@ -21,12 +21,24 @@ export class GeminiError extends Error {
   }
 }
 
+export interface GenerateOptions {
+  /** Gemini responseSchema — constrains the model to this exact JSON shape,
+   *  eliminating malformed-output retries at the source. */
+  responseSchema?: unknown
+  /** Lower = more deterministic. Structural output wants ~0.4. */
+  temperature?: number
+}
+
 /**
  * Ask Gemini for a JSON document. `system` carries the tactical instructions,
  * `user` the coach's prompt. Returns the parsed JSON (throws GeminiError on
  * transport, refusal or parse problems — the route decides how to respond).
  */
-export async function generateTacticsJson(system: string, user: string): Promise<unknown> {
+export async function generateTacticsJson(
+  system: string,
+  user: string,
+  options: GenerateOptions = {},
+): Promise<unknown> {
   if (!env.GEMINI_API_KEY) throw new GeminiError('Gemini is not configured', false)
 
   const url = `${API_BASE}/${env.GEMINI_MODEL}:generateContent?key=${env.GEMINI_API_KEY}`
@@ -41,7 +53,8 @@ export async function generateTacticsJson(system: string, user: string): Promise
         contents: [{ role: 'user', parts: [{ text: user }] }],
         generationConfig: {
           responseMimeType: 'application/json',
-          temperature: 0.7,
+          ...(options.responseSchema ? { responseSchema: options.responseSchema } : {}),
+          temperature: options.temperature ?? 0.7,
           maxOutputTokens: 8192,
         },
       }),

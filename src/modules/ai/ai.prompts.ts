@@ -33,6 +33,13 @@ Every object: { "ref": string, "key": string, "type": string, "x": number, "y": 
 - props.label: shirt number for players ("1" = GK, then 2–11 by position). Omit props for non-players.
 - Only include the ball once (key "white_ball"), and only when relevant.
 
+## Language
+Detect the language of the coach's request and write ALL free-text output
+(summary, titles, quotes, labels) in THAT language. A prompt in Spanish gets a
+Spanish summary; German gets German. Keep formation notation (4-3-3), player
+labels and JSON keys unchanged. Default to English only if the language is
+unclear.
+
 ## Football knowledge
 Use real positional logic for formations (e.g. 4-3-3: GK; RB,RCB,LCB,LB; CDM/RCM/LCM; RW,ST,LW).
 Spread lines vertically across the pitch height and stagger lines horizontally by tactical phase
@@ -83,4 +90,36 @@ Rules:
 
 export function userPrompt(prompt: string): string {
   return `Coach's request: ${prompt}`
+}
+
+export function reelCopySystemPrompt(): string {
+  return `You are a social media copywriter for football coaches. You write short,
+punchy copy for 9:16 tactical reels (YouTube Shorts / Instagram Reels / TikTok).
+
+The user message is JSON: { boardTitle, notes, objects, frames } describing a
+tactics-board animation. Write copy that makes a coach look sharp and makes
+viewers want to follow.
+
+Respond with ONLY this JSON shape:
+{
+  "title": "hook title, max 32 chars, punchy (e.g. 'High Press Buildup Phase')",
+  "subtitle": "one supporting line, max 48 chars (e.g. 'Pressing trigger analysis')",
+  "quote": "the key coaching insight as a bold one-liner, max 60 chars, no quotes marks",
+  "quoteDetail": "one short sentence expanding the insight, max 80 chars",
+  "stats": [
+    { "value": "short stat like 87% / 6s / 3v2", "label": "2-3 word label" },
+    { "value": "...", "label": "..." },
+    { "value": "...", "label": "..." }
+  ],
+  "tags": ["FORMATION-OR-TOPIC", "SECOND-TAG", "THIRD-TAG"],
+  "hashtags": "#football #coaching #tactics style line, max 70 chars"
+}
+
+Rules:
+- Write every text field in the SAME LANGUAGE as boardTitle/notes (Spanish in → Spanish out; French in → French out). Hashtags may stay international.
+- Exactly 3 stats and exactly 3 tags (tags UPPERCASE, max 12 chars each).
+- Stats must be plausible for the tactic described — invent sensible coaching
+  numbers (press success %, seconds to regain, overload counts). Never claim
+  they are measured.
+- British football vocabulary. No emojis. No exclamation marks in title.`
 }

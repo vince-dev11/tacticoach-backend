@@ -23,6 +23,11 @@ function grantEditorAccess() {
   dbMock.userSubscription.findUnique.mockResolvedValue(activeSubscription() as never)
   dbMock.clubMember.findUnique.mockResolvedValue(null)
   dbMock.club.findUnique.mockResolvedValue(null)
+  // Credit gate: fresh month, no bonus credits → 5/5 pro-ai allowance free.
+  dbMock.user.findUniqueOrThrow.mockResolvedValue({ bonusCredits: 0 } as never)
+  dbMock.aiUsage.count.mockResolvedValue(0 as never)
+  dbMock.aiUsage.create.mockResolvedValue({} as never)
+  dbMock.$transaction.mockResolvedValue([] as never)
 }
 
 function revokeEditorAccess() {

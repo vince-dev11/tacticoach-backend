@@ -1,7 +1,7 @@
 {
   "name": "tacticoach-api",
   "version": "1.0.0",
-  "description": "TactiCoach backend API — Fastify + Prisma + MySQL",
+  "description": "TactiCoach backend API \u2014 Fastify + Prisma + MySQL",
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
@@ -15,7 +15,8 @@
     "db:generate": "prisma generate",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "eval": "tsx evals/eval-ai.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

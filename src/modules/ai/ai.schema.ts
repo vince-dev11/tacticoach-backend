@@ -98,3 +98,86 @@ export function sanitiseFrames(
     .filter((f) => f.moves.length > 0)
     .slice(0, 6)
 }
+
+// ---- Reel copy (social video templates) ------------------------------------
+
+export const ReelCopyRequestSchema = z.object({
+  boardTitle: z.string().max(120).default('Untitled session'),
+  prompt: z.string().max(500).optional(),
+  objectCount: z.number().int().min(0).max(200).default(0),
+  frameCount: z.number().int().min(0).max(50).default(0),
+})
+
+export const ReelCopyOutputSchema = z.object({
+  title: z.string().min(1).max(60),
+  subtitle: z.string().max(80).catch(''),
+  quote: z.string().min(1).max(90),
+  quoteDetail: z.string().max(120).catch(''),
+  stats: z
+    .array(z.object({ value: z.string().min(1).max(8), label: z.string().min(1).max(24) }))
+    .length(3)
+    .catch([
+      { value: '4-3-3', label: 'Shape' },
+      { value: '3', label: 'Frames' },
+      { value: '11v11', label: 'Setup' },
+    ]),
+  tags: z.array(z.string().min(1).max(14)).length(3).catch(['TACTICS', 'DRILL', 'COACHING']),
+  hashtags: z.string().max(90).catch('#football #coaching #tactics'),
+})
+
+export type ReelCopy = z.infer<typeof ReelCopyOutputSchema>
+
+// ---- Gemini responseSchema (constrained decoding) ---------------------------
+// The Generative Language API's OpenAPI-subset schema format. Constraining the
+// output means the model CANNOT emit malformed JSON or missing keys.
+
+const G = {
+  obj: (properties: Record<string, unknown>, required: string[]) => ({ type: 'OBJECT', properties, required }),
+  arr: (items: unknown) => ({ type: 'ARRAY', items }),
+  str: { type: 'STRING' },
+  num: { type: 'NUMBER' },
+}
+
+const gItem = G.obj(
+  {
+    ref: G.str,
+    key: G.str,
+    type: G.str,
+    x: G.num,
+    y: G.num,
+    props: G.obj({ label: G.str }, []),
+  },
+  ['key', 'type', 'x', 'y'],
+)
+
+export const layoutResponseSchema = G.obj(
+  { summary: G.str, objects: G.arr(gItem) },
+  ['summary', 'objects'],
+)
+
+export const animationResponseSchema = G.obj(
+  {
+    summary: G.str,
+    objects: G.arr(gItem),
+    frames: G.arr(
+      G.obj(
+        { moves: G.arr(G.obj({ ref: G.str, to: G.obj({ x: G.num, y: G.num }, ['x', 'y']) }, ['ref', 'to'])) },
+        ['moves'],
+      ),
+    ),
+  },
+  ['summary', 'objects', 'frames'],
+)
+
+export const reelCopyResponseSchema = G.obj(
+  {
+    title: G.str,
+    subtitle: G.str,
+    quote: G.str,
+    quoteDetail: G.str,
+    stats: G.arr(G.obj({ value: G.str, label: G.str }, ['value', 'label'])),
+    tags: G.arr(G.str),
+    hashtags: G.str,
+  },
+  ['title', 'subtitle', 'quote', 'quoteDetail', 'stats', 'tags', 'hashtags'],
+)

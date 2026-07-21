@@ -78,6 +78,12 @@ export async function membershipRoutes(app: FastifyInstance) {
     const session = await stripe().checkout.sessions.create({
       mode: 'subscription',
       customer: customerId,
+      // RBI cross-border rules for Indian Stripe accounts: export transactions
+      // must carry the customer's name and billing address, and a clear
+      // description of the service sold (the line item below provides it).
+      // Harmless on non-Indian Stripe accounts — just collects the address.
+      billing_address_collection: 'required',
+      customer_update: { address: 'auto', name: 'auto' },
       line_items: [
         {
           quantity: 1,
@@ -85,7 +91,8 @@ export async function membershipRoutes(app: FastifyInstance) {
             currency: plan.currency.toLowerCase(),
             product_data: {
               name: `TactiCoach ${plan.name}`,
-              description: plan.description ?? undefined,
+              description:
+                plan.description ?? 'TactiCoach coaching software subscription (digital service)',
             },
             unit_amount: Math.round(Number(price) * 100),
             recurring: { interval: cycle === 'annual' ? 'year' : 'month' },

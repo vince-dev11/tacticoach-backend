@@ -38,10 +38,10 @@ async function main() {
       name: 'Club',
       slug: 'club',
       description: 'For coaching teams. Up to 10 coach seats.',
-      monthlyPrice: '14.99',
-      annualPrice: '119.88', // £9.99/mo billed yearly
+      monthlyPrice: '24.99',
+      annualPrice: '203.88', // £16.99/mo billed yearly
       currency: 'GBP',
-      features: ['Everything in Pro + AI', '20 AI credits / month', '10 coach seats', 'Shared tactic library', 'Priority support'],
+      features: ['Everything in Pro + AI', '40 AI credits / month', '10 coach seats', 'Shared tactic library', 'Priority support'],
       maxBoards: null,
       maxTeamMembers: 10,
       sortOrder: 3,
