@@ -63,7 +63,33 @@ const CASES: Case[] = [
       return nearCorner ? [] : [`ball at (${ball.x},${ball.y}) is not at a corner`]
     } },
   { kind: 'layout', name: 'passing triangle', prompt: 'triangle passing drill for 3 players with two balls' },
+  { kind: 'layout', name: '3v3 from a video title', prompt: 'Move As A Team | 3 VS. 3 | High Pressing & Overloads | Football/Soccer',
+    assert: (o: { objects: CleanItem[] }) => {
+      const issues: string[] = []
+      const n = players(o.objects).length
+      if (n < 6 || n > 9) issues.push(`3v3 should have 6-9 players, got ${n}`)
+      if (!o.objects.some((x) => x.type !== 'player' && x.type !== 'football')) issues.push('no cones/goals marking the area')
+      return issues
+    } },
   { kind: 'layout', name: 'finishing drill', prompt: 'finishing drill: crosses from both wings, two strikers, one goalkeeper' },
+  { kind: 'layout', name: 'free kick wall at box edge', prompt: 'attacking free kick from the edge of the box with a defensive wall',
+    assert: (o: { objects: CleanItem[] }) => {
+      const issues: string[] = []
+      const ball = o.objects.find((x) => x.type === 'football')
+      if (!ball) issues.push('no ball at a free kick')
+      // "Edge of the box" attacking right = around x 1050–1250 (box starts at 1150).
+      else if (ball.x < 1000) issues.push(`ball at x=${ball.x} is nowhere near the box edge (expected ≥1000)`)
+      const wall = o.objects.filter((x) => x.type === 'mannequine' || x.type === 'player')
+      if (wall.length < 3) issues.push('no wall: expected mannequins or defenders between ball and goal')
+      return issues
+    } },
+  { kind: 'layout', name: 'agility warm-up equipment', prompt: 'agility warm-up circuit: ladder footwork into hurdle jumps, finish with a sprint',
+    assert: (o: { objects: CleanItem[] }) => {
+      const issues: string[] = []
+      if (!o.objects.some((x) => x.type === 'ladder')) issues.push('an agility circuit with ladder footwork needs a ladder')
+      if (!o.objects.some((x) => x.type === 'hurdle')) issues.push('hurdle jumps need hurdles')
+      return issues
+    } },
   // ---- Layouts: languages --------------------------------------------------
   { kind: 'layout', name: 'Spanish prompt → Spanish summary', prompt: 'presión alta en 4-3-3 contra salida de balón rival',
     assert: (o: { summary: string }) => langWords(o.summary, [' la ', ' el ', 'presión', ' de ', ' los ']) },
@@ -94,6 +120,22 @@ const CASES: Case[] = [
     assert: (o: { summary: string }) => langWords(o.summary, [' la ', ' el ', ' de ', 'contra', ' por ']) },
   { kind: 'animation', name: 'German animation', prompt: 'schneller Konter über die rechte Seite in drei Phasen',
     assert: (o: { summary: string }) => langWords(o.summary, [' der ', ' die ', ' über ', ' und ', 'konter']) },
+  { kind: 'animation', name: 'named phase count', prompt: 'build-up from the goalkeeper in 3 phases',
+    assert: (o: { frames: unknown[] }) => (o.frames.length >= 3 ? [] : [`asked for 3 phases, got ${o.frames.length} frames`]) },
+  { kind: 'animation', name: 'whole team moves', prompt: 'full team high press after losing the ball, both teams on the board',
+    assert: (o: { objects: CleanItem[]; frames: { moves: { ref: string }[] }[] }) => {
+      const playerRefs = new Set(o.objects.filter((x) => x.type === 'player').map((x) => x.ref))
+      const moved = new Set(o.frames.flatMap((f) => f.moves.map((m) => m.ref)).filter((r) => playerRefs.has(r)))
+      return moved.size >= 4 ? [] : [`only ${moved.size} players ever move in a team press`]
+    } },
+  { kind: 'animation', name: 'rondo ball circulation', prompt: 'rondo 5v2, quick one-touch passing between the outside players',
+    assert: (o: { objects: CleanItem[]; frames: { moves: { ref: string }[] }[] }) => {
+      const ball = o.objects.find((x) => x.type === 'football')
+      if (!ball) return ['no ball in a rondo']
+      return o.frames.some((f) => f.moves.some((m) => m.ref === ball.ref)) ? [] : ['ball never moves in a passing rondo']
+    } },
+  { kind: 'animation', name: 'overlap timing', prompt: 'right-back overlaps the winger, receives, and crosses — 3 phases',
+    assert: (o: { frames: unknown[] }) => (o.frames.length >= 3 ? [] : ['a 3-phase overlap needs 3 frames']) },
   // ---- Reel copy -----------------------------------------------------------
   { kind: 'reel', name: 'reel: high press', prompt: JSON.stringify({ boardTitle: 'High press buildup', notes: 'trap the fullback, win it in 6 seconds', objects: 22, frames: 3 }) },
   { kind: 'reel', name: 'reel: rondo', prompt: JSON.stringify({ boardTitle: 'Rondo 4v2 intensity', notes: 'one-touch under pressure', objects: 8, frames: 2 }) },
@@ -119,7 +161,7 @@ async function runCase(c: Case): Promise<{ pass: boolean; detail: string }> {
       return { pass: issues.length === 0, detail: issues.join('; ') || 'ok' }
     }
     if (c.kind === 'animation') {
-      const raw = await generateTacticsJson(animationSystemPrompt(), userPrompt(c.prompt), { responseSchema: animationResponseSchema, temperature: 0.5 })
+      const raw = await generateTacticsJson(animationSystemPrompt(c.prompt), userPrompt(c.prompt), { responseSchema: animationResponseSchema, temperature: 0.5 })
       const parsed = AnimationOutputSchema.safeParse(raw)
       if (!parsed.success) return { pass: false, detail: 'schema parse failed' }
       const objects = sanitiseObjects(parsed.data.objects)
@@ -141,13 +183,14 @@ async function runCase(c: Case): Promise<{ pass: boolean; detail: string }> {
 }
 
 async function main() {
-  if (!process.env.GEMINI_API_KEY) {
-    console.log('GEMINI_API_KEY not set — evals need a real key. Nothing run.')
+  const { geminiConfigured } = await import('../src/config/gemini.js')
+  if (!geminiConfigured()) {
+    console.log('No AI provider configured (GEMINI_API_KEY or AI_PROVIDER=openai-compat + AI_* vars). Nothing run.')
     return
   }
   const only = process.argv[2] as Kind | undefined
   const cases = only ? CASES.filter((c) => c.kind === only) : CASES
-  console.log(`Running ${cases.length} eval case(s) against ${process.env.GEMINI_MODEL ?? 'gemini-2.5-flash'}…\n`)
+  console.log(`Running ${cases.length} eval case(s) against ${process.env.AI_PROVIDER === 'openai-compat' ? process.env.AI_MODEL : (process.env.GEMINI_MODEL ?? 'gemini-2.5-flash')}…\n`)
 
   let passed = 0
   for (const c of cases) {

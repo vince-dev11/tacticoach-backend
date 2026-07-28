@@ -9,6 +9,7 @@ import fastifyRateLimit from '@fastify/rate-limit'
 import fastifyHelmet from '@fastify/helmet'
 
 import { env, corsOrigins } from './config/env.js'
+import { registerLocalUploads } from './config/s3.js'
 import { errorHandler } from './middleware/error-handler.js'
 import { authRoutes } from './modules/auth/auth.routes.js'
 import { usersRoutes } from './modules/users/users.routes.js'
@@ -77,6 +78,10 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(adminRoutes, { prefix: '/api/admin' })
   await app.register(shareRoutes, { prefix: '/api/share' })
   await app.register(clubPageRoutes, { prefix: '/api/c' })
+
+  // ---- Local uploads (dev fallback when S3 is unconfigured) -----------------
+
+  registerLocalUploads(app)
 
   // ---- Health ---------------------------------------------------------------
 

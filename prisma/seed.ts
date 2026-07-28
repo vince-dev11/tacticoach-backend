@@ -1,4 +1,5 @@
 import { PrismaClient } from '@prisma/client'
+import bcrypt from 'bcryptjs'
 import { PrismaMariaDb } from '@prisma/adapter-mariadb'
 import 'dotenv/config'
 
@@ -62,6 +63,25 @@ async function main() {
   }
 
   console.log('✅  Seeded membership plans')
+
+  // Company admin (owner) account — unlocks /admin (blog CMS + CRM).
+  // Email follows OWNER_EMAIL so the boot-time promotion agrees with the seed.
+  // Default password is for LOCAL DEVELOPMENT — change it on any real server.
+  const ownerEmail = process.env.OWNER_EMAIL ?? 'pvp12417@gmail.com'
+  const ownerPassword = process.env.OWNER_SEED_PASSWORD ?? 'Admin@123'
+  await db.user.upsert({
+    where: { email: ownerEmail },
+    update: { role: 'owner' },
+    create: {
+      name: 'Company',
+      surname: 'Admin',
+      email: ownerEmail,
+      passwordHash: await bcrypt.hash(ownerPassword, 12),
+      role: 'owner',
+      emailVerifiedAt: new Date(),
+    },
+  })
+  console.log(`✅  Owner account ready: ${ownerEmail} (password: ${process.env.OWNER_SEED_PASSWORD ? 'from OWNER_SEED_PASSWORD' : ownerPassword + ' — change it!'})`)
 }
 
 main()

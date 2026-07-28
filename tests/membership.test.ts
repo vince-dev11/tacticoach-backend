@@ -2,6 +2,28 @@ import { describe, it, expect } from 'vitest'
 import { dbMock } from './setup.js'
 import { getApp, accessToken, authHeaders, activeSubscription } from './helpers.js'
 
+
+describe('owner entitlements', () => {
+  it('the company owner gets full access with no subscription', async () => {
+    const { getApp, accessToken, authHeaders } = await import('./helpers.js')
+    const { dbMock } = await import('./setup.js')
+    const app = await getApp()
+    dbMock.user.findUnique.mockResolvedValue({ role: 'owner' } as never)
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/membership/entitlements',
+      headers: authHeaders(await accessToken()),
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toMatchObject({
+      editorAccess: true,
+      plan: { slug: 'owner' },
+      subscriptionStatus: 'active',
+    })
+  })
+})
+
 describe('GET /api/membership/plans', () => {
   it('is public and returns active plans in order', async () => {
     const app = await getApp()

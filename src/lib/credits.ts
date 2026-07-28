@@ -19,6 +19,7 @@ const PLAN_ALLOWANCE: Record<string, number> = {
   pro: 0, // Pro is the no-AI tier
   'pro-ai': 5,
   club: 40,
+  owner: 100_000, // company admin — effectively unlimited
 }
 const TRIAL_ALLOWANCE = 3
 

@@ -13,6 +13,8 @@ vi.mock('../src/config/s3.js', () => ({
   uploadToS3: vi.fn(async (key: string) => key),
   deleteFromS3: vi.fn(async () => {}),
   presignUrl: vi.fn(async (key: string) => `https://s3.test/${key}?signed`),
+  s3Configured: vi.fn(() => true),
+  registerLocalUploads: vi.fn(() => {}),
 }))
 
 vi.mock('../src/config/mailer.js', () => ({

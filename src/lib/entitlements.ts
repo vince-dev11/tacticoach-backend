@@ -40,6 +40,19 @@ export async function clubBrandingActive(ownerId: number): Promise<boolean> {
  *      subscription.
  */
 export async function getEntitlements(userId: number): Promise<Entitlements> {
+  // The company owner (admin) never buys a plan — full access, no trial nags.
+  const account = await db.user.findUnique({ where: { id: userId }, select: { role: true } })
+  if (account?.role === 'owner') {
+    return {
+      editorAccess: true,
+      plan: { id: 0, name: 'Owner', slug: 'owner' },
+      viaClub: false,
+      isClubOwner: false,
+      subscriptionStatus: 'active',
+      expiresAt: null,
+    }
+  }
+
   const [sub, membership, ownedClub] = await Promise.all([
     db.userSubscription.findUnique({
       where: { userId },

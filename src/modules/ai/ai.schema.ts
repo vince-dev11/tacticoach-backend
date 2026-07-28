@@ -5,6 +5,7 @@
 
 import { z } from 'zod'
 import { CANVAS } from './ai.prompts.js'
+import { PATTERN_IDS } from './ai.patterns.js'
 
 // Matches the editor's ObjectType union (frontend src/editor/types.ts).
 const OBJECT_TYPES = new Set([
@@ -136,7 +137,33 @@ const G = {
   arr: (items: unknown) => ({ type: 'ARRAY', items }),
   str: { type: 'STRING' },
   num: { type: 'NUMBER' },
+  bool: { type: 'BOOLEAN' },
+  strEnum: (...values: string[]) => ({ type: 'STRING', enum: values }),
 }
+
+// ---- DSL plan (symbolic tactical plan — the model picks, the compiler draws) --
+
+export const PlanSchema = z.object({
+  fallback: z.boolean().catch(true),
+  pattern: z.string().optional(),
+  side: z.enum(['right', 'left']).catch('right'),
+  formation: z.enum(['4-3-3', '4-4-2', '4-2-3-1', '3-5-2']).catch('4-3-3'),
+  summary: z.string().min(1).max(2000).catch('Tactical animation generated.'),
+})
+export type Plan = z.infer<typeof PlanSchema>
+
+/** Constrained decoding: pattern ids are an enum — hallucinated patterns are
+ *  impossible on the Gemini path. */
+export const planResponseSchema = G.obj(
+  {
+    fallback: G.bool,
+    pattern: G.strEnum(...PATTERN_IDS),
+    side: G.strEnum('right', 'left'),
+    formation: G.strEnum('4-3-3', '4-4-2', '4-2-3-1', '3-5-2'),
+    summary: G.str,
+  },
+  ['fallback', 'summary'],
+)
 
 const gItem = G.obj(
   {
@@ -145,7 +172,21 @@ const gItem = G.obj(
     type: G.str,
     x: G.num,
     y: G.num,
-    props: G.obj({ label: G.str }, []),
+    // label for players; the rest allow optional zone rectangles (width/height/
+    // stroke) and text labels (text/fill/fontSize) — see layout prompt.
+    props: G.obj(
+      {
+        label: G.str,
+        text: G.str,
+        width: G.num,
+        height: G.num,
+        stroke: G.str,
+        strokeWidth: G.num,
+        fill: G.str,
+        fontSize: G.num,
+      },
+      [],
+    ),
   },
   ['key', 'type', 'x', 'y'],
 )

@@ -59,6 +59,17 @@ export function validateLayout(objects: CleanItem[], prompt: string): string[] {
     }
   }
 
+  // "N v M" small-sided games must have N+M players (± explicit neutrals/GKs).
+  const svm = prompt.match(/\b(\d{1,2})\s*(?:v|vs\.?)\s*(\d{1,2})\b/i)
+  if (svm) {
+    const expected = Number(svm[1]) + Number(svm[2])
+    if (expected >= 2 && expected <= 22 && (players.length < expected || players.length > expected + 3)) {
+      issues.push(
+        `the prompt describes a ${svm[1]}v${svm[2]} — that needs ${expected} players (plus explicit neutrals only), you placed ${players.length}`,
+      )
+    }
+  }
+
   // A named formation must have the right number of outfielders on the main team.
   const expectedOutfield = formationOutfielders(prompt)
   if (expectedOutfield !== null) {
@@ -88,6 +99,19 @@ function expectedOutfielders(fromFormation: number, _teamSize: number): number {
   return fromFormation
 }
 
+// Prompt words (several languages) that imply the ball circulates. When any
+// match and the ball never moves, the animation is telling the wrong story.
+const BALL_ACTION =
+  /pass|switch|cross|counter|build|combi|rondo|shot|finish|circulat|pase|pased|centro|contra|salida|tiro|passe|centre|contre|relance|flanke|konter|aufbau|schuss|spielaufbau|cruzamento|contra-ataque/i
+
+/** "3 phases" / "tres fases" / "drei Phasen" → 3, when the prompt counts them. */
+function promptPhases(prompt: string): number | null {
+  const m = prompt.match(/\b(\d)\s*(?:phases?|steps?|stages?|fases?|phasen|etapas?|étapes?|fazy?|aşama\w*)\b/i)
+  if (!m) return null
+  const n = Number(m[1])
+  return n >= 2 && n <= 6 ? n : null
+}
+
 /** Validate animation frames on top of the layout checks. */
 export function validateAnimation(
   objects: CleanItem[],
@@ -96,15 +120,21 @@ export function validateAnimation(
 ): string[] {
   const issues = validateLayout(objects, prompt)
   const pos = new Map(objects.map((o) => [o.ref, { x: o.x, y: o.y }]))
+  const players = objects.filter(isPlayer)
+  const ball = objects.find((o) => o.type === 'football')
 
   const totalMoves = frames.reduce((n, f) => n + f.moves.length, 0)
   if (totalMoves === 0) issues.push('the animation contains no movement — add frames with moves')
 
+  const movedRefs = new Set<string>()
   frames.forEach((frame, fi) => {
+    let frameNet = 0
     for (const move of frame.moves) {
       const from = pos.get(move.ref)
       if (!from) continue
       const dist = Math.hypot(move.to.x - from.x, move.to.y - from.y)
+      frameNet += dist
+      if (dist >= 10) movedRefs.add(move.ref)
       // One frame ≈ 3 seconds. > 900px (~2/3 pitch length) reads as teleporting.
       if (dist > 900) {
         issues.push(
@@ -113,7 +143,54 @@ export function validateAnimation(
       }
       pos.set(move.ref, move.to)
     }
+    // A frame whose moves all go (nearly) nowhere is padding, not a phase.
+    if (frame.moves.length > 0 && frameNet < 15) {
+      issues.push(`frame ${fi + 1} contains no real movement — every phase must advance the action`)
+    }
+
+    // One ball owner (PRD rule): at the end of each phase the ball belongs to
+    // SOMEONE — a ball drifting to empty grass is not football.
+    if (ball && players.length > 0) {
+      const bp = pos.get(ball.ref)
+      if (bp) {
+        const nearest = Math.min(...players.map((p) => {
+          const pp = pos.get(p.ref) ?? { x: p.x, y: p.y }
+          return Math.hypot(bp.x - pp.x, bp.y - pp.y)
+        }))
+        // A ball inside either goalmouth is a finish — no owner needed.
+        const inGoalmouth = (bp.x <= 110 || bp.x >= 1290) && bp.y >= 260 && bp.y <= 460
+        if (nearest > 90 && !inGoalmouth) {
+          issues.push(
+            `the ball ends frame ${fi + 1} ${Math.round(nearest)}px from the nearest player — the ball must end each phase with a player (or in the goal)`,
+          )
+        }
+      }
+    }
   })
+
+  // The story needs the ball: passing/counter/build-up prompts where the ball
+  // never travels miss the point of the animation.
+  if (ball && totalMoves > 0 && !movedRefs.has(ball.ref) && BALL_ACTION.test(prompt)) {
+    issues.push(
+      'the ball never moves, but the request describes ball circulation — add explicit ball moves to each receiving player',
+    )
+  }
+
+  // "3 phases" answered with fewer frames tells a shorter story than asked for.
+  const phases = promptPhases(prompt)
+  if (phases !== null && frames.length < phases) {
+    issues.push(`the request names ${phases} phases but you produced ${frames.length} frames — one frame per phase`)
+  }
+
+  // A team action where almost nobody moves reads as statues, not football.
+  if (players.length >= 8 && totalMoves > 0) {
+    const movedPlayers = players.filter((p) => movedRefs.has(p.ref)).length
+    if (movedPlayers <= 1) {
+      issues.push(
+        `only ${movedPlayers} of ${players.length} players ever move — supporting players and defenders must adjust with the action`,
+      )
+    }
+  }
 
   return issues
 }

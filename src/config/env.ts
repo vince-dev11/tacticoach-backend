@@ -21,6 +21,11 @@ const schema = z.object({
 
   CORS_ORIGINS: z.string().default('http://localhost:5280'),
 
+  // Local-disk upload fallback (used automatically when S3 is unconfigured).
+  UPLOADS_DIR: z.string().optional(),
+  // Absolute base URL the API is reachable at (for local /uploads links).
+  PUBLIC_API_URL: z.string().optional(),
+
   // Stripe — optional so the API still boots without billing configured;
   // billing routes return 503 until both are set.
   STRIPE_SECRET_KEY: z.string().optional(),
@@ -48,6 +53,14 @@ const schema = z.object({
   // tactics routes return 503 until GEMINI_API_KEY is set.
   GEMINI_API_KEY: z.string().optional(),
   GEMINI_MODEL: z.string().default('gemini-2.5-flash'),
+
+  // Alternative AI provider: any OpenAI-compatible endpoint (NVIDIA NIM,
+  // OpenAI, Groq, …). When AI_PROVIDER=openai-compat these three are used
+  // instead of Gemini.
+  AI_PROVIDER: z.enum(['gemini', 'openai-compat']).default('gemini'),
+  AI_BASE_URL: z.string().optional(),
+  AI_API_KEY: z.string().optional(),
+  AI_MODEL: z.string().optional(),
 })
 
 const parsed = schema.safeParse(process.env)

@@ -6,3 +6,4 @@ dist/
 
 # Claude Code local tooling config
 .claude/
+uploads/

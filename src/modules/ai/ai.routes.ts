@@ -12,7 +12,9 @@ import { authGuard } from '../../middleware/auth-guard.js'
 import { requireEditorAccess } from '../../middleware/entitlement-guard.js'
 import { geminiConfigured, generateTacticsJson, GeminiError } from '../../config/gemini.js'
 import { getCreditState, recordCreditSpend } from '../../lib/credits.js'
-import { layoutSystemPrompt, animationSystemPrompt, reelCopySystemPrompt, userPrompt } from './ai.prompts.js'
+import { layoutSystemPrompt, animationSystemPrompt, planSystemPrompt, reelCopySystemPrompt, userPrompt } from './ai.prompts.js'
+import { compilePattern } from './ai.dsl.js'
+import { patternById } from './ai.patterns.js'
 import {
   RequestSchema,
   ReelCopyRequestSchema,
@@ -24,6 +26,8 @@ import {
   reelCopyResponseSchema,
   sanitiseObjects,
   sanitiseFrames,
+  PlanSchema,
+  planResponseSchema,
 } from './ai.schema.js'
 import { validateLayout, validateAnimation, validateReelCopy } from './ai.validate.js'
 
@@ -167,28 +171,57 @@ export async function aiRoutes(app: FastifyInstance) {
       objects: ReturnType<typeof sanitiseObjects>
       frames: ReturnType<typeof sanitiseFrames>
     }
-    let result: AnimResult | null
+    let result: AnimResult | null = null
+    let source = 'gemini'
+
+    // ---- Path 1: Football DSL. The model picks a PATTERN (symbolic plan);
+    // a deterministic compiler owns all geometry — teleports, abandoned balls
+    // and statue teams are impossible by construction. Any failure here falls
+    // through silently to direct generation.
     try {
-      result = await withCorrection<AnimResult>(
-        animationSystemPrompt(),
-        userPrompt(prompt),
-        animationResponseSchema,
-        (raw) => {
-          const parsed = AnimationOutputSchema.safeParse(raw)
-          if (!parsed.success) return null
-          const objects = sanitiseObjects(parsed.data.objects)
-          const frames = sanitiseFrames(parsed.data.frames, objects)
-          if (objects.length === 0 || frames.length === 0) return null
-          return {
-            value: { summary: parsed.data.summary, objects, frames },
-            issues: validateAnimation(objects, frames, prompt),
-          }
-        },
-        request.log,
-      )
+      const rawPlan = await generateTacticsJson(planSystemPrompt(), userPrompt(prompt), {
+        responseSchema: planResponseSchema,
+        temperature: 0.2,
+      })
+      const plan = PlanSchema.parse(rawPlan)
+      const pattern = !plan.fallback && plan.pattern ? patternById(plan.pattern) : undefined
+      if (pattern) {
+        const compiled = compilePattern(pattern, plan.formation, plan.side)
+        // Safety net behind the compiler — should always be clean (CI-enforced).
+        const issues = validateAnimation(compiled.objects, compiled.frames, prompt)
+        if (issues.length > 0) request.log.warn({ issues }, 'DSL compile issues (accepted)')
+        result = { summary: plan.summary, objects: compiled.objects, frames: compiled.frames }
+        source = 'dsl'
+      }
     } catch (err) {
-      request.log.error({ err }, 'AI animation generation failed')
-      return reply.status(502).send({ statusCode: 502, error: 'Bad Gateway', message: 'AI generation failed. Please try again.' })
+      request.log.warn({ err }, 'DSL plan failed — falling back to direct generation')
+    }
+
+    // ---- Path 2 (fallback): direct coordinate generation with exemplar
+    // grounding + corrective retry — unchanged behaviour.
+    if (!result) {
+      try {
+        result = await withCorrection<AnimResult>(
+          animationSystemPrompt(prompt),
+          userPrompt(prompt),
+          animationResponseSchema,
+          (raw) => {
+            const parsed = AnimationOutputSchema.safeParse(raw)
+            if (!parsed.success) return null
+            const objects = sanitiseObjects(parsed.data.objects)
+            const frames = sanitiseFrames(parsed.data.frames, objects)
+            if (objects.length === 0 || frames.length === 0) return null
+            return {
+              value: { summary: parsed.data.summary, objects, frames },
+              issues: validateAnimation(objects, frames, prompt),
+            }
+          },
+          request.log,
+        )
+      } catch (err) {
+        request.log.error({ err }, 'AI animation generation failed')
+        return reply.status(502).send({ statusCode: 502, error: 'Bad Gateway', message: 'AI generation failed. Please try again.' })
+      }
     }
     if (!result) {
       return reply.status(502).send({ statusCode: 502, error: 'Bad Gateway', message: 'AI produced an unusable animation. Please try again.' })
@@ -199,7 +232,7 @@ export async function aiRoutes(app: FastifyInstance) {
     return reply.send({
       success: true,
       prompt,
-      source: 'gemini',
+      source,
       summary: result.summary,
       scene: { objects },
       frames,
