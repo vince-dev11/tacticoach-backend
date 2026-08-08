@@ -6,6 +6,7 @@
 import { z } from 'zod'
 import { CANVAS } from './ai.prompts.js'
 import { PATTERN_IDS } from './ai.patterns.js'
+import { AREA_IDS, DEFAULT_BOARD, type Board } from './ai.concepts.js'
 
 // Matches the editor's ObjectType union (frontend src/editor/types.ts).
 const OBJECT_TYPES = new Set([
@@ -15,13 +16,54 @@ const OBJECT_TYPES = new Set([
 ])
 
 const PAD = 40
-const clampX = (v: number) => Math.min(Math.max(Math.round(v), PAD), CANVAS.width - PAD)
-const clampY = (v: number) => Math.min(Math.max(Math.round(v), PAD), CANVAS.height - PAD)
+// Board-aware clamps: the caller (editor) passes its actual board size, so
+// coordinates land correctly on landscape, portrait or custom boards.
+const clampTo = (v: number, max: number) => Math.min(Math.max(Math.round(v), PAD), max - PAD)
+const clampX = (v: number, board: Board = DEFAULT_BOARD) => clampTo(v, board.width)
+const clampY = (v: number, board: Board = DEFAULT_BOARD) => clampTo(v, board.height)
 
 export const RequestSchema = z.object({
   prompt: z.string().min(3).max(1000),
   generation_mode: z.string().optional(), // accepted for wire-compat, unused
+  // Editor board size. Optional for wire-compat; defaults to the 1400×720
+  // design space every existing client uses.
+  board: z
+    .object({
+      width: z.number().min(400).max(4000),
+      height: z.number().min(300).max(4000),
+    })
+    .optional(),
+  // Who this session is for. Optional at every level: absent means "use my
+  // saved profile", and an absent profile means senior 11-a-side. Unknown
+  // values are dropped rather than rejected, so an older client that sends
+  // nothing — or a newer one that sends an age we haven't shipped yet — still
+  // generates instead of 400-ing.
+  context: z
+    .object({
+      age: z.string().optional(),
+      format: z.string().optional(),
+      level: z.string().optional(),
+    })
+    .optional(),
 })
+
+/** The model's pre-drawing plan: what it decided BEFORE placing anything. */
+export const BriefSchema = z.object({
+  concept: z.string().max(60).catch(''),
+  area: z.string().max(40).catch('full_pitch'),
+  /** The football problem the scenario poses — no problem, no learning. */
+  problem: z.string().max(240).catch(''),
+  /** Principles the animation claims to demonstrate; each is measured. */
+  principles: z.array(z.string().max(40)).max(8).catch([]),
+  attackers: z.number().int().min(0).max(11).catch(0),
+  defenders: z.number().int().min(0).max(11).catch(0),
+  phases: z.array(z.string().max(140)).max(8).catch([]),
+  roles: z
+    .array(z.object({ ref: z.string().max(40), job: z.string().max(160) }))
+    .max(24)
+    .catch([]),
+})
+export type Brief = z.infer<typeof BriefSchema>
 
 const ItemSchema = z.object({
   ref: z.string().max(40).optional(),
@@ -41,7 +83,12 @@ const MoveSchema = z.object({
   to: z.object({ x: z.number(), y: z.number() }),
 })
 
+// NOTE ON KEY ORDER: generation is left-to-right, so "brief" is declared FIRST
+// — the model commits to its plan (concept, area, counts, roles, phases) before
+// it writes a single coordinate, and everything after is conditioned on it.
+// Optional + .catch so older clients/outputs without a brief still parse.
 export const LayoutOutputSchema = z.object({
+  brief: BriefSchema.optional().catch(undefined),
   summary: z.string().min(1).max(2000).catch('Tactical setup generated.'),
   objects: z.array(ItemSchema).min(1).max(60),
 })
@@ -61,7 +108,10 @@ export interface CleanItem {
 }
 
 /** Drop invalid types, clamp coordinates, force unique refs. Max 40 objects. */
-export function sanitiseObjects(items: z.infer<typeof ItemSchema>[]): CleanItem[] {
+export function sanitiseObjects(
+  items: z.infer<typeof ItemSchema>[],
+  board: Board = DEFAULT_BOARD,
+): CleanItem[] {
   const seen = new Set<string>()
   const out: CleanItem[] = []
   for (const item of items) {
@@ -73,8 +123,8 @@ export function sanitiseObjects(items: z.infer<typeof ItemSchema>[]): CleanItem[
       ref,
       key: item.key,
       type: item.type,
-      x: clampX(item.x),
-      y: clampY(item.y),
+      x: clampX(item.x, board),
+      y: clampY(item.y, board),
       ...(item.props ? { props: item.props } : {}),
       ...(item.text ? { text: item.text } : {}),
     })
@@ -87,6 +137,7 @@ export function sanitiseObjects(items: z.infer<typeof ItemSchema>[]): CleanItem[
 export function sanitiseFrames(
   frames: { moves: { ref: string; to: { x: number; y: number } }[] }[],
   objects: CleanItem[],
+  board: Board = DEFAULT_BOARD,
 ): { moves: { ref: string; to: { x: number; y: number } }[] }[] {
   const refs = new Set(objects.map((o) => o.ref))
   return frames
@@ -94,7 +145,7 @@ export function sanitiseFrames(
       moves: f.moves
         .filter((m) => refs.has(m.ref))
         .slice(0, 20)
-        .map((m) => ({ ref: m.ref, to: { x: clampX(m.to.x), y: clampY(m.to.y) } })),
+        .map((m) => ({ ref: m.ref, to: { x: clampX(m.to.x, board), y: clampY(m.to.y, board) } })),
     }))
     .filter((f) => f.moves.length > 0)
     .slice(0, 6)
@@ -191,13 +242,30 @@ const gItem = G.obj(
   ['key', 'type', 'x', 'y'],
 )
 
+// Brief first — constrained decoding follows property order, so the model is
+// forced to state its plan before it may emit a single coordinate.
+const gBrief = G.obj(
+  {
+    concept: G.str,
+    area: G.strEnum(...AREA_IDS),
+    problem: G.str,
+    principles: G.arr(G.str),
+    attackers: G.num,
+    defenders: G.num,
+    phases: G.arr(G.str),
+    roles: G.arr(G.obj({ ref: G.str, job: G.str }, ['ref', 'job'])),
+  },
+  ['area', 'problem', 'principles', 'attackers', 'defenders', 'phases'],
+)
+
 export const layoutResponseSchema = G.obj(
-  { summary: G.str, objects: G.arr(gItem) },
-  ['summary', 'objects'],
+  { brief: gBrief, summary: G.str, objects: G.arr(gItem) },
+  ['brief', 'summary', 'objects'],
 )
 
 export const animationResponseSchema = G.obj(
   {
+    brief: gBrief,
     summary: G.str,
     objects: G.arr(gItem),
     frames: G.arr(

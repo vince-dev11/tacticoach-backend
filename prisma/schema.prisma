@@ -24,6 +24,13 @@ model User {
   youtubeUrl       String?   @map("youtube_url") @db.VarChar(300)
   twitterUrl       String?   @map("twitter_url") @db.VarChar(300)
   facebookUrl      String?   @map("facebook_url") @db.VarChar(300)
+  // Who this coach works with. Set once, used by every AI generation: age fixes
+  // the playing format, the format caps the squad size, and both decide which
+  // concepts are appropriate at all. Stored as plain strings rather than enums
+  // so adding an age group is a code change, not a migration.
+  coachAgeGroup    String?   @map("coach_age_group") @db.VarChar(16)
+  coachFormat      String?   @map("coach_format") @db.VarChar(16)
+  coachLevel       String?   @map("coach_level") @db.VarChar(24)
   stripeCustomerId String?   @unique @map("stripe_customer_id") @db.VarChar(191)
   emailVerifiedAt  DateTime? @map("email_verified_at")
   createdAt        DateTime  @default(now()) @map("created_at")
@@ -54,10 +61,15 @@ model AiUsage {
   userId    Int      @map("user_id")
   kind      AiKind
   createdAt DateTime @default(now()) @map("created_at")
+  /// Fingerprint of the prompt (not the prompt) — powers the free retry.
+  promptHash String? @map("prompt_hash") @db.VarChar(16)
+  /// True when this generation was a free retry: recorded, but not charged.
+  freeRetry Boolean @default(false) @map("free_retry")
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, createdAt])
+  @@index([userId, promptHash, createdAt])
   @@map("ai_usage")
 }
 

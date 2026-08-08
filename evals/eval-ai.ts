@@ -22,7 +22,7 @@ import {
   sanitiseFrames,
   type CleanItem,
 } from '../src/modules/ai/ai.schema.js'
-import { validateLayout, validateAnimation, validateReelCopy } from '../src/modules/ai/ai.validate.js'
+import { validateLayout, validateAnimation, validateReelCopy, validateBrief } from '../src/modules/ai/ai.validate.js'
 
 type Kind = 'layout' | 'animation' | 'reel'
 interface Case {
@@ -136,6 +136,29 @@ const CASES: Case[] = [
     } },
   { kind: 'animation', name: 'overlap timing', prompt: 'right-back overlaps the winger, receives, and crosses — 3 phases',
     assert: (o: { frames: unknown[] }) => (o.frames.length >= 3 ? [] : ['a 3-phase overlap needs 3 frames']) },
+  // ---- Brief: does the model plan before drawing, and keep its promise? -----
+  { kind: 'animation', name: 'brief present and consistent', prompt: 'counter attack down the left after winning the ball',
+    assert: (o: { brief?: { attackers: number; defenders: number; phases: string[]; area: string }; objects: CleanItem[] }) => {
+      const issues: string[] = []
+      if (!o.brief) return ['no brief produced — the model drew without planning']
+      if (!o.brief.area) issues.push('brief has no area')
+      const promised = (o.brief.attackers ?? 0) + (o.brief.defenders ?? 0)
+      const placed = players(o.objects).length
+      if (promised > 0 && Math.abs(placed - promised) > 1) issues.push(`brief promised ${promised} players, placed ${placed}`)
+      if ((o.brief.phases ?? []).length < 2) issues.push('brief lists fewer than 2 phases for a counter attack')
+      return issues
+    } },
+  { kind: 'layout', name: 'rondo stays in a small grid', prompt: 'rondo 4v2 with one-touch passing',
+    assert: (o: { brief?: { area: string }; objects: CleanItem[] }) => {
+      const issues: string[] = []
+      if (o.brief && !/grid/.test(o.brief.area)) issues.push(`rondo placed in area "${o.brief.area}" instead of a grid`)
+      const n = players(o.objects).length
+      if (n < 6 || n > 7) issues.push(`a 4v2 rondo needs 6 players, got ${n}`)
+      const xs = o.objects.map((x) => x.x)
+      const spread = Math.max(...xs) - Math.min(...xs)
+      if (spread > 800) issues.push(`rondo sprawls ${Math.round(spread)}px wide — it should be a tight grid`)
+      return issues
+    } },
   // ---- Reel copy -----------------------------------------------------------
   { kind: 'reel', name: 'reel: high press', prompt: JSON.stringify({ boardTitle: 'High press buildup', notes: 'trap the fullback, win it in 6 seconds', objects: 22, frames: 3 }) },
   { kind: 'reel', name: 'reel: rondo', prompt: JSON.stringify({ boardTitle: 'Rondo 4v2 intensity', notes: 'one-touch under pressure', objects: 8, frames: 2 }) },
@@ -156,7 +179,8 @@ async function runCase(c: Case): Promise<{ pass: boolean; detail: string }> {
       const objects = sanitiseObjects(parsed.data.objects)
       const issues = [
         ...validateLayout(objects, c.prompt),
-        ...(c.assert?.({ objects, summary: parsed.data.summary } as never) ?? []),
+        ...validateBrief(parsed.data.brief, objects, []),
+        ...(c.assert?.({ objects, summary: parsed.data.summary, brief: parsed.data.brief } as never) ?? []),
       ]
       return { pass: issues.length === 0, detail: issues.join('; ') || 'ok' }
     }
@@ -168,7 +192,8 @@ async function runCase(c: Case): Promise<{ pass: boolean; detail: string }> {
       const frames = sanitiseFrames(parsed.data.frames, objects)
       const issues = [
         ...validateAnimation(objects, frames, c.prompt),
-        ...(c.assert?.({ objects, frames, summary: parsed.data.summary } as never) ?? []),
+        ...validateBrief(parsed.data.brief, objects, frames),
+        ...(c.assert?.({ objects, frames, summary: parsed.data.summary, brief: parsed.data.brief } as never) ?? []),
       ]
       return { pass: issues.length === 0, detail: issues.join('; ') || 'ok' }
     }

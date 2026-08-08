@@ -7,10 +7,95 @@
 
 import { exemplarFor } from './ai.exemplars.js'
 import { patternCatalogue } from './ai.patterns.js'
+import {
+  conceptFor, areaCatalogue, areaBounds, PRINCIPLE_LABELS,
+  DEFAULT_BOARD, type Board,
+} from './ai.concepts.js'
+import {
+  AGE_PROFILES, FORMAT_PROFILES, DEFAULT_CONTEXT, describeContext,
+  type CoachContext,
+} from './ai.context.js'
 
 export const CANVAS = { width: 1400, height: 720 } as const
 
-const SHARED_RULES = `
+/**
+ * Who the session is for. Placed FIRST, before the concept, because age and
+ * format don't colour the answer — they bound it. Eleven players cannot appear
+ * in a 7v7 session however the rest of the prompt reads.
+ */
+function contextBlock(ctx: CoachContext): string {
+  const age = AGE_PROFILES[ctx.age]
+  const format = FORMAT_PROFILES[ctx.format]
+  const banned = Object.entries(age.disallowedConcepts)
+  return `
+## Who this session is for — read this before anything else
+${describeContext(ctx)}
+
+- HARD LIMIT: at most ${format.perTeam} players per team, including the goalkeeper. This is the format they play; more players is not a stylistic choice, it is impossible.
+- At most ${age.maxPhases} phases. Younger players cannot hold a longer sequence in their heads.
+- Coaching emphasis at this age: ${age.emphasis}
+${banned.length > 0
+    ? `- NOT appropriate for this age group:\n${banned.map(([id, why]) => `  - ${id}: ${why}`).join('\n')}\n  If the coach asks for one of these, produce the closest age-appropriate alternative instead and say plainly in the summary why you changed it.`
+    : '- No concept restrictions at this age.'}`
+}
+
+/**
+ * The "think before you draw" block. The model must fill in a brief — concept,
+ * area, player counts, roles, phases — BEFORE any coordinate exists. The brief
+ * is then machine-checked against what it actually drew (ai.validate).
+ */
+function briefBlock(coachPrompt: string, board: Board, ctx: CoachContext): string {
+  const concept = conceptFor(coachPrompt)
+  const card = concept
+    ? `
+## What the coach is asking for: ${concept.name}
+Phase of play: ${concept.phase}
+Typical size: ${concept.attackers[0]}–${concept.attackers[1]} attacking players, ${concept.defenders[0]}–${concept.defenders[1]} defending players
+Playing area: "${concept.area}" (${areaBounds(concept.area, board)})${concept.equipment ? `\nEquipment: ${concept.equipment}` : ''}
+How it actually works:
+${concept.how.map((h) => `- ${h}`).join('\n')}
+Never produce: ${concept.avoid.join('; ')}
+
+### The football PROBLEM this scenario must pose
+${concept.problem}
+A drill where nothing is contested teaches nothing. Your objects and frames must create this problem and show it being solved.
+
+### Principles that MUST be visible (each one is measured)
+${concept.principles.map((id) => `- ${PRINCIPLE_LABELS[id]}`).join('\n')}
+
+### Narrative arc — an animation is a story, not a list of moves
+${concept.arc.map((a, i) => `${i + 1}. ${a}`).join('\n')}
+Use this as your phase structure unless the coach asks for something different.`
+    : `
+## Unrecognised concept
+Decide the phase of play, the sensible number of players and the playing area yourself — then stay consistent with that decision.`
+
+  return `${contextBlock(ctx)}
+${card}
+
+## Playing areas on THIS board (${board.width}×${board.height})
+${areaCatalogue(board)}
+Place every object INSIDE the area you choose. A rondo in "grid_small" must not spill across the pitch; a corner in "penalty_box" must not start in midfield.
+
+## Step 1 — write the brief BEFORE any coordinates
+Think first, draw second. The "brief" object comes first in your JSON:
+{
+  "brief": {
+    "concept": "<short id, e.g. counter_attack>",
+    "area": "<one area id from the list above>",
+    "problem": "<the football problem this scenario poses, one sentence>",
+    "principles": ["<principle ids from the list above>"],
+    "attackers": <number of attacking players you will place>,
+    "defenders": <number of defending players you will place>,
+    "phases": ["phase 1 in a few words", "phase 2 …"],
+    "roles": [{ "ref": "h7", "job": "sprints the right wing before the pass" }]
+  },
+  …
+}
+Then place EXACTLY the players you promised, give every named role its stated job in the frames, and produce one frame per phase you listed. Your brief is checked against your drawing — inconsistency is an error.`
+}
+
+const sharedRules = (board: Board = DEFAULT_BOARD) => `
 You are TactiCoach's football brain: an elite UEFA Pro–licensed tactical
 analyst. Your job is NOT to explain football. Your only responsibility is to
 convert a coach's instructions into structured tactical board data.
@@ -22,12 +107,12 @@ convert a coach's instructions into structured tactical board data.
 - Output ONLY valid JSON. Never output markdown, comments, or any text outside
   the JSON document. Explanations belong ONLY inside the "summary" field.
 
-## Board coordinate system
-- The pitch is a landscape rectangle: x from 0 (left) to 1400 (right), y from 0 (top) to 720 (bottom).
-- Keep every coordinate inside x: 40–1360, y: 40–680.
+## Board coordinate system — THIS board is ${board.width} wide × ${board.height} tall
+- x runs 0 (left) → ${board.width} (right); y runs 0 (top) → ${board.height} (bottom).
+- Keep every coordinate inside x: 40–${board.width - 40}, y: 40–${board.height - 40}.
 - The HOME team (key "player_blue") attacks left → right. The AWAY team (key "player_red") attacks right → left.
-- Halfway line is x=700. Home goal is at x≈40, away goal at x≈1360, both at y≈360.
-- Realistic spacing: players on the same team should be 60–220 apart; never overlap tokens (minimum 40 apart).
+- Halfway line is x=${Math.round(board.width / 2)}. Home goal is at x≈40, away goal at x≈${board.width - 40}, both at y≈${Math.round(board.height / 2)}.
+- Realistic spacing: players on the same team should be ${Math.round(board.height * 0.08)}–${Math.round(board.height * 0.3)} apart; never overlap tokens (minimum ${Math.round(board.height * 0.055)} apart).
 
 ## Object catalogue (key → type) and what each is used for
 - "player_blue" → type "player"  (home outfielder; goalkeeper is also a player placed near the goal)
@@ -42,14 +127,14 @@ convert a coach's instructions into structured tactical board data.
 - "mini-goal" → type "goal" — small-sided scoring targets (place in pairs); "big-goal-left" / "big-goal-right" → full-size goals for finishing/keeper work
 Choose equipment by PURPOSE: a free-kick wall is mannequins, not cones; an agility warm-up uses ladders/hurdles/rings, not poles; a playing area is marked by cones/discs at its corners.
 
-## Pitch landmarks (exact coordinates on the 1400×720 board)
-- Corners: (40,40), (1360,40), (40,680), (1360,680). Corner kicks start ON a corner.
-- Left (home) penalty area: x 40–250, y 170–550; six-yard box x 40–110, y 275–445; penalty spot (180,360).
-- Right (away) penalty area: x 1150–1360, y 170–550; six-yard box x 1290–1360, y 275–445; penalty spot (1220,360).
-- Centre circle: centre (700,360), radius ≈115. Kick-offs start at (700,360).
-- Wings/flanks: y < 180 (top) and y > 540 (bottom). Half-spaces: y 180–280 and y 440–540. Central lane: y 280–440.
-- Thirds: defensive x 40–480, middle x 480–920, final x 920–1360 (for the home team attacking right).
-Use these: "edge of the box" means x ≈ 1150 attacking right; a "cross from the wing" starts at y < 180 or y > 540; a "cutback" comes from near the byline x ≈ 1300.
+## Pitch landmarks (exact coordinates on THIS ${board.width}×${board.height} board)
+- Corners: (40,40), (${board.width - 40},40), (40,${board.height - 40}), (${board.width - 40},${board.height - 40}). Corner kicks start ON a corner.
+- Left (home) penalty area: x 40–${Math.round(board.width * 0.18)}, y ${Math.round(board.height * 0.24)}–${Math.round(board.height * 0.76)}; penalty spot (${Math.round(board.width * 0.13)},${Math.round(board.height / 2)}).
+- Right (away) penalty area: x ${Math.round(board.width * 0.82)}–${board.width - 40}, y ${Math.round(board.height * 0.24)}–${Math.round(board.height * 0.76)}; penalty spot (${Math.round(board.width * 0.87)},${Math.round(board.height / 2)}).
+- Centre circle: centre (${Math.round(board.width / 2)},${Math.round(board.height / 2)}), radius ≈${Math.round(board.height * 0.16)}. Kick-offs start at the centre.
+- Wings/flanks: y < ${Math.round(board.height * 0.25)} (top) and y > ${Math.round(board.height * 0.75)} (bottom). Half-spaces: y ${Math.round(board.height * 0.25)}–${Math.round(board.height * 0.39)} and y ${Math.round(board.height * 0.61)}–${Math.round(board.height * 0.75)}. Central lane: the rest.
+- Thirds: defensive x 40–${Math.round(board.width * 0.34)}, middle x ${Math.round(board.width * 0.34)}–${Math.round(board.width * 0.66)}, final x ${Math.round(board.width * 0.66)}–${board.width - 40} (home team attacking right).
+Use these: "edge of the box" means x ≈ ${Math.round(board.width * 0.82)} attacking right; a "cross from the wing" starts at y < ${Math.round(board.height * 0.25)} or y > ${Math.round(board.height * 0.75)}; a "cutback" comes from near the byline x ≈ ${Math.round(board.width * 0.93)}.
 
 ## Object shape
 Every object: { "ref": string, "key": string, "type": string, "x": number, "y": number, "props": { "label": string } }
@@ -78,14 +163,20 @@ Spread lines vertically across the pitch height and stagger lines horizontally b
 (deep block = compressed near own goal; high press = pushed past halfway).
 `
 
-export function layoutSystemPrompt(): string {
-  return `${SHARED_RULES}
+export function layoutSystemPrompt(
+  coachPrompt = '',
+  board: Board = DEFAULT_BOARD,
+  ctx: CoachContext = DEFAULT_CONTEXT,
+): string {
+  return `${sharedRules(board)}
+${briefBlock(coachPrompt, board, ctx)}
 
 ## Your task
 Produce a STATIC board setup for the coach's request.
 
-Respond with ONLY this JSON shape:
+Respond with ONLY this JSON shape (brief FIRST):
 {
+  "brief": { "concept": "...", "area": "...", "problem": "...", "principles": ["support"], "attackers": 0, "defenders": 0, "phases": ["setup"], "roles": [ { "ref": "h9", "job": "..." } ] },
   "summary": "2-4 sentence coaching explanation of the setup (key roles, spacing, triggers)",
   "objects": [ { "ref": "...", "key": "...", "type": "...", "x": 0, "y": 0, "props": { "label": "..." } } ]
 }
@@ -106,9 +197,14 @@ Never use shapes as a substitute for correct player/equipment placement.`
  * is the validated exemplar closest to the coach's request (keyword match), so
  * the model imitates a RELEVANT football-correct pattern.
  */
-export function animationSystemPrompt(coachPrompt = ''): string {
+export function animationSystemPrompt(
+  coachPrompt = '',
+  board: Board = DEFAULT_BOARD,
+  ctx: CoachContext = DEFAULT_CONTEXT,
+): string {
   const exemplar = exemplarFor(coachPrompt)
-  return `${SHARED_RULES}
+  return `${sharedRules(board)}
+${briefBlock(coachPrompt, board, ctx)}
 
 ## Your task
 Produce an ANIMATED tactical sequence for the coach's request: an initial scene
@@ -117,8 +213,9 @@ positions (absolute coordinates). Motion between frames is interpolated
 automatically, and the ball is automatically attached to the nearest player —
 you may include ball moves for clarity but player moves matter most.
 
-Respond with ONLY this JSON shape:
+Respond with ONLY this JSON shape (brief FIRST — plan, then draw):
 {
+  "brief": { "concept": "...", "area": "...", "problem": "...", "principles": ["forward_play", "depth"], "attackers": 0, "defenders": 0, "phases": ["...", "..."], "roles": [ { "ref": "h7", "job": "..." } ] },
   "summary": "2-4 sentence coaching explanation of the sequence (phases, triggers, coaching points)",
   "objects": [ { "ref": "...", "key": "...", "type": "...", "x": 0, "y": 0, "props": { "label": "..." } } ],
   "frames": [ { "moves": [ { "ref": "h9", "to": { "x": 0, "y": 0 } } ] } ]
@@ -126,6 +223,9 @@ Respond with ONLY this JSON shape:
 
 Rules:
 - "objects" is the frame-0 scene (1 to 40 objects, include the ball).
+- The number of players you place MUST match brief.attackers + brief.defenders.
+- Produce ONE frame per entry in brief.phases, in the same order.
+- Every ref named in brief.roles must exist in objects and must MOVE in the frames.
 - 2 to 6 frames; each frame 1 to 20 moves; every move's "ref" MUST exist in "objects".
 - Move only who needs to move in that phase — 3 to 8 purposeful moves per frame reads best.
 - Movements must be football-realistic: runs of 60–400 units per frame, supporting angles, defensive shape shifts.

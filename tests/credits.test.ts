@@ -61,10 +61,10 @@ describe('GET /api/canvas/ai-credits', () => {
       headers: authHeaders(await accessToken()),
     })
     expect(res.statusCode).toBe(200)
-    expect(res.json()).toMatchObject({ allowance: 5, used: 2, bonus: 0, remaining: 3, monthly: true })
+    expect(res.json()).toMatchObject({ allowance: 30, used: 2, bonus: 0, remaining: 28, monthly: true })
   })
 
-  it('trial gets a one-off total of 3', async () => {
+  it('trial gets a one-off total grant', async () => {
     const app = await getApp()
     baseMocks({ status: 'trial', used: 1 })
     const res = await app.inject({
@@ -72,14 +72,14 @@ describe('GET /api/canvas/ai-credits', () => {
       url: '/api/canvas/ai-credits',
       headers: authHeaders(await accessToken()),
     })
-    expect(res.json()).toMatchObject({ allowance: 3, remaining: 2, monthly: false })
+    expect(res.json()).toMatchObject({ allowance: 10, remaining: 9, monthly: false })
   })
 })
 
 describe('credit gate on generation', () => {
   it('blocks with 402 when the trial credits are spent — Gemini never called', async () => {
     const app = await getApp()
-    baseMocks({ status: 'trial', used: 3 })
+    baseMocks({ status: 'trial', used: 10 }) // whole trial grant spent
     const res = await app.inject({
       method: 'POST',
       url: '/api/canvas/ai-layout',
@@ -93,7 +93,7 @@ describe('credit gate on generation', () => {
 
   it('falls back to bonus credits when the month is exhausted', async () => {
     const app = await getApp()
-    baseMocks({ used: 5, bonus: 2 }) // monthly allowance gone, top-ups remain
+    baseMocks({ used: 30, bonus: 2 }) // monthly allowance gone, top-ups remain
     gemini.generate.mockResolvedValue(validReelCopy)
     const res = await app.inject({
       method: 'POST',
@@ -125,7 +125,7 @@ describe('POST /api/canvas/reel-copy', () => {
     const body = res.json()
     expect(body.copy.title).toBe('High Press Buildup Phase')
     expect(body.copy.stats).toHaveLength(3)
-    expect(body.creditsRemaining).toBe(3) // 5 - 1 used - this spend
+    expect(body.creditsRemaining).toBe(28) // 30 - 1 used - this spend
   })
 
   it('502s (without spending) when the model returns junk', async () => {
@@ -140,5 +140,72 @@ describe('POST /api/canvas/reel-copy', () => {
     })
     expect(res.statusCode).toBe(502)
     expect(dbMock.aiUsage.create).not.toHaveBeenCalled()
+  })
+})
+
+describe('the owner account has no limit', () => {
+  /** The company owner: no subscription, no plan, no allowance to run down. */
+  function ownerMocks() {
+    dbMock.user.findUnique.mockResolvedValue({ role: 'owner' } as never)
+    dbMock.aiUsage.create.mockResolvedValue({} as never)
+    dbMock.user.update.mockResolvedValue({} as never)
+    dbMock.$transaction.mockResolvedValue([] as never)
+  }
+
+  it('reports unlimited rather than a large number', async () => {
+    const app = await getApp()
+    ownerMocks()
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/canvas/ai-credits',
+      headers: authHeaders(await accessToken()),
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json().unlimited).toBe(true)
+    // Infinity has no JSON form, so an unlimited balance crosses as null.
+    expect(res.json().remaining).toBeNull()
+  })
+
+  it('never counts usage — the query that used to run cannot fail', async () => {
+    // This is also why the owner account kept working through a stale Prisma
+    // client: with no count, there is no `freeRetry` column to be missing.
+    const app = await getApp()
+    ownerMocks()
+    await app.inject({
+      method: 'GET',
+      url: '/api/canvas/ai-credits',
+      headers: authHeaders(await accessToken()),
+    })
+    expect(dbMock.aiUsage.count).not.toHaveBeenCalled()
+  })
+
+  it('is never gated, and never deducts a bonus credit', async () => {
+    const app = await getApp()
+    ownerMocks()
+    gemini.generate.mockResolvedValue(validReelCopy)
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/canvas/reel-copy',
+      headers: authHeaders(await accessToken()),
+      payload: { boardTitle: 'High Press Buildup', objectCount: 22, frameCount: 4 },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json().creditsRemaining).toBeNull()
+    expect(dbMock.user.update).not.toHaveBeenCalled()
+  })
+
+  it('still records the generation, so usage telemetry stays honest', async () => {
+    const app = await getApp()
+    ownerMocks()
+    gemini.generate.mockResolvedValue(validReelCopy)
+    await app.inject({
+      method: 'POST',
+      url: '/api/canvas/reel-copy',
+      headers: authHeaders(await accessToken()),
+      payload: { boardTitle: 'x', objectCount: 1, frameCount: 1 },
+    })
+    expect(dbMock.aiUsage.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ kind: 'reel' }) }),
+    )
   })
 })

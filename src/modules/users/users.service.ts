@@ -16,6 +16,9 @@ const USER_SELECT = {
   youtubeUrl: true,
   twitterUrl: true,
   facebookUrl: true,
+  coachAgeGroup: true,
+  coachFormat: true,
+  coachLevel: true,
   emailVerifiedAt: true,
   createdAt: true,
   subscription: {
@@ -45,6 +48,9 @@ export async function updateUserProfile(userId: number, input: UpdateProfileInpu
       ...(input.youtubeUrl !== undefined && { youtubeUrl: input.youtubeUrl }),
       ...(input.twitterUrl !== undefined && { twitterUrl: input.twitterUrl }),
       ...(input.facebookUrl !== undefined && { facebookUrl: input.facebookUrl }),
+      ...(input.coachAgeGroup !== undefined && { coachAgeGroup: input.coachAgeGroup }),
+      ...(input.coachFormat !== undefined && { coachFormat: input.coachFormat }),
+      ...(input.coachLevel !== undefined && { coachLevel: input.coachLevel }),
     },
     select: USER_SELECT,
   })

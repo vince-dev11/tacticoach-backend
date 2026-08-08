@@ -11,7 +11,14 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import { authGuard } from '../../middleware/auth-guard.js'
 import { requireEditorAccess } from '../../middleware/entitlement-guard.js'
 import { geminiConfigured, generateTacticsJson, GeminiError } from '../../config/gemini.js'
-import { getCreditState, recordCreditSpend } from '../../lib/credits.js'
+import {
+  getCreditState,
+  recordCreditSpend,
+  isFreeRetry,
+  recordFreeRetry,
+  creditsForWire,
+  remainingForWire,
+} from '../../lib/credits.js'
 import { layoutSystemPrompt, animationSystemPrompt, planSystemPrompt, reelCopySystemPrompt, userPrompt } from './ai.prompts.js'
 import { compilePattern } from './ai.dsl.js'
 import { patternById } from './ai.patterns.js'
@@ -29,7 +36,24 @@ import {
   PlanSchema,
   planResponseSchema,
 } from './ai.schema.js'
-import { validateLayout, validateAnimation, validateReelCopy } from './ai.validate.js'
+import {
+  resolveContext, describeContext, type CoachContext, type LooseContext,
+} from './ai.context.js'
+
+import {
+  validateLayout, validateAnimation, validateReelCopy, validateBrief,
+  validateSquadSize, validateAgeAppropriate,
+  validatePrinciples, tacticalScore, principleIssues,
+} from './ai.validate.js'
+import { conceptFor, type PrincipleId } from './ai.concepts.js'
+import { db } from '../../config/database.js'
+
+/** Shape of the coach-context columns, until `prisma generate` knows them. */
+interface LooseContextRow {
+  coachAgeGroup?: string | null
+  coachFormat?: string | null
+  coachLevel?: string | null
+}
 
 const RATE_LIMIT = {
   max: 20,
@@ -39,20 +63,30 @@ const RATE_LIMIT = {
     String((req.user as { sub?: number } | undefined)?.sub ?? req.ip),
 } as const
 
-/** Call Gemini, retrying once — transport errors and refusals are transient. */
+/**
+ * Call Gemini, retrying transient failures WITH BACKOFF. Free-tier capacity
+ * 503s ("high demand") and 429s clear within seconds — an immediate retry
+ * just hits the same overloaded moment, so we wait before each attempt.
+ */
+const RETRY_DELAYS_MS = process.env.NODE_ENV === 'test' ? [5, 10] : [1500, 4000]
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
 async function generateWithRetry(
   system: string,
   user: string,
   options?: Parameters<typeof generateTacticsJson>[2],
 ): Promise<unknown> {
-  try {
-    return await generateTacticsJson(system, user, options)
-  } catch (err) {
-    if (err instanceof GeminiError && err.retryable) {
-      return generateTacticsJson(system, user, options)
+  let lastErr: unknown
+  for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt++) {
+    if (attempt > 0) await sleep(RETRY_DELAYS_MS[attempt - 1])
+    try {
+      return await generateTacticsJson(system, user, options)
+    } catch (err) {
+      lastErr = err
+      if (!(err instanceof GeminiError) || !err.retryable) throw err
     }
-    throw err
   }
+  throw lastErr
 }
 
 /**
@@ -102,6 +136,76 @@ export async function aiRoutes(app: FastifyInstance) {
       message: 'AI generation is not configured on this server',
     })
 
+  /**
+   * Bill a generation that has already succeeded — without ever letting the
+   * billing destroy it.
+   *
+   * The gate above runs BEFORE the model is called and fails closed: if we can't
+   * read someone's balance we must not spend money on their behalf. This runs
+   * AFTER, and fails open, because by now the coach has waited ten seconds and
+   * the animation exists. Throwing it away over a bookkeeping error would be the
+   * worst of both worlds — no result, and no charge either. We log loudly and
+   * hand over the work.
+   */
+  const settle = async (
+    userId: number,
+    kind: 'layout' | 'animation',
+    prompt: string,
+  ): Promise<{ free: boolean; creditsRemaining: number | null }> => {
+    try {
+      const state = await getCreditState(userId)
+      // An account with no limit is never charged, so "was this retry free?" is
+      // a question with no meaning — and no reason to go looking for an answer.
+      if (!state.unlimited && (await isFreeRetry(userId, kind, prompt))) {
+        await recordFreeRetry(userId, kind, prompt)
+        return { free: true, creditsRemaining: remainingForWire((await getCreditState(userId)).remaining) }
+      }
+      return {
+        free: false,
+        creditsRemaining: remainingForWire(await recordCreditSpend(userId, kind, prompt)),
+      }
+    } catch (err) {
+      app.log.error({ err, userId, kind }, 'credit accounting failed after a successful generation')
+      // null = "we don't know your balance right now", which the editor already
+      // renders as no number rather than as zero.
+      return { free: false, creditsRemaining: null }
+    }
+  }
+
+  /**
+   * Who this session is for: the per-request override if the coach set one in
+   * the AI panel, otherwise their saved profile, otherwise senior 11-a-side.
+   *
+   * A failure to read the profile must not cost the coach a generation — this
+   * is context that improves the answer, not permission to produce one — so a
+   * database hiccup degrades to the default rather than throwing.
+   */
+  const coachContext = async (
+    userId: number,
+    override: LooseContext | undefined,
+    log: FastifyRequest['log'],
+  ): Promise<CoachContext> => {
+    try {
+      // The generated Prisma client only learns these columns after the
+      // migration + `prisma generate` run on a machine with network access, so
+      // the narrow cast keeps this compiling before and after that step. The
+      // catch below means a client that predates them degrades to defaults
+      // rather than failing the generation.
+      const profile = (await db.user.findUnique({
+        where: { id: userId },
+        select: { coachAgeGroup: true, coachFormat: true, coachLevel: true } as never,
+      })) as LooseContextRow | null
+      return resolveContext(override, {
+        age: profile?.coachAgeGroup,
+        format: profile?.coachFormat,
+        level: profile?.coachLevel,
+      })
+    } catch (err) {
+      log.warn({ err, userId }, 'could not read coach profile — using defaults')
+      return resolveContext(override, undefined)
+    }
+  }
+
   /** Gate on AI credits. Returns the state when spendable, or replies 402. */
   const requireCredit = async (request: FastifyRequest, reply: FastifyReply) => {
     const userId = (request.user as { sub: number }).sub
@@ -113,7 +217,7 @@ export async function aiRoutes(app: FastifyInstance) {
         message: state.monthly
           ? 'You have used all your AI credits for this month. Buy a top-up pack or upgrade your plan.'
           : 'Your trial AI credits are used up. Choose a plan to keep generating.',
-        credits: state,
+        credits: creditsForWire(state),
       })
       return null
     }
@@ -124,20 +228,29 @@ export async function aiRoutes(app: FastifyInstance) {
   app.post('/ai-layout', { config: { rateLimit: RATE_LIMIT } }, async (request, reply) => {
     if (!geminiConfigured()) return guardConfigured(reply)
     if ((await requireCredit(request, reply)) === null) return
-    const { prompt } = RequestSchema.parse(request.body)
+    const { prompt, board, context } = RequestSchema.parse(request.body)
+    const ctx = await coachContext((request.user as { sub: number }).sub, context, request.log)
 
     let result: { summary: string; layout: ReturnType<typeof sanitiseObjects> } | null
     try {
       result = await withCorrection(
-        layoutSystemPrompt(),
+        layoutSystemPrompt(prompt, board, ctx),
         userPrompt(prompt),
         layoutResponseSchema,
         (raw) => {
           const parsed = LayoutOutputSchema.safeParse(raw)
           if (!parsed.success) return null
-          const layout = sanitiseObjects(parsed.data.objects)
+          const layout = sanitiseObjects(parsed.data.objects, board)
           if (layout.length === 0) return null
-          return { value: { summary: parsed.data.summary, layout }, issues: validateLayout(layout, prompt) }
+          return {
+            value: { summary: parsed.data.summary, layout },
+            issues: [
+              ...validateLayout(layout, prompt),
+              ...validateSquadSize(layout, ctx),
+              ...validateAgeAppropriate(parsed.data.brief?.concept, ctx),
+              ...validateBrief(parsed.data.brief, layout, [], board),
+            ],
+          }
         },
         request.log,
       )
@@ -149,11 +262,13 @@ export async function aiRoutes(app: FastifyInstance) {
       return reply.status(502).send({ statusCode: 502, error: 'Bad Gateway', message: 'AI produced an unusable layout. Please try again.' })
     }
 
-    const creditsRemaining = await recordCreditSpend((request.user as { sub: number }).sub, 'layout')
+    const uid = (request.user as { sub: number }).sub
+    const { free, creditsRemaining } = await settle(uid, 'layout', prompt)
     return reply.send({
       success: true,
       prompt,
       source: 'gemini',
+      freeRetry: free,
       summary: result.summary,
       layout: result.layout,
       creditsRemaining,
@@ -164,7 +279,8 @@ export async function aiRoutes(app: FastifyInstance) {
   app.post('/ai-animation', { config: { rateLimit: RATE_LIMIT } }, async (request, reply) => {
     if (!geminiConfigured()) return guardConfigured(reply)
     if ((await requireCredit(request, reply)) === null) return
-    const { prompt } = RequestSchema.parse(request.body)
+    const { prompt, board, context } = RequestSchema.parse(request.body)
+    const ctx = await coachContext((request.user as { sub: number }).sub, context, request.log)
 
     interface AnimResult {
       summary: string
@@ -173,13 +289,24 @@ export async function aiRoutes(app: FastifyInstance) {
     }
     let result: AnimResult | null = null
     let source = 'gemini'
+    // Wall-clock for the whole generation. Latency is a quality signal in its
+    // own right: a coach who waits twelve seconds may regenerate for reasons
+    // that have nothing to do with the football, which would poison any
+    // preference data we later collect. It also tells us what the compiler path
+    // is actually buying us over the model path.
+    const startedAt = Date.now()
+
+    // Principles the concept must demonstrate. The brief may name its own; the
+    // concept card is the authority when the request matches a known concept.
+    const card = conceptFor(prompt)
+    const requiredPrinciples: PrincipleId[] = card?.principles ?? []
 
     // ---- Path 1: Football DSL. The model picks a PATTERN (symbolic plan);
     // a deterministic compiler owns all geometry — teleports, abandoned balls
     // and statue teams are impossible by construction. Any failure here falls
     // through silently to direct generation.
     try {
-      const rawPlan = await generateTacticsJson(planSystemPrompt(), userPrompt(prompt), {
+      const rawPlan = await generateWithRetry(planSystemPrompt(), userPrompt(prompt), {
         responseSchema: planResponseSchema,
         temperature: 0.2,
       })
@@ -190,8 +317,26 @@ export async function aiRoutes(app: FastifyInstance) {
         // Safety net behind the compiler — should always be clean (CI-enforced).
         const issues = validateAnimation(compiled.objects, compiled.frames, prompt)
         if (issues.length > 0) request.log.warn({ issues }, 'DSL compile issues (accepted)')
-        result = { summary: plan.summary, objects: compiled.objects, frames: compiled.frames }
-        source = 'dsl'
+        // The compiler's geometry is always right; its FOOTBALL can still be
+        // wrong for the audience. A high-press trap compiles perfectly and is
+        // the wrong session for an under-9 side, and no amount of correct
+        // spacing fixes that. Falling through hands the request to the
+        // generation path, which has been told the age and asked to produce
+        // the closest age-appropriate alternative — a better answer than
+        // either shipping it or refusing outright.
+        const unsuitable = [
+          ...validateSquadSize(compiled.objects, ctx),
+          ...validateAgeAppropriate(card?.id, ctx),
+        ]
+        if (unsuitable.length > 0) {
+          request.log.info(
+            { unsuitable, context: describeContext(ctx) },
+            'DSL pattern not suitable for this age or format — falling back',
+          )
+        } else {
+          result = { summary: plan.summary, objects: compiled.objects, frames: compiled.frames }
+          source = 'dsl'
+        }
       }
     } catch (err) {
       request.log.warn({ err }, 'DSL plan failed — falling back to direct generation')
@@ -202,18 +347,29 @@ export async function aiRoutes(app: FastifyInstance) {
     if (!result) {
       try {
         result = await withCorrection<AnimResult>(
-          animationSystemPrompt(prompt),
+          animationSystemPrompt(prompt, board, ctx),
           userPrompt(prompt),
           animationResponseSchema,
           (raw) => {
             const parsed = AnimationOutputSchema.safeParse(raw)
             if (!parsed.success) return null
-            const objects = sanitiseObjects(parsed.data.objects)
-            const frames = sanitiseFrames(parsed.data.frames, objects)
+            const objects = sanitiseObjects(parsed.data.objects, board)
+            const frames = sanitiseFrames(parsed.data.frames, objects, board)
             if (objects.length === 0 || frames.length === 0) return null
             return {
               value: { summary: parsed.data.summary, objects, frames },
-              issues: validateAnimation(objects, frames, prompt),
+              issues: [
+                ...validateAnimation(objects, frames, prompt),
+                // Format and age are HARD: a squad that cannot exist is not a
+                // low score, it is a picture of an impossible match.
+                ...validateSquadSize(objects, ctx),
+                ...validateAgeAppropriate(parsed.data.brief?.concept, ctx),
+                ...validateBrief(parsed.data.brief, objects, frames, board),
+                // Missing football principles are soft issues: they push the
+                // corrective retry toward better football without ever
+                // becoming an error the coach sees.
+                ...principleIssues(validatePrinciples(requiredPrinciples, objects, frames, board)),
+              ],
             }
           },
           request.log,
@@ -228,11 +384,41 @@ export async function aiRoutes(app: FastifyInstance) {
     }
     const { objects, frames } = result
 
-    const creditsRemaining = await recordCreditSpend((request.user as { sub: number }).sub, 'animation')
+    // Tactical quality score on the FINAL animation, whichever path produced
+    // it. Logged for measurement (and returned so the editor/PostHog can track
+    // it) — never a gate: a 60/100 animation still beats no animation.
+    const principleResults = validatePrinciples(requiredPrinciples, objects, frames, board)
+    const quality = tacticalScore(principleResults)
+    request.log.info(
+      {
+        source,
+        // `dsl` = the compiler owned the geometry; `gemini` = the model did.
+        // Aggregating this field IS the fallback rate — the number every
+        // argument about pattern coverage depends on, and which nobody has
+        // measured yet.
+        fallback: source !== 'dsl',
+        latencyMs: Date.now() - startedAt,
+        quality,
+        context: describeContext(ctx),
+        concept: card?.id ?? 'unknown',
+        missing: principleResults.filter((r) => !r.present).map((r) => r.id),
+      },
+      'animation tactical quality',
+    )
+
+    // Same idea, run again within the window → on us. A coach never pays twice
+    // for a result they did not want.
+    const uid = (request.user as { sub: number }).sub
+    const { free, creditsRemaining } = await settle(uid, 'animation', prompt)
     return reply.send({
       success: true,
       prompt,
       source,
+      quality,
+      freeRetry: free,
+      // Below this the animation missed principles the concept requires — the
+      // editor offers a free re-run rather than hoping the coach shrugs.
+      retryOffered: quality < 60,
       summary: result.summary,
       scene: { objects },
       frames,
@@ -242,7 +428,7 @@ export async function aiRoutes(app: FastifyInstance) {
 
   // GET /ai-credits — balance for the editor UI ("3 credits left" badges).
   app.get('/ai-credits', async (request, reply) => {
-    return reply.send(await getCreditState((request.user as { sub: number }).sub))
+    return reply.send(creditsForWire(await getCreditState((request.user as { sub: number }).sub)))
   })
 
   // POST /reel-copy — social-reel copywriting for a board (1 credit).
@@ -280,6 +466,6 @@ export async function aiRoutes(app: FastifyInstance) {
     }
 
     const creditsRemaining = await recordCreditSpend((request.user as { sub: number }).sub, 'reel')
-    return reply.send({ success: true, source: 'gemini', copy, creditsRemaining })
+    return reply.send({ success: true, source: 'gemini', copy, creditsRemaining: remainingForWire(creditsRemaining) })
   })
 }

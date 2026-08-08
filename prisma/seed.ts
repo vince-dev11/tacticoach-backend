@@ -14,11 +14,11 @@ async function main() {
     {
       name: 'Pro',
       slug: 'pro',
-      description: 'Full platform, no AI. Perfect for manual coaches.',
+      description: 'Full platform with a taste of AI. Perfect for hands-on coaches.',
       monthlyPrice: '2.99',
       annualPrice: '23.88', // £1.99/mo billed yearly
       currency: 'GBP',
-      features: ['All pitch types', 'Unlimited tactics', 'Animation timeline', 'HD video export', 'Cloud sync'],
+      features: ['All pitch types', 'Unlimited tactics', 'Animation timeline', 'HD video export', 'Cloud sync', '3 AI credits / month'],
       maxBoards: null,
       maxTeamMembers: 1,
       sortOrder: 1,
@@ -30,7 +30,7 @@ async function main() {
       monthlyPrice: '5.99',
       annualPrice: '47.88', // £3.99/mo billed yearly
       currency: 'GBP',
-      features: ['Everything in Pro', '5 AI credits / month', 'AI coaching notes', 'Drill suggestions', 'Auto-animation'],
+      features: ['Everything in Pro', '30 AI credits / month', 'AI coaching notes', 'Drill suggestions', 'Auto-animation'],
       maxBoards: null,
       maxTeamMembers: 1,
       sortOrder: 2,
@@ -42,7 +42,7 @@ async function main() {
       monthlyPrice: '24.99',
       annualPrice: '203.88', // £16.99/mo billed yearly
       currency: 'GBP',
-      features: ['Everything in Pro + AI', '40 AI credits / month', '10 coach seats', 'Shared tactic library', 'Priority support'],
+      features: ['Everything in Pro + AI', '200 AI credits / month', '10 coach seats', 'Shared tactic library', 'Priority support'],
       maxBoards: null,
       maxTeamMembers: 10,
       sortOrder: 3,
