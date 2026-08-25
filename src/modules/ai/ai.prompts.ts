@@ -12,7 +12,7 @@ import {
   DEFAULT_BOARD, type Board,
 } from './ai.concepts.js'
 import {
-  AGE_PROFILES, FORMAT_PROFILES, DEFAULT_CONTEXT, describeContext,
+  AGE_PROFILES, FORMAT_PROFILES, FORMATIONS_BY_FORMAT, DEFAULT_CONTEXT, describeContext,
   type CoachContext,
 } from './ai.context.js'
 
@@ -27,16 +27,22 @@ function contextBlock(ctx: CoachContext): string {
   const age = AGE_PROFILES[ctx.age]
   const format = FORMAT_PROFILES[ctx.format]
   const banned = Object.entries(age.disallowedConcepts)
+  const formations = FORMATIONS_BY_FORMAT[ctx.format]
   return `
 ## Who this session is for — read this before anything else
 ${describeContext(ctx)}
 
 - HARD LIMIT: at most ${format.perTeam} players per team, including the goalkeeper. This is the format they play; more players is not a stylistic choice, it is impossible.
+- Formations that exist in ${format.label}: ${formations.join(', ')}. NEVER describe or arrange an 11-a-side shape for a smaller format — a ${ctx.format} team has never lined up in a 4-3-3.${ctx.formation ? `\n- This team plays a ${ctx.formation}. When the request involves team shape, use it.` : ''}${ctx.squad ? `\n- The coach has ${ctx.squad} players available. Size drills so everyone works — ${ctx.squad} players in a ${ctx.format} format means groups, not spectators.` : ''}
 - At most ${age.maxPhases} phases. Younger players cannot hold a longer sequence in their heads.
 - Coaching emphasis at this age: ${age.emphasis}
 ${banned.length > 0
     ? `- NOT appropriate for this age group:\n${banned.map(([id, why]) => `  - ${id}: ${why}`).join('\n')}\n  If the coach asks for one of these, produce the closest age-appropriate alternative instead and say plainly in the summary why you changed it.`
-    : '- No concept restrictions at this age.'}`
+    : '- No concept restrictions at this age.'}${ctx.problem ? `
+
+## THE COACH'S SPECIFIC PROBLEM — the whole point of this session
+"${ctx.problem}"
+Design the scenario so THIS problem visibly occurs and is visibly solved. Set brief.problem to it. A generic drill on the same topic is a failure: if they lose the ball under pressure, the animation must show pressure arriving and the correct escape; if nobody moves after passing, the passer's follow-up run must be the centrepiece.` : ''}`
 }
 
 /**

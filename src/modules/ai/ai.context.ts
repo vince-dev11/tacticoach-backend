@@ -24,6 +24,35 @@ export interface CoachContext {
   age: AgeGroup
   format: PlayFormat
   level: CoachLevel
+  /** The team's usual shape, validated against the format ("2-3-1" at 7v7). */
+  formation?: string
+  /** Players the coach actually has tonight — 14 at 7v7 means two groups. */
+  squad?: number
+  /**
+   * The specific problem the coach wants fixed, in their words: "we lose the
+   * ball under pressure", "nobody moves after passing". The single highest-
+   * value piece of intake we collect — the brief already has a `problem` field
+   * and the validators already compare the drawing against it, so a coach who
+   * states the problem gets an animation aimed at THEIR problem, machine-checked.
+   */
+  problem?: string
+}
+
+/**
+ * The formations that actually exist in each format. A 7v7 team has never
+ * lined up in a 4-3-3 — telling the model which shapes are real in this format
+ * matters as much as the player cap. 11v11 lists what the DSL compiler can
+ * anchor; youth lists follow common FA/US Soccer teaching shapes.
+ */
+export const FORMATIONS_BY_FORMAT: Record<PlayFormat, string[]> = {
+  '5v5': ['1-2-1', '2-1-1', '1-1-2'],
+  '7v7': ['2-3-1', '3-2-1', '2-1-2-1', '3-3'],
+  '9v9': ['3-2-3', '3-3-2', '2-3-2-1', '3-4-1'],
+  '11v11': ['4-3-3', '4-4-2', '4-2-3-1', '3-5-2', '4-1-4-1', '3-4-3'],
+}
+
+export function isFormationForFormat(formation: unknown, format: PlayFormat): formation is string {
+  return typeof formation === 'string' && FORMATIONS_BY_FORMAT[format].includes(formation)
 }
 
 /** What the model may assume when a coach has told us nothing at all. */
@@ -173,6 +202,9 @@ export interface LooseContext {
   age?: string | null
   format?: string | null
   level?: string | null
+  formation?: string | null
+  squad?: number | string | null
+  problem?: string | null
 }
 
 /**
@@ -206,7 +238,25 @@ export function resolveContext(
     : isCoachLevel(profile?.level)
       ? profile.level
       : DEFAULT_CONTEXT.level
-  return { age, format: explicitFormat ?? AGE_PROFILES[age].format, level }
+  const format = explicitFormat ?? AGE_PROFILES[age].format
+
+  // Formation only survives if it exists in the RESOLVED format. A profile
+  // saved as "4-3-3" while covering a 7v7 session tonight must not leak an
+  // impossible shape into the prompt — silently dropping it is the right
+  // degradation, because no formation is better than a wrong one.
+  const requestedFormation = request?.formation ?? profile?.formation
+  const formation = isFormationForFormat(requestedFormation, format) ? requestedFormation : undefined
+
+  // Squad size: a sanity window, not a format check — 14 players at 7v7 is
+  // normal (two groups). Nonsense values degrade to "not stated".
+  const rawSquad = Number(request?.squad ?? profile?.squad)
+  const squad = Number.isFinite(rawSquad) && rawSquad >= 2 && rawSquad <= 40 ? Math.round(rawSquad) : undefined
+
+  // The problem is free text headed for a prompt: trim, cap, and drop empties.
+  const rawProblem = (request?.problem ?? '').trim()
+  const problem = rawProblem.length >= 3 ? rawProblem.slice(0, 160) : undefined
+
+  return { age, format, level, formation, squad, problem }
 }
 
 /** The most players per team this context permits. */

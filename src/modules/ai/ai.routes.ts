@@ -47,12 +47,30 @@ import {
 } from './ai.validate.js'
 import { conceptFor, type PrincipleId } from './ai.concepts.js'
 import { db } from '../../config/database.js'
+import { requireOwner } from '../../middleware/owner-guard.js'
+import {
+  CorrectionRequestSchema, correctionAggregates, isWorthKeeping,
+} from './ai.corrections.js'
+
+/**
+ * Loose handle for the ai_corrections model, until `prisma generate` runs on a
+ * machine with network access and the client learns it. Same convention as the
+ * freeRetry cast in credits.ts.
+ */
+interface PrismaWithCorrections {
+  aiCorrection: {
+    create(args: unknown): Promise<unknown>
+    groupBy(args: unknown): Promise<unknown>
+  }
+}
 
 /** Shape of the coach-context columns, until `prisma generate` knows them. */
 interface LooseContextRow {
   coachAgeGroup?: string | null
   coachFormat?: string | null
   coachLevel?: string | null
+  coachFormation?: string | null
+  coachSquadSize?: number | null
 }
 
 const RATE_LIMIT = {
@@ -193,12 +211,17 @@ export async function aiRoutes(app: FastifyInstance) {
       // rather than failing the generation.
       const profile = (await db.user.findUnique({
         where: { id: userId },
-        select: { coachAgeGroup: true, coachFormat: true, coachLevel: true } as never,
+        select: {
+          coachAgeGroup: true, coachFormat: true, coachLevel: true,
+          coachFormation: true, coachSquadSize: true,
+        } as never,
       })) as LooseContextRow | null
       return resolveContext(override, {
         age: profile?.coachAgeGroup,
         format: profile?.coachFormat,
         level: profile?.coachLevel,
+        formation: profile?.coachFormation,
+        squad: profile?.coachSquadSize,
       })
     } catch (err) {
       log.warn({ err, userId }, 'could not read coach profile — using defaults')
@@ -415,6 +438,10 @@ export async function aiRoutes(app: FastifyInstance) {
       prompt,
       source,
       quality,
+      // Which concept card the generation was grounded in — echoed back so a
+      // later coach correction can be attributed to the right concept.
+      concept: card?.id ?? 'unknown',
+      context: describeContext(ctx),
       freeRetry: free,
       // Below this the animation missed principles the concept requires — the
       // editor offers a free re-run rather than hoping the coach shrugs.
@@ -467,5 +494,70 @@ export async function aiRoutes(app: FastifyInstance) {
 
     const creditsRemaining = await recordCreditSpend((request.user as { sub: number }).sub, 'reel')
     return reply.send({ success: true, source: 'gemini', copy, creditsRemaining: remainingForWire(creditsRemaining) })
+  })
+
+  // POST /ai-correction — the coach edited an AI board and saved it.
+  //
+  // This is the most valuable quality signal we collect: a domain expert
+  // telling us exactly what was wrong, as a by-product of their own work. It
+  // must therefore never get in the way of that work — the route always
+  // returns 204 quickly, and a failure to record is logged, not surfaced.
+  // Fire-and-forget from the editor's save path.
+  app.post('/ai-correction', async (request, reply) => {
+    try {
+      const input = CorrectionRequestSchema.parse(request.body)
+      if (isWorthKeeping(input.diff)) {
+        await (db as unknown as PrismaWithCorrections).aiCorrection.create({
+          data: {
+            userId: (request.user as { sub: number }).sub,
+            source: input.source,
+            concept: input.concept,
+            quality: input.quality,
+            promptHash: input.promptHash ?? null,
+            context: input.context ?? null,
+            diff: input.diff,
+            ...correctionAggregates(input.diff),
+          },
+        })
+      }
+    } catch (err) {
+      request.log.warn({ err }, 'could not record AI correction')
+    }
+    return reply.status(204).send()
+  })
+
+  // GET /ai-corrections/summary — "what do coaches keep fixing?"
+  //
+  // The consumer that stops the corrections table being a data lake. Grouped
+  // by concept and source over the last N days: which concepts get edited
+  // most, how heavily, and on which generation path. This list IS the pattern
+  // build queue — a concept coaches keep fixing outranks any guessed roadmap.
+  app.get('/ai-corrections/summary', { preHandler: requireOwner }, async (request, reply) => {
+    const days = Math.min(365, Math.max(1, Number((request.query as { days?: string }).days) || 30))
+    const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000)
+    const rows = (await (db as unknown as PrismaWithCorrections).aiCorrection.groupBy({
+      by: ['concept', 'source'],
+      where: { createdAt: { gte: since } },
+      _count: { _all: true },
+      _avg: { movedCount: true, meanShift: true, quality: true },
+      orderBy: { _count: { id: 'desc' } },
+    } as never)) as Array<{
+      concept: string
+      source: string
+      _count: { _all: number }
+      _avg: { movedCount: number | null; meanShift: number | null; quality: number | null }
+    }>
+    return reply.send({
+      days,
+      // Most-corrected first: the top of this list is the next pattern to build.
+      concepts: rows.map((r) => ({
+        concept: r.concept,
+        source: r.source,
+        corrections: r._count._all,
+        avgObjectsMoved: Math.round((r._avg.movedCount ?? 0) * 10) / 10,
+        avgShiftUnits: Math.round(r._avg.meanShift ?? 0),
+        avgQualityWhenCorrected: Math.round(r._avg.quality ?? 0),
+      })),
+    })
   })
 }

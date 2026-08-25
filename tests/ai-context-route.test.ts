@@ -153,6 +153,76 @@ describe('the model is told who the session is for', () => {
   })
 })
 
+describe('formation, squad and the stated problem reach the model', () => {
+  it('teaches the model which formations exist in this format', async () => {
+    const app = await getApp()
+    grant({ coachAgeGroup: 'u9', coachFormat: null, coachLevel: null })
+    await app.inject({
+      method: 'POST',
+      url: '/api/canvas/ai-layout',
+      headers: authHeaders(await accessToken()),
+      payload: { prompt: 'team shape work' },
+    })
+    const system = systemPrompt()
+    expect(system).toContain('2-3-1')
+    expect(system).toContain('never lined up in a 4-3-3')
+  })
+
+  it('carries the saved formation and squad size', async () => {
+    const app = await getApp()
+    grant({
+      coachAgeGroup: 'u9', coachFormat: null, coachLevel: null,
+      coachFormation: '2-3-1', coachSquadSize: 14,
+    } as never)
+    await app.inject({
+      method: 'POST',
+      url: '/api/canvas/ai-layout',
+      headers: authHeaders(await accessToken()),
+      payload: { prompt: 'passing session' },
+    })
+    const system = systemPrompt()
+    expect(system).toContain('This team plays a 2-3-1')
+    expect(system).toContain('14 players available')
+  })
+
+  it('drops a saved formation that does not exist in the overridden format', async () => {
+    // Profile: senior 4-3-3. Override: under-9 tonight. The prompt must not
+    // describe a 4-3-3 to a 7v7 session.
+    const app = await getApp()
+    grant({
+      coachAgeGroup: 'senior', coachFormat: '11v11', coachLevel: null,
+      coachFormation: '4-3-3', coachSquadSize: null,
+    } as never)
+    await app.inject({
+      method: 'POST',
+      url: '/api/canvas/ai-layout',
+      headers: authHeaders(await accessToken()),
+      payload: { prompt: 'shape work', context: { age: 'u9' } },
+    })
+    expect(systemPrompt()).not.toContain('This team plays a 4-3-3')
+  })
+
+  it("puts the coach's problem at the heart of the prompt", async () => {
+    const app = await getApp()
+    grant(null)
+    await app.inject({
+      method: 'POST',
+      url: '/api/canvas/ai-layout',
+      headers: authHeaders(await accessToken()),
+      payload: {
+        prompt: 'passing drill',
+        context: { problem: 'we lose the ball under pressure' },
+      },
+    })
+    const system = systemPrompt()
+    expect(system).toContain("THE COACH'S SPECIFIC PROBLEM")
+    expect(system).toContain('we lose the ball under pressure')
+    // And it is wired into the machinery: the model must claim it in the brief,
+    // where the self-consistency validators can hold it to account.
+    expect(system).toContain('Set brief.problem to it')
+  })
+})
+
 describe('the compiler is held to the same football standard', () => {
   it('refuses a pressing pattern for an under-9 side', async () => {
     // The compiler's geometry is perfect and its football is wrong here: an

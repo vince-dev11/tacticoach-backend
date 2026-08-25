@@ -1,5 +1,9 @@
 import { z } from 'zod'
-import { AGE_PROFILES, FORMAT_PROFILES, LEVEL_LABELS } from '../ai/ai.context.js'
+import {
+  AGE_PROFILES, FORMAT_PROFILES, LEVEL_LABELS, FORMATIONS_BY_FORMAT,
+} from '../ai/ai.context.js'
+
+const ALL_FORMATIONS = [...new Set(Object.values(FORMATIONS_BY_FORMAT).flat())]
 
 // Who the coach works with. Validated against the values we actually ship, so
 // a typo is rejected here rather than silently ignored at generation time.
@@ -32,6 +36,19 @@ export const UpdateProfileSchema = z.object({
   coachAgeGroup: enumOrClear(AGE_PROFILES),
   coachFormat: enumOrClear(FORMAT_PROFILES),
   coachLevel: enumOrClear(LEVEL_LABELS),
+  // Formation is validated against the FORMAT at generation time (a saved
+  // 4-3-3 is silently ignored during a 7v7 session), so here it only needs to
+  // be one of the shapes we ship at all.
+  coachFormation: z
+    .union([
+      z.enum(ALL_FORMATIONS as [string, ...string[]]),
+      z.literal('').transform(() => null),
+    ])
+    .optional()
+    .nullable(),
+  coachSquadSize: z
+    .union([z.number().int().min(2).max(40), z.null()])
+    .optional(),
 })
 
 export type UpdateProfileInput = z.infer<typeof UpdateProfileSchema>

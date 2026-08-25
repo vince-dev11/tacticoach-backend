@@ -12,6 +12,7 @@ import {
   AGE_PROFILES,
   DEFAULT_CONTEXT,
   FORMAT_PROFILES,
+  FORMATIONS_BY_FORMAT,
   conceptObjection,
   describeContext,
   isAgeGroup,
@@ -206,6 +207,54 @@ describe('age-appropriate concepts', () => {
   it('says nothing when no concept was identified', () => {
     expect(validateAgeAppropriate(undefined, u9)).toHaveLength(0)
     expect(conceptObjection(u9, undefined)).toBeNull()
+  })
+})
+
+describe('formations belong to a format', () => {
+  it('every format lists real shapes that sum to its outfield count', () => {
+    for (const [format, formations] of Object.entries(FORMATIONS_BY_FORMAT)) {
+      const outfield = FORMAT_PROFILES[format as keyof typeof FORMAT_PROFILES].perTeam - 1
+      for (const f of formations) {
+        const sum = f.split('-').reduce((a, b) => a + Number(b), 0)
+        expect(sum, `${format} ${f}`).toBe(outfield)
+      }
+    }
+  })
+
+  it('keeps a formation that fits the resolved format', () => {
+    const ctx = resolveContext({ age: 'u9', formation: '2-3-1' }, undefined)
+    expect(ctx.formation).toBe('2-3-1')
+  })
+
+  it('drops a profile formation that does not exist in tonight\'s format', () => {
+    // Profile: senior 4-3-3. Tonight: under-9 (7v7). A 7v7 team has never
+    // lined up in a 4-3-3, so no formation beats a wrong one.
+    const ctx = resolveContext({ age: 'u9' }, { age: 'senior', formation: '4-3-3' })
+    expect(ctx.format).toBe('7v7')
+    expect(ctx.formation).toBeUndefined()
+  })
+
+  it('drops invented formations entirely', () => {
+    expect(resolveContext({ age: 'senior', formation: '9-0-1' }, undefined).formation).toBeUndefined()
+  })
+})
+
+describe('squad size and the stated problem', () => {
+  it('carries a sensible squad number through', () => {
+    expect(resolveContext({ age: 'u9', squad: 14 }, undefined).squad).toBe(14)
+  })
+
+  it('drops nonsense squad values instead of failing', () => {
+    expect(resolveContext({ squad: 0 }, undefined).squad).toBeUndefined()
+    expect(resolveContext({ squad: 999 }, undefined).squad).toBeUndefined()
+    expect(resolveContext({ squad: 'many' }, undefined).squad).toBeUndefined()
+  })
+
+  it('trims and caps the problem text before it nears a prompt', () => {
+    const ctx = resolveContext({ problem: '  we lose the ball under pressure  ' }, undefined)
+    expect(ctx.problem).toBe('we lose the ball under pressure')
+    expect(resolveContext({ problem: 'x'.repeat(500) }, undefined).problem).toHaveLength(160)
+    expect(resolveContext({ problem: '  ' }, undefined).problem).toBeUndefined()
   })
 })
 

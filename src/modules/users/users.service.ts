@@ -19,6 +19,8 @@ const USER_SELECT = {
   coachAgeGroup: true,
   coachFormat: true,
   coachLevel: true,
+  coachFormation: true,
+  coachSquadSize: true,
   emailVerifiedAt: true,
   createdAt: true,
   subscription: {
@@ -51,6 +53,8 @@ export async function updateUserProfile(userId: number, input: UpdateProfileInpu
       ...(input.coachAgeGroup !== undefined && { coachAgeGroup: input.coachAgeGroup }),
       ...(input.coachFormat !== undefined && { coachFormat: input.coachFormat }),
       ...(input.coachLevel !== undefined && { coachLevel: input.coachLevel }),
+      ...(input.coachFormation !== undefined && { coachFormation: input.coachFormation }),
+      ...(input.coachSquadSize !== undefined && { coachSquadSize: input.coachSquadSize }),
     },
     select: USER_SELECT,
   })

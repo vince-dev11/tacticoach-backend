@@ -43,6 +43,12 @@ export const RequestSchema = z.object({
       age: z.string().optional(),
       format: z.string().optional(),
       level: z.string().optional(),
+      formation: z.string().max(12).optional(),
+      squad: z.number().optional(),
+      // The coach's own words about what they're trying to fix — the highest
+      // value field in the whole request. Free text, resolved and capped in
+      // resolveContext before it goes anywhere near a prompt.
+      problem: z.string().max(200).optional(),
     })
     .optional(),
 })

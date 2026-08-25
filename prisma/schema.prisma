@@ -31,6 +31,10 @@ model User {
   coachAgeGroup    String?   @map("coach_age_group") @db.VarChar(16)
   coachFormat      String?   @map("coach_format") @db.VarChar(16)
   coachLevel       String?   @map("coach_level") @db.VarChar(24)
+  /// The team's usual shape ("2-3-1" at 7v7) and typical squad size. Both feed
+  /// the AI context; both validated against the format at resolution time.
+  coachFormation   String?   @map("coach_formation") @db.VarChar(12)
+  coachSquadSize   Int?      @map("coach_squad_size")
   stripeCustomerId String?   @unique @map("stripe_customer_id") @db.VarChar(191)
   emailVerifiedAt  DateTime? @map("email_verified_at")
   createdAt        DateTime  @default(now()) @map("created_at")
@@ -50,6 +54,7 @@ model User {
   drillSheets     DrillSheet[]
   drillSheetLikes DrillSheetLike[]
   aiUsage         AiUsage[]
+  aiCorrections   AiCorrection[]
 
   @@map("users")
 }
@@ -71,6 +76,48 @@ model AiUsage {
   @@index([userId, createdAt])
   @@index([userId, promptHash, createdAt])
   @@map("ai_usage")
+}
+
+/// A coach's correction of an AI generation: the difference between what we
+/// drew and what they saved. The most honest quality signal we can collect —
+/// a regenerate click says "something was off"; a moved centre-back says what.
+/// Each row stores a compact structured DIFF, never the full board, so it stays
+/// small and carries only what the coach changed.
+model AiCorrection {
+  id     Int @id @default(autoincrement())
+  userId Int @map("user_id")
+
+  /// What produced the original: 'dsl' (compiler) or 'gemini' (fallback).
+  source String @db.VarChar(12)
+  /// Concept card matched at generation time ('unknown' when none).
+  concept String @db.VarChar(40)
+  /// Tactical quality score the generation received (0-100).
+  quality Int
+  /// Same privacy-preserving fingerprint AiUsage stores — joins a correction
+  /// to its generation without keeping the prompt text twice.
+  promptHash String? @map("prompt_hash") @db.VarChar(16)
+  /// Coach context at generation time, e.g. "u9/7v7" — corrections from a
+  /// youth session and a senior one indicate different fixes.
+  context String? @db.VarChar(40)
+
+  /// The structured diff: moved/added/removed objects and movement edits.
+  /// See ai.corrections.ts for the exact shape and the size cap.
+  diff Json
+
+  /// Aggregates, denormalised so the summary endpoint never parses JSON:
+  movedCount   Int @map("moved_count")
+  addedCount   Int @map("added_count")
+  removedCount Int @map("removed_count")
+  /// Mean distance moved across corrected objects, in canvas units.
+  meanShift Int @map("mean_shift")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([concept, createdAt])
+  @@index([source, createdAt])
+  @@map("ai_corrections")
 }
 
 enum AiKind {
