@@ -53,5 +53,13 @@ export const UpdateProfileSchema = z.object({
 
 export type UpdateProfileInput = z.infer<typeof UpdateProfileSchema>
 
+/**
+ * Guided tours a user can complete. An enum (not a free string) so a client
+ * bug can never grow the account's tours array with junk.
+ */
+export const TOUR_IDS = ['editor', 'sheet', 'session'] as const
+export const TourDoneSchema = z.object({ tour: z.enum(TOUR_IDS) })
+export type TourId = (typeof TOUR_IDS)[number]
+
 export const ALLOWED_LOGO_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/svg+xml']
 export const MAX_LOGO_SIZE = 5 * 1024 * 1024 // 5 MB

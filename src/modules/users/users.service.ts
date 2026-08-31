@@ -1,6 +1,6 @@
 import { db } from '../../config/database.js'
 import { uploadToS3, deleteFromS3, presignUrl } from '../../config/s3.js'
-import type { UpdateProfileInput } from './users.schema.js'
+import type { UpdateProfileInput, TourId } from './users.schema.js'
 
 const USER_SELECT = {
   id: true,
@@ -21,6 +21,7 @@ const USER_SELECT = {
   coachLevel: true,
   coachFormation: true,
   coachSquadSize: true,
+  toursDone: true,
   emailVerifiedAt: true,
   createdAt: true,
   subscription: {
@@ -58,6 +59,20 @@ export async function updateUserProfile(userId: number, input: UpdateProfileInpu
     },
     select: USER_SELECT,
   })
+}
+
+/**
+ * Record a completed guided tour on the account. Idempotent — completing a
+ * tour twice (two tabs, a retry) never duplicates the entry.
+ */
+export async function markTourDone(userId: number, tour: TourId) {
+  const user = await db.user.findUniqueOrThrow({ where: { id: userId }, select: { toursDone: true } })
+  const done = Array.isArray(user.toursDone) ? (user.toursDone as string[]) : []
+  if (!done.includes(tour)) {
+    await db.user.update({ where: { id: userId }, data: { toursDone: [...done, tour] } })
+    return [...done, tour]
+  }
+  return done
 }
 
 export async function uploadClubLogo(userId: number, buffer: Buffer, mimeType: string, ext: string) {

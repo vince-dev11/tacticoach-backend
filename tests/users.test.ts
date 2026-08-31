@@ -83,3 +83,55 @@ describe('GET /health', () => {
     expect(res.json().status).toBe('ok')
   })
 })
+
+describe('POST /api/users/me/tours', () => {
+  it('requires auth', async () => {
+    const app = await getApp()
+    const res = await app.inject({ method: 'POST', url: '/api/users/me/tours', payload: { tour: 'editor' } })
+    expect(res.statusCode).toBe(401)
+  })
+
+  it('records a completed tour on the account', async () => {
+    const app = await getApp()
+    dbMock.user.findUniqueOrThrow.mockResolvedValue({ toursDone: [] } as never)
+    dbMock.user.update.mockResolvedValue(userRow() as never)
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/users/me/tours',
+      headers: authHeaders(await accessToken()),
+      payload: { tour: 'editor' },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json().toursDone).toEqual(['editor'])
+    expect(dbMock.user.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: { toursDone: ['editor'] } }),
+    )
+  })
+
+  it('is idempotent — completing the same tour twice never duplicates it', async () => {
+    const app = await getApp()
+    dbMock.user.findUniqueOrThrow.mockResolvedValue({ toursDone: ['editor'] } as never)
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/users/me/tours',
+      headers: authHeaders(await accessToken()),
+      payload: { tour: 'editor' },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json().toursDone).toEqual(['editor'])
+    expect(dbMock.user.update).not.toHaveBeenCalled()
+  })
+
+  it('rejects unknown tour ids with 422', async () => {
+    const app = await getApp()
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/users/me/tours',
+      headers: authHeaders(await accessToken()),
+      payload: { tour: 'space-mission' },
+    })
+    expect(res.statusCode).toBe(422)
+  })
+})

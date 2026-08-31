@@ -10,17 +10,21 @@ const db = new PrismaClient({ adapter })
 async function main() {
   // Membership plans — matched to the pricing shown on the landing page.
   // Annual price = per-month price billed yearly (12×).
+  // LAUNCH: AI is feature-flagged off, so plan copy carries no AI promises and
+  // the Pro + AI tier is kept but INACTIVE (re-activate + restore AI copy when
+  // the AI relaunch ships).
   const plans = [
     {
       name: 'Pro',
       slug: 'pro',
-      description: 'Full platform with a taste of AI. Perfect for hands-on coaches.',
+      description: 'The full platform for hands-on coaches.',
       monthlyPrice: '2.99',
       annualPrice: '23.88', // £1.99/mo billed yearly
       currency: 'GBP',
-      features: ['All pitch types', 'Unlimited tactics', 'Animation timeline', 'HD video export', 'Cloud sync', '3 AI credits / month'],
+      features: ['All pitch types', 'Unlimited tactics', 'Animation timeline', 'HD video export', 'Cloud sync', 'Drill sheet export'],
       maxBoards: null,
       maxTeamMembers: 1,
+      isActive: true,
       sortOrder: 1,
     },
     {
@@ -33,6 +37,7 @@ async function main() {
       features: ['Everything in Pro', '30 AI credits / month', 'AI coaching notes', 'Drill suggestions', 'Auto-animation'],
       maxBoards: null,
       maxTeamMembers: 1,
+      isActive: false, // hidden until the AI relaunch
       sortOrder: 2,
     },
     {
@@ -42,9 +47,10 @@ async function main() {
       monthlyPrice: '24.99',
       annualPrice: '203.88', // £16.99/mo billed yearly
       currency: 'GBP',
-      features: ['Everything in Pro + AI', '200 AI credits / month', '10 coach seats', 'Shared tactic library', 'Priority support'],
+      features: ['Everything in Pro', '10 coach seats', 'Shared tactic library', 'Club branding page', 'Session builder', 'Priority support'],
       maxBoards: null,
       maxTeamMembers: 10,
+      isActive: true,
       sortOrder: 3,
     },
   ]
@@ -57,6 +63,10 @@ async function main() {
         annualPrice: plan.annualPrice,
         currency: plan.currency,
         maxTeamMembers: plan.maxTeamMembers,
+        // Launch state must reach existing rows too, not just fresh databases.
+        description: plan.description,
+        features: plan.features,
+        isActive: plan.isActive,
       },
       create: plan,
     })

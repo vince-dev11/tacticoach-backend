@@ -17,6 +17,7 @@ import { membershipRoutes } from './modules/membership/membership.routes.js'
 import { canvasRoutes } from './modules/canvas/canvas.routes.js'
 import { clubsRoutes } from './modules/clubs/clubs.routes.js'
 import { drillSheetsRoutes } from './modules/drill-sheets/drill-sheets.routes.js'
+import { sessionsRoutes } from './modules/sessions/sessions.routes.js'
 import { stripeWebhookRoutes } from './modules/webhooks/stripe.routes.js'
 import { contactRoutes } from './modules/contact/contact.routes.js'
 import { aiRoutes } from './modules/ai/ai.routes.js'
@@ -69,6 +70,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(canvasRoutes, { prefix: '/api/canvas' })
   await app.register(clubsRoutes, { prefix: '/api/clubs' })
   await app.register(drillSheetsRoutes, { prefix: '/api/drill-sheets' })
+  await app.register(sessionsRoutes, { prefix: '/api/sessions' })
   await app.register(stripeWebhookRoutes, { prefix: '/api/webhooks' })
   await app.register(contactRoutes, { prefix: '/api/contact' })
   // AI tactics generation lives under the canvas namespace to match the

@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify'
 import { authGuard } from '../../middleware/auth-guard.js'
-import { UpdateProfileSchema, ALLOWED_LOGO_TYPES, MAX_LOGO_SIZE } from './users.schema.js'
-import { getUserProfile, updateUserProfile, uploadClubLogo, deleteClubLogo } from './users.service.js'
+import { UpdateProfileSchema, TourDoneSchema, ALLOWED_LOGO_TYPES, MAX_LOGO_SIZE } from './users.schema.js'
+import { getUserProfile, updateUserProfile, uploadClubLogo, deleteClubLogo, markTourDone } from './users.service.js'
 
 export async function usersRoutes(app: FastifyInstance) {
   // All routes require auth
@@ -21,6 +21,15 @@ export async function usersRoutes(app: FastifyInstance) {
     const input = UpdateProfileSchema.parse(request.body)
     const user = await updateUserProfile(userId, input)
     return reply.send(user)
+  })
+
+  // POST /users/me/tours — mark a guided tour as completed (idempotent).
+  // Account-level so first-login tours show once per coach, not per browser.
+  app.post('/me/tours', async (request, reply) => {
+    const userId = (request.user as any).sub as number
+    const { tour } = TourDoneSchema.parse(request.body)
+    const toursDone = await markTourDone(userId, tour)
+    return reply.send({ toursDone })
   })
 
   // POST /users/me/logo — multipart upload
