@@ -135,3 +135,79 @@ describe('POST /api/users/me/tours', () => {
     expect(res.statusCode).toBe(422)
   })
 })
+
+// ---- My Squad ---------------------------------------------------------------
+// The generated client in CI may predate the SquadPlayer model; the deep mock
+// proxies any property at runtime, so we reach it through a loose cast.
+const squadMock = () => (dbMock as unknown as {
+  squadPlayer: {
+    findMany: { mockResolvedValue: (v: unknown) => void }
+    deleteMany: { mockResolvedValue: (v: unknown) => void }
+    createMany: { mockResolvedValue: (v: unknown) => void }
+  }
+}).squadPlayer
+
+describe('GET /api/users/me/squad', () => {
+  it('requires auth', async () => {
+    const app = await getApp()
+    const res = await app.inject({ method: 'GET', url: '/api/users/me/squad' })
+    expect(res.statusCode).toBe(401)
+  })
+
+  it('returns the squad in order', async () => {
+    const app = await getApp()
+    squadMock().findMany.mockResolvedValue([
+      { id: 1, name: 'Leo Keeper', number: '1', position: 'GK', sortOrder: 0 },
+      { id: 2, name: 'Musa Nine', number: '9', position: 'FW', sortOrder: 1 },
+    ])
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/users/me/squad',
+      headers: authHeaders(await accessToken()),
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json().players).toHaveLength(2)
+    expect(res.json().players[0].name).toBe('Leo Keeper')
+  })
+})
+
+describe('PUT /api/users/me/squad', () => {
+  it('replaces the squad and returns the saved list', async () => {
+    const app = await getApp()
+    dbMock.$transaction.mockResolvedValue([] as never)
+    squadMock().findMany.mockResolvedValue([
+      { id: 3, name: 'Leo Keeper', number: '1', position: 'GK', sortOrder: 0 },
+    ])
+    const res = await app.inject({
+      method: 'PUT',
+      url: '/api/users/me/squad',
+      headers: authHeaders(await accessToken()),
+      payload: { players: [{ name: 'Leo Keeper', number: '1', position: 'GK' }] },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json().players[0].position).toBe('GK')
+  })
+
+  it('rejects an unknown position', async () => {
+    const app = await getApp()
+    const res = await app.inject({
+      method: 'PUT',
+      url: '/api/users/me/squad',
+      headers: authHeaders(await accessToken()),
+      payload: { players: [{ name: 'X', number: '1', position: 'STRIKER' }] },
+    })
+    expect(res.statusCode).toBe(422)
+  })
+
+  it('caps the squad at 30 players', async () => {
+    const app = await getApp()
+    const players = Array.from({ length: 31 }, (_, i) => ({ name: `P${i}`, number: String(i) }))
+    const res = await app.inject({
+      method: 'PUT',
+      url: '/api/users/me/squad',
+      headers: authHeaders(await accessToken()),
+      payload: { players },
+    })
+    expect(res.statusCode).toBe(422)
+  })
+})

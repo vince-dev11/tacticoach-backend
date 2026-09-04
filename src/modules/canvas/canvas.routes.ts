@@ -7,17 +7,42 @@ import { db } from '../../config/database.js'
 import { uploadToS3, deleteFromS3, presignUrl } from '../../config/s3.js'
 import { readUpload } from '../../lib/multipart.js'
 
+/** Coach-chosen category tags — an enum so a client bug can't grow junk labels. */
+export const BOARD_TAGS = ['attacking', 'defending', 'pressing', 'build-out', 'set-piece', 'rondo'] as const
+const TagsSchema = z.array(z.enum(BOARD_TAGS)).max(3)
+
 const CreateBoardSchema = z.object({
   title: z.string().min(1).max(255).default('Untitled board'),
   pitchKey: z.string().max(50).optional().nullable(),
   state: z.unknown().optional(),
+  tags: TagsSchema.optional(),
 })
 
 const UpdateBoardSchema = z.object({
   title: z.string().min(1).max(255).optional(),
   pitchKey: z.string().max(50).optional().nullable(),
   state: z.unknown().optional(),
+  tags: TagsSchema.optional(),
 })
+
+/**
+ * The coach's context at save time, attached silently. Labels every board
+ * with who it was made FOR (age, format, level, shape) — the pairing a future
+ * tactics model trains on, and impossible to reconstruct later.
+ */
+async function contextSnapshotFor(userId: number) {
+  const u = await db.user.findUnique({
+    where: { id: userId },
+    select: { coachAgeGroup: true, coachFormat: true, coachLevel: true, coachFormation: true, coachSquadSize: true },
+  })
+  if (!u) return undefined
+  const snap = {
+    ageGroup: u.coachAgeGroup, format: u.coachFormat, level: u.coachLevel,
+    formation: u.coachFormation, squadSize: u.coachSquadSize,
+  }
+  // All-null contexts carry no signal — store nothing rather than noise.
+  return Object.values(snap).some((v) => v != null) ? snap : undefined
+}
 
 // Thumbnails are small optimized stills (WebP preferred); videos are the
 // compressed 720p preview rendered on publish — the 4K export stays local.
@@ -34,9 +59,28 @@ const BOARD_CARD_SELECT = {
   videoKey: true,
   published: true,
   publishedAt: true,
+  hasAnimation: true,
+  tags: true,
   createdAt: true,
   updatedAt: true,
 } as const
+
+/**
+ * True when a saved board state contains real movement: any frame whose
+ * objects carry at least one step. Stamped on the row at save time so library
+ * cards can label "Animation" vs "Static board" without loading state JSON.
+ */
+function stateHasAnimation(state: unknown): boolean {
+  const frames = (state as { frames?: unknown })?.frames
+  if (!Array.isArray(frames)) return false
+  return frames.some((f) => {
+    const objects = (f as { objects?: unknown })?.objects
+    return Array.isArray(objects) && objects.some((o) => {
+      const steps = (o as { steps?: unknown })?.steps
+      return Array.isArray(steps) && steps.length > 0
+    })
+  })
+}
 
 /** Attach short-lived presigned media URLs to a board row. */
 async function withMediaUrls<T extends { thumbnailKey?: string | null; videoKey?: string | null }>(
@@ -122,6 +166,9 @@ export async function canvasRoutes(app: FastifyInstance) {
         published: true,
         publishedAt: new Date(),
         ...(input.state !== undefined && { state: input.state as Prisma.InputJsonValue }),
+        ...(input.tags !== undefined && { tags: input.tags }),
+        hasAnimation: stateHasAnimation(input.state),
+        ...((snap) => (snap !== undefined ? { contextSnapshot: snap } : {}))(await contextSnapshotFor(userId)),
       },
     })
     return reply.status(201).send(board)
@@ -148,7 +195,14 @@ export async function canvasRoutes(app: FastifyInstance) {
     const updateData: Prisma.CanvasBoardUpdateInput = {}
     if (input.title !== undefined) updateData.title = input.title
     if (input.pitchKey !== undefined) updateData.pitchKey = input.pitchKey
-    if (input.state !== undefined) updateData.state = input.state as Prisma.InputJsonValue
+    if (input.state !== undefined) {
+      updateData.state = input.state as Prisma.InputJsonValue
+      updateData.hasAnimation = stateHasAnimation(input.state)
+      // Re-snapshot on content saves so the label follows the latest context.
+      const snap = await contextSnapshotFor(userId)
+      if (snap !== undefined) updateData.contextSnapshot = snap
+    }
+    if (input.tags !== undefined) updateData.tags = input.tags
     const board = await db.canvasBoard.update({ where: { id: Number(id) }, data: updateData })
     return reply.send(board)
   })

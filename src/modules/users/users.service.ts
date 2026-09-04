@@ -1,6 +1,6 @@
 import { db } from '../../config/database.js'
 import { uploadToS3, deleteFromS3, presignUrl } from '../../config/s3.js'
-import type { UpdateProfileInput, TourId } from './users.schema.js'
+import type { UpdateProfileInput, TourId, SaveSquadInput } from './users.schema.js'
 
 const USER_SELECT = {
   id: true,
@@ -32,9 +32,16 @@ const USER_SELECT = {
 export async function getUserProfile(userId: number) {
   const user = await db.user.findUnique({ where: { id: userId }, select: USER_SELECT })
   if (!user) return null
-  // Replace raw S3 key with a short-lived presigned URL for the logo
+  // Replace raw S3 key with a short-lived presigned URL for the logo.
+  // Presign failure (S3 down / unconfigured) must not break the whole profile
+  // read — pre-launch QA found every profile save 503ing on a dev box because
+  // of this line. The logo just goes missing until storage is back.
   if (user.clubLogoKey) {
-    return { ...user, clubLogoUrl: await presignUrl(user.clubLogoKey) }
+    try {
+      return { ...user, clubLogoUrl: await presignUrl(user.clubLogoKey) }
+    } catch {
+      return { ...user, clubLogoUrl: null }
+    }
   }
   return user
 }
@@ -98,4 +105,36 @@ export async function deleteClubLogo(userId: number) {
   if (!user?.clubLogoKey) return
   await deleteFromS3(user.clubLogoKey).catch(() => { /* best-effort */ })
   await db.user.update({ where: { id: userId }, data: { clubLogoKey: null, clubLogoUrl: null } })
+}
+
+// ---- My Squad ---------------------------------------------------------------
+
+const SQUAD_SELECT = { id: true, name: true, number: true, position: true, sortOrder: true } as const
+
+export async function getSquad(userId: number) {
+  return db.squadPlayer.findMany({
+    where: { userId },
+    orderBy: { sortOrder: 'asc' },
+    select: SQUAD_SELECT,
+  })
+}
+
+/**
+ * Replace-all save: the profile edits the squad as one list, so persisting it
+ * as delete + createMany (in a transaction) is simpler and safer than diffing.
+ */
+export async function saveSquad(userId: number, players: SaveSquadInput['players']) {
+  await db.$transaction([
+    db.squadPlayer.deleteMany({ where: { userId } }),
+    db.squadPlayer.createMany({
+      data: players.map((p, i) => ({
+        userId,
+        name: p.name,
+        number: p.number,
+        position: p.position ?? null,
+        sortOrder: i,
+      })),
+    }),
+  ])
+  return getSquad(userId)
 }

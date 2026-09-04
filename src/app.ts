@@ -44,6 +44,10 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(fastifyCors, {
     origin: corsOrigins,
     credentials: true,
+    // @fastify/cors v11 only allows CORS-safelisted methods by default, which
+    // silently blocks PATCH/DELETE preflights (pre-launch QA: every profile
+    // save failed with "Method PATCH is not allowed"). List everything we use.
+    methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   })
 
   await app.register(fastifyJwt, {

@@ -63,3 +63,22 @@ export type TourId = (typeof TOUR_IDS)[number]
 
 export const ALLOWED_LOGO_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/svg+xml']
 export const MAX_LOGO_SIZE = 5 * 1024 * 1024 // 5 MB
+
+/**
+ * "My Squad" — the coach's real players. Saved as a whole list (replace-all),
+ * capped at 30: big enough for any squad + trialists, small enough that a
+ * client bug can't flood the table.
+ */
+export const SQUAD_POSITIONS = ['GK', 'DF', 'MF', 'FW'] as const
+export const SaveSquadSchema = z.object({
+  players: z
+    .array(
+      z.object({
+        name: z.string().trim().min(1).max(40),
+        number: z.string().trim().min(1).max(3),
+        position: z.enum(SQUAD_POSITIONS).optional().nullable(),
+      }),
+    )
+    .max(30),
+})
+export type SaveSquadInput = z.infer<typeof SaveSquadSchema>

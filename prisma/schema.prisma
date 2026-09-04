@@ -57,6 +57,7 @@ model User {
   drillSheets     DrillSheet[]
   drillSheetLikes DrillSheetLike[]
   trainingSessions TrainingSession[]
+  squadPlayers    SquadPlayer[]
   aiUsage         AiUsage[]
   aiCorrections   AiCorrection[]
 
@@ -228,8 +229,18 @@ model CanvasBoard {
   // Legacy column kept for compatibility with earlier clients.
   thumbnailUrl String?   @map("thumbnail_url") @db.VarChar(500)
   // Boards are public by default (the create route also sets this explicitly).
+  // Coaches can flip any board private from the library's visibility pill.
   published    Boolean   @default(true)
   publishedAt  DateTime? @map("published_at")
+  // Set at save time so library cards can say "Animation" vs "Static board"
+  // without loading the (large) state JSON per row.
+  hasAnimation Boolean   @default(false) @map("has_animation")
+  // Optional coach-chosen category tags ("pressing", "build-out", …) — they
+  // filter the library AND label the board for future model training.
+  tags         Json      @default("[]")
+  // Silent snapshot of the coach's context at save time (age group, format,
+  // level, formation). Attached server-side; the coach is never asked.
+  contextSnapshot Json?  @map("context_snapshot")
   createdAt    DateTime  @default(now()) @map("created_at")
   updatedAt    DateTime  @updatedAt @map("updated_at")
 
@@ -379,6 +390,27 @@ model DrillSheetLike {
 enum Role {
   user
   owner
+}
+
+/// The coach's real squad ("My Squad"). Entered once in the profile; the
+/// editor's player shelf and formation presets then place the coach's actual
+/// players — names on the board, not anonymous numbers. Replaced as a whole
+/// on save (PUT /users/me/squad), so no per-row endpoints are needed.
+model SquadPlayer {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @map("user_id")
+  name      String   @db.VarChar(40)
+  number    String   @db.VarChar(3)
+  /// Free-ish position tag: GK / DF / MF / FW (validated in the route).
+  position  String?  @db.VarChar(4)
+  sortOrder Int      @default(0) @map("sort_order")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, sortOrder])
+  @@map("squad_players")
 }
 
 // ---- Blog (marketing content, owner-managed) --------------------------------
