@@ -18,8 +18,8 @@ import {
   resetPasswordWithToken,
 } from './auth.service.js'
 import { env } from '../../config/env.js'
-import { isMailConfigured, sendMail } from '../../config/mailer.js'
-import { sendWelcomeEmail, sendVerificationEmail } from '../../lib/emails.js'
+import { isMailConfigured } from '../../config/mailer.js'
+import { sendWelcomeEmail, sendVerificationEmail, sendPasswordResetEmail } from '../../lib/emails.js'
 import { authGuard } from '../../middleware/auth-guard.js'
 import { db } from '../../config/database.js'
 
@@ -147,16 +147,8 @@ export async function authRoutes(app: FastifyInstance) {
     if (issued) {
       const link = `${env.FRONTEND_URL}/reset-password?token=${issued.token}`
       if (isMailConfigured()) {
-        try {
-          await sendMail({
-            to: issued.user.email,
-            subject: 'Reset your TactiCoach password',
-            text: `Hi ${issued.user.name},\n\nReset your password using this link (valid for 1 hour):\n${link}\n\nIf you didn't request this, you can safely ignore this email.`,
-            html: `<p>Hi ${issued.user.name},</p><p>Reset your password using the button below (valid for 1 hour):</p><p><a href="${link}" style="display:inline-block;padding:11px 22px;border-radius:8px;background:#00A76F;color:#fff;text-decoration:none;font-weight:600">Reset password</a></p><p>Or paste this link into your browser:<br>${link}</p><p>If you didn't request this, you can safely ignore this email.</p>`,
-          })
-        } catch (err) {
-          request.log.error({ err }, 'Failed to send password reset email')
-        }
+        // Branded template — same layout as every other TactiCoach email.
+        await sendPasswordResetEmail(issued.user, link)
       } else if (env.NODE_ENV !== 'production') {
         // No SMTP configured — log the link so the flow is still testable in
         // dev. NEVER in production: a reset link in log output is a credential.

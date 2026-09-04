@@ -12,22 +12,51 @@ import { isMailConfigured, sendMail } from '../config/mailer.js'
 const BRAND = '#00A76F'
 
 function layout(preheader: string, bodyHtml: string): string {
+  const site = env.FRONTEND_URL
   return `<!doctype html>
 <html>
-  <body style="margin:0;padding:0;background:#f4f6f8;font-family:Arial,Helvetica,sans-serif">
+  <body style="margin:0;padding:0;background:#0c1120;font-family:Arial,Helvetica,sans-serif">
     <span style="display:none;max-height:0;overflow:hidden">${preheader}</span>
-    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f6f8;padding:24px 0">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#0c1120;padding:28px 0">
       <tr><td align="center">
         <table role="presentation" width="560" cellpadding="0" cellspacing="0" style="max-width:560px;width:100%">
-          <tr><td style="padding:0 24px 16px" align="center">
-            <span style="font-size:22px;font-weight:800;color:${BRAND};letter-spacing:.3px">TactiCoach</span>
+
+          <!-- Header: logo (hosted; alt text shows when images are blocked) -->
+          <tr><td style="padding:0 24px 18px" align="center">
+            <a href="${site}" style="text-decoration:none">
+              <img src="${site}/email/logo.png" width="200" alt="TactiCoach" style="display:block;border:0;max-width:200px;height:auto">
+            </a>
           </td></tr>
-          <tr><td style="background:#ffffff;border-radius:12px;padding:32px 32px 28px;color:#1a2332;font-size:15px;line-height:1.6">
+
+          <!-- Pitch stripe bar (mown-grass motif) -->
+          <tr><td>
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-radius:12px 12px 0 0;overflow:hidden">
+              <tr>
+                <td height="7" width="20%" style="background:#0d6b2c"></td>
+                <td height="7" width="20%" style="background:#0b5c24"></td>
+                <td height="7" width="20%" style="background:#0d6b2c"></td>
+                <td height="7" width="20%" style="background:#0b5c24"></td>
+                <td height="7" width="20%" style="background:#0d6b2c"></td>
+              </tr>
+            </table>
+          </td></tr>
+
+          <!-- Body card -->
+          <tr><td style="background:#ffffff;border-radius:0 0 12px 12px;padding:34px 34px 30px;color:#1a2332;font-size:15px;line-height:1.65">
             ${bodyHtml}
           </td></tr>
-          <tr><td style="padding:18px 24px;color:#8a94a3;font-size:12px;line-height:1.5" align="center">
+
+          <!-- Footer -->
+          <tr><td style="padding:20px 24px 6px" align="center">
+            <a href="${site}" style="color:#34e0a1;text-decoration:none;font-size:12px;font-weight:700">tacticoach.co.uk</a>
+            <span style="color:#3a4556;font-size:12px">&nbsp;&#183;&nbsp;</span>
+            <a href="${site}/blog" style="color:#8a94a3;text-decoration:none;font-size:12px">Blog</a>
+            <span style="color:#3a4556;font-size:12px">&nbsp;&#183;&nbsp;</span>
+            <a href="${site}/contact" style="color:#8a94a3;text-decoration:none;font-size:12px">Contact</a>
+          </td></tr>
+          <tr><td style="padding:8px 24px 4px;color:#5b6577;font-size:11px;line-height:1.6" align="center">
             TactiCoach — tactical boards, animations &amp; drill sheets for football coaches.<br>
-            You're receiving this because you have a TactiCoach account.
+            You&#39;re receiving this because you have a TactiCoach account.
           </td></tr>
         </table>
       </td></tr>
@@ -37,7 +66,24 @@ function layout(preheader: string, bodyHtml: string): string {
 }
 
 const button = (href: string, label: string) =>
-  `<p style="margin:24px 0"><a href="${href}" style="display:inline-block;padding:12px 26px;border-radius:8px;background:${BRAND};color:#ffffff;text-decoration:none;font-weight:700">${label}</a></p>`
+  `<table role="presentation" cellpadding="0" cellspacing="0" style="margin:24px 0"><tr>
+     <td style="border-radius:9px;background:${BRAND};border-bottom:3px solid #067A52">
+       <a href="${href}" style="display:inline-block;padding:13px 30px;color:#ffffff;text-decoration:none;font-weight:700;font-size:15px;font-family:Arial">${label}&nbsp;&nbsp;&#8594;</a>
+     </td>
+   </tr></table>`
+
+/** Small pill kicker above a heading — "TRIAL", "CLUB INVITE", etc. */
+const kicker = (label: string) =>
+  `<div style="display:inline-block;padding:4px 12px;border-radius:999px;background:#E6F7F0;color:#067A52;font-size:10.5px;font-weight:800;letter-spacing:.12em;margin:0 0 12px">${label}</div>`
+
+/** Green "pitch card" panel — the creative block inside richer emails. */
+const pitchCard = (title: string, innerHtml: string) =>
+  `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:16px 0"><tr>
+     <td style="background:#0d6b2c;border-radius:10px;padding:18px 20px;color:#ffffff">
+       <div style="font-size:12px;letter-spacing:.1em;font-weight:800;color:#9fe8c8">${title}</div>
+       <div style="margin-top:8px;font-size:14px;line-height:1.85">${innerHtml}</div>
+     </td>
+   </tr></table>`
 
 /** Send an email without ever throwing — logs and swallows failures. */
 async function sendSafely(
@@ -85,13 +131,10 @@ export async function sendWelcomeEmail(
         `Happy coaching!\nThe TactiCoach team`,
       html: layout(
         'Your 7-day free trial with full access is now active.',
-        `<h1 style="margin:0 0 12px;font-size:20px">Welcome, ${user.name}! 👋</h1>
-         <p style="margin:0 0 12px">Your <strong>7-day free trial</strong> with full access is now active. During your trial you can:</p>
-         <ul style="margin:0 0 16px;padding-left:20px">
-           <li>Build tactical boards on multiple pitch types</li>
-           <li>Animate movements frame by frame and export video</li>
-           <li>Create printable drill sheets for your sessions</li>
-         </ul>
+        `${kicker("WELCOME TO THE SQUAD")}
+         <h1 style="margin:0 0 12px;font-size:21px">You are on the team sheet, ${user.name} ✅</h1>
+         <p style="margin:0 0 12px">Your <strong>7-day free trial</strong> with full access is now active. Here is the game plan:</p>
+         ${pitchCard('YOUR KICK-OFF PLAN', `1&#65039;&#8419; One click puts a full team on the board &#8212; add your squad and it is YOUR players, by name<br>2&#65039;&#8419; Drag the runs &#8212; every movement becomes an animation, with your coaching notes on screen<br>3&#65039;&#8419; Export HD video straight to the team group chat`)}
          ${verifyHtml}
          <p style="margin:0;color:#6b7280;font-size:13px">Happy coaching!<br>The TactiCoach team</p>`,
       ),
@@ -117,7 +160,8 @@ export async function sendVerificationEmail(
         `The TactiCoach team`,
       html: layout(
         'Confirm your email address for TactiCoach.',
-        `<h1 style="margin:0 0 12px;font-size:20px">Verify your email ✉️</h1>
+        `${kicker("ONE QUICK CHECK")}
+         <h1 style="margin:0 0 12px;font-size:21px">Verify your email ✉️</h1>
          <p style="margin:0 0 4px">Hi ${user.name}, confirm this email address for your TactiCoach account (the link is valid for 24 hours):</p>
          ${button(verifyUrl, 'Verify my email')}
          <p style="margin:0 0 8px;color:#6b7280;font-size:13px">Or paste this link into your browser:<br>${verifyUrl}</p>
@@ -149,9 +193,11 @@ export async function sendTrialReminderEmail(
         `The TactiCoach team`,
       html: layout(
         `Your free trial ends in ${daysLeft} ${dayWord} — keep your editor access.`,
-        `<h1 style="margin:0 0 12px;font-size:20px">Your trial ends in ${daysLeft} ${dayWord} ⏳</h1>
+        `${kicker("FULL-TIME APPROACHING")}
+         <h1 style="margin:0 0 12px;font-size:21px">⏳ ${daysLeft} ${dayWord} left on the clock</h1>
          <p style="margin:0 0 12px">Hi ${user.name}, just a heads-up: your free trial ends on <strong>${expiresAt.toDateString()}</strong>.</p>
-         <p style="margin:0 0 4px">Choose a plan to keep full access to the tactical editor, animations and drill sheets.</p>
+         ${pitchCard('KEEP YOUR FULL ACCESS', `&#9989; The tactics board and animations<br>&#9989; HD video and social exports<br>&#9989; Drill sheets and the session planner<br>&#9989; Every board you have already saved`)}
+         <p style="margin:0 0 4px">Plans start at &#163;2.99/month &#8212; yearly saves 33%.</p>
          ${button(pricing, 'See plans & pricing')}
          <p style="margin:0;color:#6b7280;font-size:13px">If the trial lapses you can still sign in and browse — the editor just locks until you upgrade.</p>`,
       ),
@@ -182,7 +228,8 @@ export async function sendPurchaseEmail(
         `The TactiCoach team`,
       html: layout(
         `Your ${plan.name} plan is active — everything is unlocked.`,
-        `<h1 style="margin:0 0 12px;font-size:20px">You're on ${plan.name} 🎉</h1>
+        `${kicker("SUBSCRIPTION CONFIRMED")}
+         <h1 style="margin:0 0 12px;font-size:21px">You&#39;re on ${plan.name} 🎉</h1>
          <p style="margin:0 0 12px">Hi ${user.name}, thanks for subscribing! Your <strong>${plan.name}</strong> plan (billed ${billingCycle}) is now active.${renews}</p>
          ${button(dashboard, 'Open your dashboard')}
          <p style="margin:0;color:#6b7280;font-size:13px">A payment receipt is sent separately by Stripe. You can manage your plan any time from your profile.</p>`,
@@ -214,8 +261,10 @@ export async function sendClubInviteEmail(params: {
         `The TactiCoach team`,
       html: layout(
         `${inviterName} invited you to join ${clubName} on TactiCoach.`,
-        `<h1 style="margin:0 0 12px;font-size:20px">You're invited to ${clubName} ⚽</h1>
-         <p style="margin:0 0 12px"><strong>${inviterName}</strong> invited you to join <strong>${clubName}</strong> on TactiCoach — you'll get full access to the tactical editor through the club's plan.</p>
+        `${kicker("CLUB INVITE")}
+         <h1 style="margin:0 0 12px;font-size:21px">You&#39;re invited to ${clubName} ⚽</h1>
+         <p style="margin:0 0 12px"><strong>${inviterName}</strong> invited you to join <strong>${clubName}</strong> on TactiCoach.</p>
+         ${pitchCard('YOUR SEAT INCLUDES', `&#9989; Full tactics board and animations<br>&#9989; The club&#39;s shared tactic library<br>&#9989; Drill sheets and session plans<br>&#9989; No cost to you &#8212; covered by the club&#39;s plan`)}
          ${button(acceptUrl, 'Accept invite')}
          <p style="margin:0 0 8px;color:#6b7280;font-size:13px">Or paste this link into your browser:<br>${acceptUrl}</p>
          <p style="margin:0;color:#6b7280;font-size:13px">The invite is valid until ${expiresAt.toDateString()}. You'll need a TactiCoach account with this email address — signing up is free.</p>`,
@@ -243,7 +292,8 @@ export async function sendClubPageApprovedEmail(
         `The TactiCoach team`,
       html: layout(
         `${clubName}'s public page is approved and live.`,
-        `<h1 style="margin:0 0 12px;font-size:20px">${clubName} is live 🎉</h1>
+        `${kicker("PAGE APPROVED")}
+         <h1 style="margin:0 0 12px;font-size:21px">${clubName} is live 🎉</h1>
          <p style="margin:0 0 4px">Hi ${owner.name}, your club's public page has been approved:</p>
          ${button(pageUrl, 'View your club page')}
          <p style="margin:0;color:#6b7280;font-size:13px">Share it with players, parents and on your socials — everything your coaches publish appears there automatically.</p>`,
@@ -269,7 +319,8 @@ export async function sendClubPageRejectedEmail(
         `The TactiCoach team`,
       html: layout(
         `We couldn't approve ${clubName}'s page yet.`,
-        `<h1 style="margin:0 0 12px;font-size:20px">Almost there</h1>
+        `${kicker("ONE MORE TOUCH")}
+         <h1 style="margin:0 0 12px;font-size:21px">Almost there</h1>
          <p style="margin:0 0 10px">Hi ${owner.name}, we couldn't approve <strong>${clubName}</strong>'s public page yet.</p>
          <p style="margin:0 0 10px;padding:10px 14px;background:#f4f6f8;border-radius:8px;color:#1a2332"><strong>Reviewer note:</strong> ${note}</p>
          <p style="margin:0;color:#6b7280;font-size:13px">Update your branding or content and submit again — it only takes a minute.</p>`,
@@ -308,4 +359,37 @@ export function buildContactEmail(input: {
        <p style="margin:0;white-space:pre-wrap">${esc(input.message)}</p>`,
     ),
   }
+}
+
+// ---- Password reset -------------------------------------------------------------
+
+/**
+ * Branded password-reset email. Found in pre-launch review: this was the one
+ * flow still sending a bare unstyled HTML string from the route.
+ */
+export async function sendPasswordResetEmail(
+  user: { name: string; email: string },
+  resetUrl: string,
+): Promise<void> {
+  await sendSafely(
+    {
+      to: user.email,
+      subject: 'Reset your TactiCoach password',
+      text:
+        `Hi ${user.name},\n\n` +
+        `Reset your password using this link (valid for 1 hour):\n${resetUrl}\n\n` +
+        `If you didn't request this, you can safely ignore this email.\n\n` +
+        `The TactiCoach team`,
+      html: layout(
+        'Reset your TactiCoach password — the link is valid for 1 hour.',
+        `${kicker('ACCOUNT SECURITY')}
+         <h1 style="margin:0 0 12px;font-size:21px">Reset your password 🔐</h1>
+         <p style="margin:0 0 4px">Hi ${user.name}, use the button below to choose a new password (the link is valid for 1 hour):</p>
+         ${button(resetUrl, 'Reset password')}
+         <p style="margin:0 0 8px;color:#6b7280;font-size:13px">Or paste this link into your browser:<br>${resetUrl}</p>
+         <p style="margin:0;color:#6b7280;font-size:13px">If you didn't request this, you can safely ignore this email — your password stays unchanged.</p>`,
+      ),
+    },
+    'password reset',
+  )
 }
