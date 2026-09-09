@@ -60,6 +60,8 @@ model User {
   squadPlayers    SquadPlayer[]
   aiUsage         AiUsage[]
   aiCorrections   AiCorrection[]
+  challengeSubmissions ChallengeSubmission[]
+  challengeVotes       ChallengeVote[]
 
   @@map("users")
 }
@@ -246,6 +248,7 @@ model CanvasBoard {
 
   user  User        @relation(fields: [userId], references: [id], onDelete: Cascade)
   likes BoardLike[]
+  challengeSubmissions ChallengeSubmission[]
 
   @@index([userId])
   @@index([published, publishedAt])
@@ -264,6 +267,65 @@ model BoardLike {
   @@unique([boardId, userId])
   @@index([userId])
   @@map("board_likes")
+}
+
+// ---- Weekly tactical challenge (community engagement + free public content) --
+//
+// One scenario posted a week; coaches submit a board that answers it; the
+// community votes; the top-voted submission when the window closes is the
+// week's featured coach. No background job: "current winner" and "past
+// winners" are both computed at read time from vote counts, never stored.
+
+model Challenge {
+  id        Int      @id @default(autoincrement())
+  title     String   @db.VarChar(150)
+  /// The scenario, in plain coaching language — shown as-is on the challenge card.
+  prompt    String   @db.Text
+  /// One of canvas.routes.ts's BOARD_TAGS, for a thematic accent colour/icon. Optional.
+  tag       String?  @db.VarChar(20)
+  startsAt  DateTime @map("starts_at")
+  endsAt    DateTime @map("ends_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  submissions ChallengeSubmission[]
+
+  @@index([startsAt, endsAt])
+  @@map("challenges")
+}
+
+/// A coach's entry: one saved board pointed at one challenge. Unique per coach
+/// per challenge (not per board) — re-submitting swaps which of their boards
+/// is entered rather than stacking up multiple entries to vote-split.
+model ChallengeSubmission {
+  id          Int      @id @default(autoincrement())
+  challengeId Int      @map("challenge_id")
+  userId      Int      @map("user_id")
+  boardId     Int      @map("board_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  challenge Challenge       @relation(fields: [challengeId], references: [id], onDelete: Cascade)
+  user      User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  board     CanvasBoard     @relation(fields: [boardId], references: [id], onDelete: Cascade)
+  votes     ChallengeVote[]
+
+  @@unique([challengeId, userId])
+  @@index([boardId])
+  @@map("challenge_submissions")
+}
+
+model ChallengeVote {
+  id           Int      @id @default(autoincrement())
+  submissionId Int      @map("submission_id")
+  userId       Int      @map("user_id")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  submission ChallengeSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  user       User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([submissionId, userId])
+  @@index([userId])
+  @@map("challenge_votes")
 }
 
 // ---- Clubs (Club plan: owner buys seats, invites coaches) -------------------

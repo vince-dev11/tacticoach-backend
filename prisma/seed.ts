@@ -92,6 +92,28 @@ async function main() {
     },
   })
   console.log(`✅  Owner account ready: ${ownerEmail} (password: ${process.env.OWNER_SEED_PASSWORD ? 'from OWNER_SEED_PASSWORD' : ownerPassword + ' — change it!'})`)
+
+  // First weekly tactical challenge — so the Challenges page and Dashboard
+  // widgets have real content the moment the app goes live, instead of an
+  // empty state. Guarded on "no challenge currently running" so re-running
+  // the seed against a live database never creates a duplicate week.
+  const now = new Date()
+  const hasActive = await db.challenge.findFirst({ where: { startsAt: { lte: now }, endsAt: { gte: now } } })
+  if (!hasActive) {
+    const startsAt = now
+    const endsAt = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000)
+    await db.challenge.create({
+      data: {
+        title: 'Break the low block',
+        prompt:
+          "Your 4-4-2 low block is under a wide overload. Show us how you'd shift and press without opening the middle.",
+        tag: 'defending',
+        startsAt,
+        endsAt,
+      },
+    })
+    console.log('✅  Seeded week 1 tactical challenge')
+  }
 }
 
 main()
