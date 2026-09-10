@@ -8,14 +8,27 @@ import { uploadToS3, deleteFromS3, presignUrl } from '../../config/s3.js'
 import { readUpload } from '../../lib/multipart.js'
 
 /** Coach-chosen category tags — an enum so a client bug can't grow junk labels. */
-export const BOARD_TAGS = ['attacking', 'defending', 'pressing', 'build-out', 'set-piece', 'rondo'] as const
+export const BOARD_TAGS = [
+  'warm-up', 'rondo', 'possession', 'build-out', 'attacking', 'finishing',
+  'transition', 'pressing', 'defending', 'set-piece', 'goalkeeping',
+] as const
 const TagsSchema = z.array(z.enum(BOARD_TAGS)).max(3)
+
+/** Save-time details (the editor requires them; the API stays lenient so
+ *  older clients and partial PATCHes keep working). */
+export const BOARD_AGE_GROUPS = ['u7', 'u9', 'u11', 'u13', 'u15', 'u17', 'senior'] as const
+export const BOARD_DIFFICULTIES = ['beginner', 'intermediate', 'advanced'] as const
+const DetailsSchema = {
+  ageGroup: z.enum(BOARD_AGE_GROUPS).optional().nullable(),
+  difficulty: z.enum(BOARD_DIFFICULTIES).optional().nullable(),
+}
 
 const CreateBoardSchema = z.object({
   title: z.string().min(1).max(255).default('Untitled board'),
   pitchKey: z.string().max(50).optional().nullable(),
   state: z.unknown().optional(),
   tags: TagsSchema.optional(),
+  ...DetailsSchema,
 })
 
 const UpdateBoardSchema = z.object({
@@ -23,6 +36,7 @@ const UpdateBoardSchema = z.object({
   pitchKey: z.string().max(50).optional().nullable(),
   state: z.unknown().optional(),
   tags: TagsSchema.optional(),
+  ...DetailsSchema,
 })
 
 /**
@@ -61,6 +75,8 @@ const BOARD_CARD_SELECT = {
   publishedAt: true,
   hasAnimation: true,
   tags: true,
+  ageGroup: true,
+  difficulty: true,
   createdAt: true,
   updatedAt: true,
 } as const
@@ -167,6 +183,8 @@ export async function canvasRoutes(app: FastifyInstance) {
         publishedAt: new Date(),
         ...(input.state !== undefined && { state: input.state as Prisma.InputJsonValue }),
         ...(input.tags !== undefined && { tags: input.tags }),
+        ...(input.ageGroup !== undefined && { ageGroup: input.ageGroup }),
+        ...(input.difficulty !== undefined && { difficulty: input.difficulty }),
         hasAnimation: stateHasAnimation(input.state),
         ...((snap) => (snap !== undefined ? { contextSnapshot: snap } : {}))(await contextSnapshotFor(userId)),
       },
@@ -203,6 +221,8 @@ export async function canvasRoutes(app: FastifyInstance) {
       if (snap !== undefined) updateData.contextSnapshot = snap
     }
     if (input.tags !== undefined) updateData.tags = input.tags
+    if (input.ageGroup !== undefined) updateData.ageGroup = input.ageGroup
+    if (input.difficulty !== undefined) updateData.difficulty = input.difficulty
     const board = await db.canvasBoard.update({ where: { id: Number(id) }, data: updateData })
     return reply.send(board)
   })
