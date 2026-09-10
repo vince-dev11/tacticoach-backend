@@ -19,7 +19,7 @@ async function main() {
       slug: 'pro',
       description: 'The full platform for hands-on coaches.',
       monthlyPrice: '2.99',
-      annualPrice: '23.88', // £1.99/mo billed yearly
+      annualPrice: '29.99', // 2 months free (≈ £2.50/mo billed yearly)
       currency: 'GBP',
       features: ['All pitch types', 'Unlimited tactics', 'Animation timeline', 'HD video export', 'Cloud sync', 'Drill sheet export'],
       maxBoards: null,
@@ -32,7 +32,7 @@ async function main() {
       slug: 'pro-ai',
       description: 'Everything in Pro plus AI tactic generation.',
       monthlyPrice: '5.99',
-      annualPrice: '47.88', // £3.99/mo billed yearly
+      annualPrice: '59.99', // 2 months free (≈ £5.00/mo billed yearly)
       currency: 'GBP',
       features: ['Everything in Pro', '30 AI credits / month', 'AI coaching notes', 'Drill suggestions', 'Auto-animation'],
       maxBoards: null,
@@ -45,7 +45,7 @@ async function main() {
       slug: 'club',
       description: 'For coaching teams. Up to 10 coach seats.',
       monthlyPrice: '24.99',
-      annualPrice: '203.88', // £16.99/mo billed yearly
+      annualPrice: '249.00', // 2 months free (≈ £20.75/mo billed yearly)
       currency: 'GBP',
       features: ['Everything in Pro', '10 coach seats', 'Shared tactic library', 'Club branding page', 'Session builder', 'Priority support'],
       maxBoards: null,

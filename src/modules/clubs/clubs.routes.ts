@@ -240,7 +240,8 @@ export async function clubsRoutes(app: FastifyInstance) {
   })
 
   // Reserved slugs that would collide with app routes or look official.
-  const RESERVED_SLUGS = new Set(['admin', 'tacticoach', 'official', 'api', 'blog', 'club', 'clubs', 'share', 'login', 'signup'])
+  // 'join' is the seat-invite route under /club/, so it can never be a club's slug.
+  const RESERVED_SLUGS = new Set(['admin', 'tacticoach', 'official', 'api', 'blog', 'club', 'clubs', 'coach', 'join', 'share', 'login', 'signup'])
 
   /** Published boards + drill sheets across the whole club (owner + members). */
   async function clubPublishedCount(clubId: number, ownerId: number): Promise<number> {
@@ -292,7 +293,7 @@ export async function clubsRoutes(app: FastifyInstance) {
       ),
       pageStatus: club.pageStatus,
       pageReviewNote: club.pageReviewNote,
-      pageUrl: club.pageStatus === 'approved' && club.slug ? `${env.FRONTEND_URL}/c/${club.slug}` : null,
+      pageUrl: club.pageStatus === 'approved' && club.slug ? `${env.FRONTEND_URL}/club/${club.slug}` : null,
       eligibility,
     })
   })

@@ -1,4 +1,4 @@
-// Public club pages — /api/c/:slug. No auth: these are the club's shop window.
+// Public club pages — /api/club/:slug. No auth: these are the club's shop window.
 // Only clubs whose page passed CRM review (pageStatus = approved) are served;
 // approval is granted/revoked in the owner admin area (/api/admin/club-pages).
 

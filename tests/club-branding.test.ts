@@ -197,7 +197,7 @@ describe('CRM approvals', () => {
     await vi.waitFor(() => expect(sendMailMock).toHaveBeenCalledTimes(1))
     const mail = sendMailMock.mock.calls[0][0]
     expect(mail.to).toBe('vince@test.dev')
-    expect(mail.html).toContain('/c/fc-united')
+    expect(mail.html).toContain('/club/fc-united')
   })
 
   it('reject requires a note and emails it to the owner', async () => {
@@ -267,7 +267,7 @@ describe('public club page', () => {
     ] as never)
     dbMock.drillSheet.findMany.mockResolvedValue([] as never)
 
-    const res = await app.inject({ method: 'GET', url: '/api/c/fc-united' })
+    const res = await app.inject({ method: 'GET', url: '/api/club/fc-united' })
     expect(res.statusCode).toBe(200)
     const body = res.json()
     expect(body.name).toBe('FC United')
@@ -281,7 +281,7 @@ describe('public club page', () => {
   it('404s pending/rejected/unknown pages', async () => {
     const app = await getApp()
     dbMock.club.findFirst.mockResolvedValue(null)
-    const res = await app.inject({ method: 'GET', url: '/api/c/nope' })
+    const res = await app.inject({ method: 'GET', url: '/api/club/nope' })
     expect(res.statusCode).toBe(404)
   })
 
@@ -295,7 +295,7 @@ describe('public club page', () => {
       photos: [],
     } as never)
 
-    const res = await app.inject({ method: 'GET', url: '/api/c/fc-united' })
+    const res = await app.inject({ method: 'GET', url: '/api/club/fc-united' })
     expect(res.statusCode).toBe(404)
     // pageStatus is never mutated — renewal brings the page straight back
     expect(dbMock.club.update).not.toHaveBeenCalled()
@@ -416,7 +416,7 @@ describe('gallery photos', () => {
     dbMock.canvasBoard.findMany.mockResolvedValue([] as never)
     dbMock.drillSheet.findMany.mockResolvedValue([] as never)
 
-    const res = await app.inject({ method: 'GET', url: '/api/c/fc-united' })
+    const res = await app.inject({ method: 'GET', url: '/api/club/fc-united' })
     expect(res.statusCode).toBe(200)
     const body = res.json()
     expect(body.location).toBe('Manchester')

@@ -428,7 +428,7 @@ export async function adminRoutes(app: FastifyInstance) {
 
     // Notify the owner (fire-and-forget).
     if (action === 'approve' && club.slug) {
-      void sendClubPageApprovedEmail(club.owner, club.name, `${env.FRONTEND_URL}/c/${club.slug}`)
+      void sendClubPageApprovedEmail(club.owner, club.name, `${env.FRONTEND_URL}/club/${club.slug}`)
     } else if (action === 'reject') {
       void sendClubPageRejectedEmail(club.owner, club.name, note!)
     }

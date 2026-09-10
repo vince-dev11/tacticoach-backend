@@ -86,7 +86,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(adminRoutes, { prefix: '/api/admin' })
   await app.register(shareRoutes, { prefix: '/api/share' })
   await app.register(challengesRoutes, { prefix: '/api/challenges' })
-  await app.register(clubPageRoutes, { prefix: '/api/c' })
+  await app.register(clubPageRoutes, { prefix: '/api/club' })
   await app.register(coachPageRoutes, { prefix: '/api/coach' })
 
   // ---- Local uploads (dev fallback when S3 is unconfigured) -----------------
