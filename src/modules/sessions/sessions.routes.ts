@@ -11,13 +11,17 @@ import { authGuard } from '../../middleware/auth-guard.js'
 import { requireEditorAccess } from '../../middleware/entitlement-guard.js'
 import { db } from '../../config/database.js'
 
+// Lenient on purpose: a half-finished plan must still SAVE. A cleared block
+// title or a 0-minute placeholder block is the coach's draft, not an error —
+// the earlier strict schema (title min 1, minutes min 1) rejected the whole
+// save for one blank field, and the client only ever showed "Save failed".
 const BlockSchema = z.object({
   kind: z.enum(['board', 'sheet', 'text']),
   /** Library id for board/sheet blocks; absent for text blocks. */
-  refId: z.number().int().positive().optional(),
-  title: z.string().min(1).max(255),
-  minutes: z.number().int().min(1).max(180),
-  note: z.string().max(1000).optional(),
+  refId: z.number().int().positive().optional().nullable(),
+  title: z.string().max(255).transform((t) => t.trim() || 'Untitled block'),
+  minutes: z.coerce.number().min(0).max(300).transform((m) => Math.round(m)),
+  note: z.string().max(2000).optional().nullable(),
 })
 
 const BrandSchema = z.object({
@@ -31,10 +35,10 @@ const BrandSchema = z.object({
 })
 
 const CreateSessionSchema = z.object({
-  title: z.string().min(1).max(255),
+  title: z.string().max(255).transform((t) => t.trim() || 'Untitled session'),
   sessionDate: z.coerce.date().optional().nullable(),
   ageGroup: z.string().max(16).optional().nullable(),
-  targetMinutes: z.number().int().min(10).max(300).optional().nullable(),
+  targetMinutes: z.coerce.number().min(1).max(600).transform((m) => Math.round(m)).optional().nullable(),
   blocks: z.array(BlockSchema).max(40).default([]),
   brand: BrandSchema.default({}),
 })

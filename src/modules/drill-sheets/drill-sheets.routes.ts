@@ -12,7 +12,7 @@ import { uploadToS3, deleteFromS3, presignUrl } from '../../config/s3.js'
 import { readUpload } from '../../lib/multipart.js'
 
 const IMAGE_TYPES = ['image/webp', 'image/png', 'image/jpeg']
-const IMAGE_MAX = 2 * 1024 * 1024 // 2 MB
+const IMAGE_MAX = 6 * 1024 * 1024 // 6 MB — a scale-2 capture of a full A4 sheet
 
 const CreateSheetSchema = z.object({
   title: z.string().min(1).max(255),

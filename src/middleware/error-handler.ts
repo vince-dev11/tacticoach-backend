@@ -21,9 +21,16 @@ export function errorHandler(error: FastifyError, _req: FastifyRequest, reply: F
       const key = issue.path.join('.') || '_root'
       ;(fieldErrors[key] ??= []).push(issue.message)
     }
+    // A human-readable summary alongside the per-field map: the frontend's
+    // apiFetch surfaces `message`, and without one every validation failure
+    // reached the coach as a bare "Request failed (422)" / "Save failed".
+    const summary = Object.entries(fieldErrors)
+      .map(([field, msgs]) => (field === '_root' ? msgs[0] : `${field}: ${msgs[0]}`))
+      .join('; ')
     return reply.status(422).send({
       statusCode: 422,
       error: 'Validation Error',
+      message: summary || 'Validation failed',
       issues: fieldErrors,
     })
   }
