@@ -35,6 +35,17 @@ model User {
   /// the AI context; both validated against the format at resolution time.
   coachFormation   String?   @map("coach_formation") @db.VarChar(12)
   coachSquadSize   Int?      @map("coach_squad_size")
+  // ---- Coach branding: the coach's own public page (/coach/:slug) ----
+  // Solo coaches have no Club row, so this is the only branded presence most
+  // users get. Auto-live (no review) once the slug is set, the page is
+  // enabled, the plan is active and something is published.
+  coachSlug        String?   @unique @map("coach_slug") @db.VarChar(60)
+  coachPhotoKey    String?   @map("coach_photo_key") @db.VarChar(500)
+  coachColor       String?   @map("coach_color") @db.VarChar(9)
+  coachBio         String?   @map("coach_bio") @db.Text
+  /// Role / qualification line under the name ("UEFA B · Head coach U13").
+  coachTitle       String?   @map("coach_title") @db.VarChar(80)
+  coachPageEnabled Boolean   @default(true) @map("coach_page_enabled")
   /// Guided tours this account has completed (["editor","sheet"]). Account-level
   /// (not localStorage) so a coach sees each tour exactly once across devices.
   toursDone        Json      @default("[]") @map("tours_done")

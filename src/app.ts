@@ -26,6 +26,7 @@ import { adminRoutes } from './modules/admin/admin.routes.js'
 import { shareRoutes } from './modules/share/share.routes.js'
 import { challengesRoutes } from './modules/challenges/challenges.routes.js'
 import { clubPageRoutes } from './modules/club-page/club-page.routes.js'
+import { coachPageRoutes } from './modules/coach-page/coach-page.routes.js'
 
 export async function buildApp(): Promise<FastifyInstance> {
   const app = Fastify({ logger: env.NODE_ENV !== 'test' })
@@ -86,6 +87,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(shareRoutes, { prefix: '/api/share' })
   await app.register(challengesRoutes, { prefix: '/api/challenges' })
   await app.register(clubPageRoutes, { prefix: '/api/c' })
+  await app.register(coachPageRoutes, { prefix: '/api/coach' })
 
   // ---- Local uploads (dev fallback when S3 is unconfigured) -----------------
 

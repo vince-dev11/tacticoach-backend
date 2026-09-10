@@ -293,3 +293,95 @@ describe('owner promotion on register', () => {
     expect(dbMock.user.create.mock.calls[0][0].data.role).toBeUndefined()
   })
 })
+
+describe('complimentary plans', () => {
+  it('lists grantable plans (owner only)', async () => {
+    const app = await getApp()
+    ownerRole()
+    dbMock.membershipPlan.findMany.mockResolvedValue([{ id: 2, name: 'Pro', slug: 'pro', monthlyPrice: 2.99 }] as never)
+    const res = await app.inject({ method: 'GET', url: '/api/admin/plans', headers: authHeaders(await accessToken()) })
+    expect(res.statusCode).toBe(200)
+    expect(res.json().plans[0].slug).toBe('pro')
+
+    userRole()
+    const denied = await app.inject({ method: 'GET', url: '/api/admin/plans', headers: authHeaders(await accessToken()) })
+    expect(denied.statusCode).toBe(403)
+  })
+
+  it('grants an active complimentary subscription with an expiry', async () => {
+    const app = await getApp()
+    ownerRole()
+    dbMock.membershipPlan.findUnique.mockResolvedValue({ id: 2, slug: 'pro', name: 'Pro' } as never)
+    // Second user.findUnique call is the target user lookup.
+    dbMock.user.findUnique
+      .mockResolvedValueOnce({ role: 'owner' } as never)
+      .mockResolvedValueOnce(userRow({ id: 5, name: 'Amara', clubName: null }) as never)
+    dbMock.userSubscription.upsert.mockResolvedValue({ id: 9, userId: 5, status: 'active' } as never)
+
+    const res = await app.inject({
+      method: 'PATCH',
+      url: '/api/admin/users/5/plan',
+      headers: authHeaders(await accessToken()),
+      payload: { planSlug: 'pro', months: 12 },
+    })
+    expect(res.statusCode).toBe(200)
+    const call = dbMock.userSubscription.upsert.mock.calls[0][0] as { where: { userId: number }; create: Record<string, unknown> }
+    expect(call.where).toEqual({ userId: 5 })
+    expect(call.create).toMatchObject({ planId: 2, status: 'active', paymentProvider: 'complimentary' })
+    expect(call.create.expiresAt).toBeInstanceOf(Date)
+    expect(dbMock.club.upsert).not.toHaveBeenCalled()
+  })
+
+  it('creates the Club when granting the club plan, and supports no expiry', async () => {
+    const app = await getApp()
+    ownerRole()
+    dbMock.membershipPlan.findUnique.mockResolvedValue({ id: 3, slug: 'club', name: 'Club' } as never)
+    dbMock.user.findUnique
+      .mockResolvedValueOnce({ role: 'owner' } as never)
+      .mockResolvedValueOnce(userRow({ id: 6, name: 'Carlos', clubName: 'QA United' }) as never)
+    dbMock.userSubscription.upsert.mockResolvedValue({ id: 10 } as never)
+    dbMock.club.upsert.mockResolvedValue({ id: 1 } as never)
+
+    const res = await app.inject({
+      method: 'PATCH',
+      url: '/api/admin/users/6/plan',
+      headers: authHeaders(await accessToken()),
+      payload: { planSlug: 'club', months: null },
+    })
+    expect(res.statusCode).toBe(200)
+    const call = dbMock.userSubscription.upsert.mock.calls[0][0] as { create: Record<string, unknown> }
+    expect(call.create.expiresAt).toBeNull()
+    expect(dbMock.club.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { ownerId: 6 }, create: { ownerId: 6, name: 'QA United' } }),
+    )
+  })
+
+  it('404s an unknown plan', async () => {
+    const app = await getApp()
+    ownerRole()
+    dbMock.membershipPlan.findUnique.mockResolvedValue(null)
+    const res = await app.inject({
+      method: 'PATCH',
+      url: '/api/admin/users/5/plan',
+      headers: authHeaders(await accessToken()),
+      payload: { planSlug: 'gold', months: 1 },
+    })
+    expect(res.statusCode).toBe(404)
+  })
+
+  it('revokes a complimentary plan but refuses to touch a Stripe one', async () => {
+    const app = await getApp()
+    ownerRole()
+    dbMock.userSubscription.findUnique.mockResolvedValue({ paymentProvider: 'complimentary' } as never)
+    dbMock.userSubscription.update.mockResolvedValue({} as never)
+    const ok = await app.inject({ method: 'DELETE', url: '/api/admin/users/5/plan', headers: authHeaders(await accessToken()) })
+    expect(ok.statusCode).toBe(204)
+    expect(dbMock.userSubscription.update).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { userId: 5 }, data: expect.objectContaining({ status: 'expired' }) }),
+    )
+
+    dbMock.userSubscription.findUnique.mockResolvedValue({ paymentProvider: 'stripe' } as never)
+    const paid = await app.inject({ method: 'DELETE', url: '/api/admin/users/5/plan', headers: authHeaders(await accessToken()) })
+    expect(paid.statusCode).toBe(409)
+  })
+})

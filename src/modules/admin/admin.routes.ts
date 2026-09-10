@@ -250,7 +250,7 @@ export async function adminRoutes(app: FastifyInstance) {
         select: {
           id: true, name: true, surname: true, email: true, clubName: true,
           emailVerifiedAt: true, createdAt: true, role: true,
-          subscription: { select: { status: true, expiresAt: true, plan: { select: { name: true, slug: true } } } },
+          subscription: { select: { status: true, expiresAt: true, paymentProvider: true, plan: { select: { name: true, slug: true } } } },
           _count: { select: { boards: true, drillSheets: true } },
         },
       }),
@@ -292,6 +292,74 @@ export async function adminRoutes(app: FastifyInstance) {
       },
     })
     return reply.send(updated)
+  })
+
+  // ===== Complimentary plans ===================================================
+
+  // GET /admin/plans — the plans an owner can grant (active, in display order)
+  app.get('/plans', async (_request, reply) => {
+    const plans = await db.membershipPlan.findMany({
+      where: { isActive: true },
+      orderBy: { sortOrder: 'asc' },
+      select: { id: true, name: true, slug: true, monthlyPrice: true },
+    })
+    return reply.send({ plans })
+  })
+
+  // PATCH /admin/users/:id/plan { planSlug, months } — grant a complimentary
+  // plan. Replaces whatever the user has (trial, paid, nothing) with an
+  // active subscription on that plan, no Stripe involved. `months` null =
+  // no expiry. Granting the Club plan also creates the user's Club so they
+  // can invite seats, exactly as a paid activation does.
+  app.patch('/users/:id/plan', async (request, reply) => {
+    const id = Number((request.params as { id: string }).id)
+    const { planSlug, months } = z
+      .object({ planSlug: z.string().min(1).max(50), months: z.number().int().min(1).max(120).nullable() })
+      .parse(request.body)
+
+    const plan = await db.membershipPlan.findUnique({ where: { slug: planSlug }, select: { id: true, slug: true, name: true } })
+    if (!plan) return reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'Plan not found' })
+    const user = await db.user.findUnique({ where: { id }, select: { id: true, name: true, clubName: true } })
+    if (!user) return reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'User not found' })
+
+    const expiresAt = months ? new Date(new Date().setMonth(new Date().getMonth() + months)) : null
+    const data = {
+      planId: plan.id,
+      status: 'active' as const,
+      billingCycle: null,
+      startedAt: new Date(),
+      expiresAt,
+      cancelledAt: null,
+      trialReminderSentAt: null,
+      paymentProvider: 'complimentary',
+      providerSubscriptionId: null,
+    }
+    const sub = await db.userSubscription.upsert({
+      where: { userId: id },
+      update: data,
+      create: { userId: id, ...data },
+    })
+    if (plan.slug === 'club') {
+      await db.club.upsert({
+        where: { ownerId: id },
+        update: {},
+        create: { ownerId: id, name: user.clubName || `${user.name}'s Club` },
+      })
+    }
+    return reply.send(sub)
+  })
+
+  // DELETE /admin/users/:id/plan — revoke a complimentary plan (marks the
+  // subscription expired; Stripe-managed subscriptions are left alone).
+  app.delete('/users/:id/plan', async (request, reply) => {
+    const id = Number((request.params as { id: string }).id)
+    const sub = await db.userSubscription.findUnique({ where: { userId: id }, select: { paymentProvider: true } })
+    if (!sub) return reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'No subscription' })
+    if (sub.paymentProvider === 'stripe') {
+      return reply.status(409).send({ statusCode: 409, error: 'Conflict', message: 'This is a paid subscription — cancel it in Stripe' })
+    }
+    await db.userSubscription.update({ where: { userId: id }, data: { status: 'expired', expiresAt: new Date(), cancelledAt: new Date() } })
+    return reply.status(204).send()
   })
 
   // ===== Club page approvals ====================================================

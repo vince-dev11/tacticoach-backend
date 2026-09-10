@@ -8,6 +8,7 @@ import type { FastifyInstance } from 'fastify'
 import { db } from '../../config/database.js'
 import { presignUrl } from '../../config/s3.js'
 import { clubBrandingActive } from '../../lib/entitlements.js'
+import { coachStripFor } from '../coach-page/coach-page.service.js'
 
 /** Brand strip for the author's club (own club or via seat), when branded. */
 async function clubStripFor(userId: number) {
@@ -65,6 +66,7 @@ export async function shareRoutes(app: FastifyInstance) {
       thumbnailUrl,
       videoUrl,
       club: await clubStripFor(board.userId),
+      coach: await coachStripFor(board.userId),
     })
   })
 
@@ -95,6 +97,7 @@ export async function shareRoutes(app: FastifyInstance) {
       clubName: sheet.user.clubName,
       imageUrl: sheet.imageKey ? await presignUrl(sheet.imageKey) : null,
       club: await clubStripFor(sheet.userId),
+      coach: await coachStripFor(sheet.userId),
     })
   })
 }

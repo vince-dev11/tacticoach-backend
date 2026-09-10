@@ -149,7 +149,9 @@ export async function canvasRoutes(app: FastifyInstance) {
         take: Number(limit),
         select: {
           ...BOARD_CARD_SELECT,
-          user: { select: { id: true, name: true, surname: true, clubName: true } },
+          // coachSlug links the card to the coach's page; the page itself
+          // 404s if it isn't live, so no per-row liveness check here.
+          user: { select: { id: true, name: true, surname: true, clubName: true, coachSlug: true, coachPhotoKey: true, coachColor: true } },
           _count: { select: { likes: true } },
           likes: { where: { userId }, select: { id: true } },
         },
@@ -158,9 +160,11 @@ export async function canvasRoutes(app: FastifyInstance) {
     ])
     const items = await Promise.all(
       boards.map(async (b) => {
-        const { likes, _count, ...rest } = b
+        const { likes, _count, user, ...rest } = b
+        const { coachPhotoKey, ...coach } = user
         return {
           ...(await withMediaUrls(rest)),
+          user: { ...coach, coachPhotoUrl: coachPhotoKey ? await presignUrl(coachPhotoKey) : null },
           likeCount: _count.likes,
           likedByMe: likes.length > 0,
         }
