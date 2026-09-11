@@ -33,6 +33,19 @@ const limit = (max: number, timeWindow: string) => ({
 })
 
 export async function authRoutes(app: FastifyInstance) {
+  /**
+   * Token minting, in one place.
+   *
+   * Lifetimes come from config (they were hardcoded here, so the
+   * JWT_*_EXPIRES_IN env vars silently did nothing and any attempt to shorten
+   * a session by changing config had no effect). Refresh tokens are signed
+   * with the separate refresh secret — see the namespace registered in app.ts.
+   */
+  const signAccess = (userId: number, email: string) =>
+    app.jwt.sign({ sub: userId, email }, { expiresIn: env.JWT_ACCESS_EXPIRES_IN })
+  const signRefresh = (userId: number) =>
+    app.jwt.refresh.sign({ sub: userId, type: 'refresh' }, { expiresIn: env.JWT_REFRESH_EXPIRES_IN })
+
   /** Stateless email-verification link: a 24h signed JWT, no DB table needed. */
   const verifyUrlFor = (userId: number, email: string) => {
     const token = app.jwt.sign({ sub: userId, email, type: 'verify-email' }, { expiresIn: '24h' })
@@ -43,8 +56,8 @@ export async function authRoutes(app: FastifyInstance) {
   app.post('/register', limit(20, '1 hour'), async (request, reply) => {
     const input = RegisterSchema.parse(request.body)
     const user = await registerUser(input)
-    const accessToken = app.jwt.sign({ sub: user.id, email: user.email }, { expiresIn: '15m' })
-    const refreshToken = app.jwt.sign({ sub: user.id, type: 'refresh' }, { expiresIn: '30d' })
+    const accessToken = signAccess(user.id, user.email)
+    const refreshToken = signRefresh(user.id)
     await saveRefreshToken(user.id, refreshToken)
     // Fire-and-forget: the welcome email must never delay or fail a signup.
     void sendWelcomeEmail(user, verifyUrlFor(user.id, user.email))
@@ -99,8 +112,8 @@ export async function authRoutes(app: FastifyInstance) {
     if (!user) {
       return reply.status(401).send({ statusCode: 401, error: 'Unauthorized', message: 'Invalid email or password' })
     }
-    const accessToken = app.jwt.sign({ sub: user.id, email: user.email }, { expiresIn: '15m' })
-    const refreshToken = app.jwt.sign({ sub: user.id, type: 'refresh' }, { expiresIn: '30d' })
+    const accessToken = signAccess(user.id, user.email)
+    const refreshToken = signRefresh(user.id)
     await saveRefreshToken(user.id, refreshToken)
     return reply.send({ user: { id: user.id, name: user.name, surname: user.surname, email: user.email }, accessToken, refreshToken })
   })
@@ -110,7 +123,7 @@ export async function authRoutes(app: FastifyInstance) {
     const { refreshToken } = RefreshSchema.parse(request.body)
     let payload: { sub?: number; type?: string }
     try {
-      payload = app.jwt.verify(refreshToken)
+      payload = app.jwt.refresh.verify(refreshToken)
     } catch {
       return reply.status(401).send({ statusCode: 401, error: 'Unauthorized', message: 'Invalid refresh token' })
     }
@@ -124,8 +137,8 @@ export async function authRoutes(app: FastifyInstance) {
     if (!stored || stored.expiresAt < new Date()) {
       return reply.status(401).send({ statusCode: 401, error: 'Unauthorized', message: 'Refresh token expired or not found' })
     }
-    const newAccess = app.jwt.sign({ sub: stored.userId, email: stored.user.email }, { expiresIn: '15m' })
-    const newRefresh = app.jwt.sign({ sub: stored.userId, type: 'refresh' }, { expiresIn: '30d' })
+    const newAccess = signAccess(stored.userId, stored.user.email)
+    const newRefresh = signRefresh(stored.userId)
     await rotateRefreshToken(refreshToken, stored.userId, newRefresh)
     return reply.send({ accessToken: newAccess, refreshToken: newRefresh })
   })

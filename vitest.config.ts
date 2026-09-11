@@ -9,8 +9,10 @@ export default defineConfig({
     env: {
       NODE_ENV: 'test',
       DATABASE_URL: 'mysql://test:test@localhost:3306/tacticoach_test',
-      JWT_ACCESS_SECRET: 'test-access-secret',
-      JWT_REFRESH_SECRET: 'test-refresh-secret',
+      // Long enough to satisfy the 32-char minimum env.ts enforces, and
+      // distinct from each other — the same two rules production must meet.
+      JWT_ACCESS_SECRET: 'test-access-secret-0123456789abcdef0123456789',
+      JWT_REFRESH_SECRET: 'test-refresh-secret-fedcba9876543210fedcba9876',
       AWS_REGION: 'eu-west-1',
       AWS_ACCESS_KEY_ID: 'test',
       AWS_SECRET_ACCESS_KEY: 'test',

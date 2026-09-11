@@ -21,9 +21,15 @@ export function s3Configured(): boolean {
 const LOCAL_DIR = path.resolve(env.UPLOADS_DIR ?? 'uploads')
 const publicBase = () => (env.PUBLIC_API_URL ?? `http://localhost:${env.PORT}`).replace(/\/$/, '')
 
+// Uploads are user content served from the API's own origin, so the only
+// types listed here are ones a browser cannot execute. SVG is deliberately
+// absent: it is a script-bearing document, and serving a stored one as
+// image/svg+xml would run its payload on our origin. Logo uploads no longer
+// accept SVG (users.schema.ts), and anything already on disk from before
+// falls through to the octet-stream default below and downloads instead.
 const MIME: Record<string, string> = {
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp',
-  '.mp4': 'video/mp4', '.webm': 'video/webm', '.pdf': 'application/pdf', '.svg': 'image/svg+xml',
+  '.mp4': 'video/mp4', '.webm': 'video/webm', '.pdf': 'application/pdf',
 }
 
 /** Serve locally stored uploads (no-op path when S3 is configured — the route

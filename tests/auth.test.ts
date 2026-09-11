@@ -120,7 +120,9 @@ describe('POST /api/auth/login', () => {
 describe('POST /api/auth/refresh', () => {
   it('rotates a valid refresh token', async () => {
     const app = await getApp()
-    const token = app.jwt.sign({ sub: 1, type: 'refresh' }, { expiresIn: '30d' })
+    // Refresh tokens carry their own signing key (see app.ts) — mint through
+    // the refresh namespace, exactly as the login/register routes do.
+    const token = app.jwt.refresh.sign({ sub: 1, type: 'refresh' }, { expiresIn: '30d' })
     dbMock.refreshToken.findUnique.mockResolvedValue({
       id: 1,
       userId: 1,
@@ -156,7 +158,9 @@ describe('POST /api/auth/refresh', () => {
 
   it('rejects a token missing from the DB (revoked) with 401', async () => {
     const app = await getApp()
-    const token = app.jwt.sign({ sub: 1, type: 'refresh' }, { expiresIn: '30d' })
+    // Refresh tokens carry their own signing key (see app.ts) — mint through
+    // the refresh namespace, exactly as the login/register routes do.
+    const token = app.jwt.refresh.sign({ sub: 1, type: 'refresh' }, { expiresIn: '30d' })
     dbMock.refreshToken.findUnique.mockResolvedValue(null)
 
     const res = await app.inject({ method: 'POST', url: '/api/auth/refresh', payload: { refreshToken: token } })

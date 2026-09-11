@@ -56,6 +56,17 @@ export async function buildApp(): Promise<FastifyInstance> {
     secret: env.JWT_ACCESS_SECRET,
   })
 
+  // Refresh tokens are signed with their OWN secret (app.jwt.refresh.*). With a
+  // single shared secret, anything able to mint or forge one token type could
+  // mint them all — a leaked access secret would also hand over 30-day refresh
+  // tokens. Separate keys mean the short-lived and long-lived credentials fail
+  // independently, and JWT_REFRESH_SECRET (long defined in env, never used) now
+  // does the job its name promises.
+  await app.register(fastifyJwt, {
+    secret: env.JWT_REFRESH_SECRET,
+    namespace: 'refresh',
+  })
+
   await app.register(fastifyMultipart, {
     // Transport-level hard cap sized for the largest upload (the 720p preview
     // video, ≤60 MB). Each route enforces its own tighter per-type limit via

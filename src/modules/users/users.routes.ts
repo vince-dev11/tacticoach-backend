@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify'
 import { authGuard } from '../../middleware/auth-guard.js'
-import { UpdateProfileSchema, TourDoneSchema, SaveSquadSchema, ALLOWED_LOGO_TYPES, MAX_LOGO_SIZE } from './users.schema.js'
+import { UpdateProfileSchema, TourDoneSchema, SaveSquadSchema, ALLOWED_LOGO_TYPES, EXT_FOR_LOGO_TYPE, MAX_LOGO_SIZE } from './users.schema.js'
 import { getUserProfile, updateUserProfile, uploadClubLogo, deleteClubLogo, markTourDone, getSquad, saveSquad } from './users.service.js'
 
 export async function usersRoutes(app: FastifyInstance) {
@@ -66,7 +66,11 @@ export async function usersRoutes(app: FastifyInstance) {
       return reply.status(422).send({ statusCode: 422, error: 'Unprocessable Entity', message: 'File too large (max 5 MB)' })
     }
 
-    const ext = data.filename.split('.').pop() ?? 'png'
+    // Derive the extension from the VALIDATED mime type, never from the
+    // client-supplied filename: the filename is attacker-controlled, so
+    // trusting it let a caller pick the stored object's extension (and with
+    // it the content type it is later served as).
+    const ext = EXT_FOR_LOGO_TYPE[data.mimetype] ?? 'png'
     const logoUrl = await uploadClubLogo(userId, buffer, data.mimetype, ext)
     return reply.send({ clubLogoUrl: logoUrl })
   })

@@ -61,7 +61,20 @@ export const TOUR_IDS = ['editor', 'sheet', 'session'] as const
 export const TourDoneSchema = z.object({ tour: z.enum(TOUR_IDS) })
 export type TourId = (typeof TOUR_IDS)[number]
 
-export const ALLOWED_LOGO_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/svg+xml']
+/**
+ * Club logo uploads. Raster only, deliberately: an SVG is a script-bearing
+ * document, not just a picture — one uploaded with an <script> or onload
+ * payload executes in whoever's browser opens the file URL, on our own origin.
+ * Every other upload route in the API is already raster-only; this one is now
+ * consistent with them.
+ */
+export const ALLOWED_LOGO_TYPES = ['image/jpeg', 'image/png', 'image/webp']
+/** Stored file extension per accepted type — never taken from the filename. */
+export const EXT_FOR_LOGO_TYPE: Record<string, string> = {
+  'image/jpeg': 'jpg',
+  'image/png': 'png',
+  'image/webp': 'webp',
+}
 export const MAX_LOGO_SIZE = 5 * 1024 * 1024 // 5 MB
 
 /**

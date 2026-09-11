@@ -1,6 +1,11 @@
 node_modules/
 dist/
+
+# Environment / secrets — never commit anything but the example template.
 .env
+.env.*
+!.env.example
+
 *.local
 /src/generated/
 

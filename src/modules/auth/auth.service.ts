@@ -54,11 +54,17 @@ export async function registerUser(input: RegisterInput) {
   return user
 }
 
+// A bcrypt hash of a value nobody can supply, used to burn the same ~100ms on
+// an unknown email as on a known one. Without it, "no such user" returns
+// immediately while a real account pays for the hash comparison — a timing
+// difference big enough to enumerate which emails hold accounts, which is
+// exactly what the deliberately generic error message is meant to prevent.
+const DUMMY_HASH = bcrypt.hashSync('unused-placeholder-for-constant-time-login', BCRYPT_ROUNDS)
+
 export async function validateCredentials(input: LoginInput) {
   const user = await db.user.findUnique({ where: { email: input.email } })
-  if (!user) return null
-  const valid = await bcrypt.compare(input.password, user.passwordHash)
-  return valid ? user : null
+  const valid = await bcrypt.compare(input.password, user?.passwordHash ?? DUMMY_HASH)
+  return user && valid ? user : null
 }
 
 // Refresh tokens are stored HASHED (like the reset tokens below): a leaked

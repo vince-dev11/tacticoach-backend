@@ -7,8 +7,12 @@ const schema = z.object({
 
   DATABASE_URL: z.string().min(1),
 
-  JWT_ACCESS_SECRET: z.string().min(1),
-  JWT_REFRESH_SECRET: z.string().min(1),
+  // 32 chars minimum: a signing key short enough to brute-force offline makes
+  // every other auth control decorative. The two must also differ — sharing
+  // one key between short-lived access tokens and 30-day refresh tokens means
+  // a single leak compromises both.
+  JWT_ACCESS_SECRET: z.string().min(32, 'must be at least 32 characters'),
+  JWT_REFRESH_SECRET: z.string().min(32, 'must be at least 32 characters'),
   JWT_ACCESS_EXPIRES_IN: z.string().default('15m'),
   JWT_REFRESH_EXPIRES_IN: z.string().default('30d'),
 
@@ -69,6 +73,14 @@ if (!parsed.success) {
   for (const [key, issues] of Object.entries(parsed.error.flatten().fieldErrors)) {
     console.error(`   ${key}: ${issues?.join(', ')}`)
   }
+  process.exit(1)
+}
+
+// Refuse to boot with the two JWT keys set to the same value — the whole point
+// of separate access/refresh secrets is that they fail independently.
+if (parsed.data.JWT_ACCESS_SECRET === parsed.data.JWT_REFRESH_SECRET) {
+  console.error('❌  JWT_ACCESS_SECRET and JWT_REFRESH_SECRET must be different values.')
+  console.error('   Generate one with: node -e "console.log(require(\'crypto\').randomBytes(48).toString(\'hex\'))"')
   process.exit(1)
 }
 

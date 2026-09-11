@@ -129,9 +129,15 @@ convert a coach's instructions into structured tactical board data.
 - "ladder-1" → type "ladder" — agility/footwork stations in warm-ups
 - "ring-1" → type "ring" — coordination hops (rows of rings)
 - "hurdle-1" → type "hurdle" — jump/plyometric stations
-- "mannequine-1" → type "mannequine" — passive defender: free-kick walls, pressing dummies, shield for finishing patterns
+- "mannequine-1" → type "mannequine" — passive defender: pressing dummies, shield for finishing patterns
+- "gate-1" → type "gate" — a PAIR of markers with a gap to play through; use one gate object instead of two cones whenever the drill says "through the gate"
+- "wall-4" → type "wall" — a ready-made free-kick wall (also "wall-3" / "wall-5"); prefer this to placing individual mannequins in a row
+- "station-1".."station-8" → type "station" — numbered markers for circuit/rotation sessions
+- "corner-flag-1" → type "flag"; "rebounder-1" → type "rebounder" (passing/first-touch rebound board); "target-1" → type "target" (finishing accuracy)
+- "ball-cart" → type "ballcart"; "bench" → type "bench"; "drinks" → type "drinks" — sideline furniture for session plans
 - "mini-goal" → type "goal" — small-sided scoring targets (place in pairs); "big-goal-left" / "big-goal-right" → full-size goals for finishing/keeper work
-Choose equipment by PURPOSE: a free-kick wall is mannequins, not cones; an agility warm-up uses ladders/hurdles/rings, not poles; a playing area is marked by cones/discs at its corners.
+- Age-group goals, all type "goal": "goal-9v9-left"/"-right", "goal-7v7-left"/"-right", "goal-futsal-left"/"-right", "popup-goal". Match the goal to the format the drill is played in.
+Choose equipment by PURPOSE: a free-kick wall is the "wall" object, not loose cones; an agility warm-up uses ladders/hurdles/rings, not poles; a playing area is marked by cones/discs at its corners; "dribble through the gates" means gate objects.
 
 ## Pitch landmarks (exact coordinates on THIS ${board.width}×${board.height} board)
 - Corners: (40,40), (${board.width - 40},40), (40,${board.height - 40}), (${board.width - 40},${board.height - 40}). Corner kicks start ON a corner.

@@ -13,6 +13,9 @@ const OBJECT_TYPES = new Set([
   'player', 'football', 'cone', 'cone-half', 'ladder', 'ring', 'pole',
   'mannequine', 'shape-cone', 'hurdle', 'goal', 'pitch', 'text',
   'circle', 'rectangle', 'square', 'triangle', 'line', 'dashedline',
+  // Pre-assembled / sideline kit.
+  'gate', 'wall', 'station', 'flag', 'target', 'rebounder', 'bench',
+  'ballcart', 'drinks',
 ])
 
 const PAD = 40
