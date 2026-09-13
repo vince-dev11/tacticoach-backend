@@ -1,7 +1,7 @@
 {
   "name": "tacticoach-api",
   "version": "1.0.0",
-  "description": "TactiCoach backend API \u2014 Fastify + Prisma + MySQL",
+  "description": "TactiCoach backend API — Fastify + Prisma + MySQL",
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
@@ -17,10 +17,27 @@
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "eval": "tsx evals/eval-ai.ts",
-    "db:deploy": "prisma migrate deploy"
+    "db:deploy": "prisma migrate deploy",
+    "uploads:migrate": "node scripts/migrate-uploads.mjs"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"
+  },
+  "//overrides": [
+    "Security patches for transitive deps Prisma pins to exact versions, so",
+    "`npm audit fix` reports 'no fix available' and only offers a Prisma major",
+    "downgrade. Patched releases do exist; these pull them in and can be dropped",
+    "once Prisma ships adapter/CLI releases that depend on them directly.",
+    "  mariadb      — GHSA-cqhc-2h57-wpxf, GHSA-42r5-vhpq-m858, GHSA-g5xc-5w98-jfvm.",
+    "                 Ships to PRODUCTION via @prisma/adapter-mariadb (the DB driver",
+    "                 the API actually connects with), so this one matters most.",
+    "  mysql2       — GHSA-3f6p-5ww8-9rcr, GHSA-rgwj-5xj2-c3m3. Dev-only (prisma CLI).",
+    "  deepmerge-ts — GHSA-ggr8-5vv4-36mx. Dev-only (prisma CLI via @prisma/config)."
+  ],
+  "overrides": {
+    "mariadb": "3.4.7",
+    "mysql2": "^3.24.4",
+    "deepmerge-ts": "^8.0.2"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1075.0",

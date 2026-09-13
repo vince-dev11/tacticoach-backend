@@ -2,7 +2,8 @@ import { S3Client, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import { GetObjectCommand } from '@aws-sdk/client-s3'
 import fs from 'node:fs/promises'
-import { createReadStream } from 'node:fs'
+import { createReadStream, mkdirSync } from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import type { FastifyInstance } from 'fastify'
 import { env } from './env.js'
@@ -14,12 +15,50 @@ export function s3Configured(): boolean {
 }
 
 // ---- Local-disk fallback ----------------------------------------------------
-// Without S3 credentials (local development), uploads land in ./uploads on
-// disk and are served straight from the API at /uploads/<key>. Same call
-// sites, same keys — deployments with S3 configured never touch this path.
+// Without S3 credentials, uploads are written to disk and served straight from
+// the API at /uploads/<key>. Same call sites, same keys — deployments with S3
+// configured never touch this path.
+//
+// The storage directory deliberately lives OUTSIDE the repository. Coaches'
+// videos, thumbnails and club logos are user data, not source: keeping them in
+// the working tree means they show up in `git status`, can be committed by
+// accident, and are wiped by a clean checkout or a fresh deploy. The default
+// sits in the user's home directory so it survives moving, re-cloning or
+// deleting the project folder.
+//
+// Set UPLOADS_DIR to point somewhere else — on a server that should be a
+// mounted volume that outlives the container.
+export const LOCAL_DIR = env.UPLOADS_DIR
+  ? path.resolve(env.UPLOADS_DIR)
+  : path.join(os.homedir(), 'tacticoach-storage', 'uploads')
 
-const LOCAL_DIR = path.resolve(env.UPLOADS_DIR ?? 'uploads')
 const publicBase = () => (env.PUBLIC_API_URL ?? `http://localhost:${env.PORT}`).replace(/\/$/, '')
+
+/**
+ * Where uploads are going, resolved once at boot.
+ *
+ * Called from the server entrypoint so the answer is printed in the log rather
+ * than discovered later by a coach whose video "did not save". Also creates the
+ * directory up front: failing at boot with a clear path is far better than
+ * failing on a coach's first upload.
+ */
+export function describeStorage(): { backend: 's3' | 'local'; location: string; warning?: string } {
+  if (s3Configured()) {
+    return { backend: 's3', location: `s3://${env.S3_BUCKET} (${env.AWS_REGION})` }
+  }
+  mkdirSync(LOCAL_DIR, { recursive: true })
+  return {
+    backend: 'local',
+    location: LOCAL_DIR,
+    warning:
+      env.NODE_ENV === 'production'
+        ? 'S3 is not configured, so uploads are being written to local disk. On a container or ' +
+          'ephemeral host every video, thumbnail and logo is lost on the next deploy. Configure ' +
+          'AWS_REGION / AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / S3_BUCKET, or point UPLOADS_DIR ' +
+          'at a persistent mounted volume.'
+        : undefined,
+  }
+}
 
 // Uploads are user content served from the API's own origin, so the only
 // types listed here are ones a browser cannot execute. SVG is deliberately

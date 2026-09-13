@@ -1,5 +1,6 @@
 import { env } from './config/env.js'
 import { db } from './config/database.js'
+import { describeStorage } from './config/s3.js'
 import { buildApp } from './app.js'
 import { startTrialReminderScheduler } from './jobs/trial-reminders.js'
 
@@ -15,9 +16,16 @@ const start = async () => {
         data: { role: 'owner' },
       })
     }
+    // Resolve (and create) upload storage before accepting traffic, so a bad
+    // path fails here with the path in the message rather than on the first
+    // coach who tries to save a video.
+    const storage = describeStorage()
+
     await app.listen({ port: env.PORT, host: '0.0.0.0' })
     startTrialReminderScheduler()
     console.log(`🚀  TactiCoach API running on port ${env.PORT}`)
+    console.log(`📦  Uploads: ${storage.backend === 's3' ? 'S3' : 'local disk'} → ${storage.location}`)
+    if (storage.warning) console.warn(`⚠️   ${storage.warning}`)
   } catch (err) {
     app.log.error(err)
     process.exit(1)
