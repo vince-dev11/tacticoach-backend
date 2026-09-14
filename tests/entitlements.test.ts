@@ -50,6 +50,27 @@ describe('getEntitlements', () => {
     }
   })
 
+  it('the company owner has full access whatever their subscription row says', async () => {
+    // Role decides, not the row: an expired trial, a cancelled plan or no row at
+    // all must never lock the owner out or show them a trial banner.
+    dbMock.user.findUnique.mockResolvedValue({ role: 'owner' } as never)
+    for (const sub of [
+      activeSubscription({ status: 'trial', expiresAt: new Date('2026-07-22T17:11:02.866Z') }),
+      activeSubscription({ status: 'cancelled' }),
+      activeSubscription({ status: 'expired', expiresAt: new Date(Date.now() - 1000) }),
+      null,
+    ]) {
+      dbMock.userSubscription.findUnique.mockResolvedValue(sub as never)
+      noClubData()
+      const ent = await getEntitlements(1)
+      expect(ent.editorAccess).toBe(true)
+      expect(ent.plan?.slug).toBe('owner')
+      expect(ent.subscriptionStatus).toBe('active') // never 'trial' → no countdown/ended banner
+      expect(ent.expiresAt).toBeNull()
+    }
+    dbMock.user.findUnique.mockResolvedValue({ role: 'user' } as never)
+  })
+
   it('denies access when the user has no subscription at all (free login)', async () => {
     dbMock.userSubscription.findUnique.mockResolvedValue(null)
     noClubData()
