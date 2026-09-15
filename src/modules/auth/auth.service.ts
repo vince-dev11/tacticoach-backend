@@ -2,6 +2,7 @@ import crypto from 'node:crypto'
 import bcrypt from 'bcryptjs'
 import { db } from '../../config/database.js'
 import { env } from '../../config/env.js'
+import { attachReferral } from '../referrals/referrals.service.js'
 import type { RegisterInput, LoginInput } from './auth.schema.js'
 
 const BCRYPT_ROUNDS = 12
@@ -36,6 +37,11 @@ export async function registerUser(input: RegisterInput) {
     },
     select: { id: true, name: true, surname: true, email: true },
   })
+
+  // Credit whoever invited them. Attribution is decided here, once — see
+  // attachReferral. Failures are swallowed inside it: signup must not depend on
+  // the referral programme being healthy.
+  await attachReferral(user.id, input.referralCode)
 
   // Start the 7-day trial. Missing plan (unseeded DB) must not block signup —
   // the user simply starts without editor access.

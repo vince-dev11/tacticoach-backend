@@ -6,6 +6,7 @@ import { requireEditorAccess } from '../../middleware/entitlement-guard.js'
 import { db } from '../../config/database.js'
 import { uploadToS3, deleteFromS3, presignUrl } from '../../config/s3.js'
 import { readUpload } from '../../lib/multipart.js'
+import { latinOnly } from '../../lib/latin-only.js'
 
 /** Coach-chosen category tags — an enum so a client bug can't grow junk labels. */
 export const BOARD_TAGS = [
@@ -24,7 +25,7 @@ const DetailsSchema = {
 }
 
 const CreateBoardSchema = z.object({
-  title: z.string().min(1).max(255).default('Untitled board'),
+  title: latinOnly(z.string().min(1).max(255)).default('Untitled board'),
   pitchKey: z.string().max(50).optional().nullable(),
   state: z.unknown().optional(),
   tags: TagsSchema.optional(),
@@ -32,7 +33,7 @@ const CreateBoardSchema = z.object({
 })
 
 const UpdateBoardSchema = z.object({
-  title: z.string().min(1).max(255).optional(),
+  title: latinOnly(z.string().min(1).max(255)).optional(),
   pitchKey: z.string().max(50).optional().nullable(),
   state: z.unknown().optional(),
   tags: TagsSchema.optional(),

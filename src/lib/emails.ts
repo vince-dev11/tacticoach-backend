@@ -303,6 +303,41 @@ export async function sendClubPageApprovedEmail(
   )
 }
 
+/**
+ * Partner invitation. Deliberately says "read and accept" rather than "you are
+ * now a partner": nothing is comped and no commission accrues until they accept
+ * the agreement in the app, and an email that implies otherwise creates an
+ * expectation the product will then contradict.
+ */
+export async function sendPartnerInviteEmail(
+  invitee: { name: string; email: string },
+  acceptUrl: string,
+): Promise<void> {
+  await sendSafely(
+    {
+      to: invitee.email,
+      subject: 'An invitation to the TactiCoach Partner Programme',
+      text:
+        `Hi ${invitee.name},\n\n` +
+        `We'd like to invite you onto the TactiCoach Partner Programme.\n\n` +
+        `Partners earn 20% of what every coach and club they refer pays, for 12 months from that customer's first payment — and get a TactiCoach Pro account free for as long as the partnership runs.\n\n` +
+        `The agreement is waiting in your account. Have a read, and if you're happy with it, accept it there:\n${acceptUrl}\n\n` +
+        `Nothing starts until you accept, and there's no obligation to.\n\n` +
+        `The TactiCoach team`,
+      html: layout(
+        'An invitation to the TactiCoach Partner Programme.',
+        `${kicker('PARTNER INVITATION')}
+         <h1 style="margin:0 0 12px;font-size:21px">We'd like you as a TactiCoach Partner</h1>
+         <p style="margin:0 0 10px">Hi ${invitee.name}, partners earn <strong>20%</strong> of what every coach and club they refer pays, for 12 months from that customer's first payment — plus a TactiCoach Pro account free for as long as the partnership runs.</p>
+         <p style="margin:0 0 4px">The agreement is waiting in your account:</p>
+         ${button(acceptUrl, 'Read and accept the agreement')}
+         <p style="margin:0;color:#6b7280;font-size:13px">Nothing starts until you accept, and there's no obligation to.</p>`,
+      ),
+    },
+    'partner invite',
+  )
+}
+
 export async function sendClubPageRejectedEmail(
   owner: { name: string; email: string },
   clubName: string,

@@ -74,7 +74,177 @@ model User {
   challengeSubmissions ChallengeSubmission[]
   challengeVotes       ChallengeVote[]
 
+  /// This coach's own invite code (also the partner discount code when they are
+  /// a partner). Minted lazily on first use, never reassigned.
+  referralCode String? @unique @map("referral_code") @db.VarChar(24)
+
+  seasonPlans      SeasonPlan[]
+  referralsMade    Referral[]       @relation("Referrer")
+  referralReceived Referral?        @relation("Referred")
+  referralRewards  ReferralReward[]
+  partner          Partner?
+  partnerEarnings  PartnerCommission[]
+
   @@map("users")
+}
+
+/// One coach introducing another. At most one row per referred user — being
+/// referred is a property of an account, decided once at signup and never
+/// reassigned, which is what stops two partners claiming the same customer.
+///
+/// `pending` until the referred coach's first payment actually clears. That is
+/// the whole anti-fraud design: creating accounts costs nothing, so nothing is
+/// earned for creating them.
+model Referral {
+  id             Int            @id @default(autoincrement())
+  referrerId     Int            @map("referrer_id")
+  referredUserId Int            @unique @map("referred_user_id")
+  /// The code as typed/clicked — kept even if the referrer's code changes later,
+  /// so a statement can always show how the credit was attributed.
+  code           String         @db.VarChar(24)
+  status         ReferralStatus @default(pending)
+  /// Which ladder this counts on. Decided at the customer's FIRST PAYMENT from
+  /// the plan they bought, and not revisited: a coach who upgrades to Club
+  /// later already earned their referrer the coach reward, and moving it would
+  /// mean retracting one payout to make another.
+  kind           ReferralKind   @default(coach)
+  /// The plan the REFERRER was on when this qualified. Locked in here rather
+  /// than read live, because a coach who upgrades to Club would otherwise have
+  /// their thresholds jump mid-ladder and rewards they already hold would stop
+  /// being "owed" — the recompute would try to take them back.
+  referrerTier   ReferrerTier   @default(coach) @map("referrer_tier")
+  qualifiedAt    DateTime?      @map("qualified_at")
+  reversedAt     DateTime?      @map("reversed_at")
+  createdAt      DateTime       @default(now()) @map("created_at")
+
+  referrer User @relation("Referrer", fields: [referrerId], references: [id], onDelete: Cascade)
+  referred User @relation("Referred", fields: [referredUserId], references: [id], onDelete: Cascade)
+
+  @@index([referrerId, status, kind, referrerTier])
+  @@map("referrals")
+}
+
+enum ReferralStatus {
+  pending
+  qualified
+  reversed
+}
+
+/// A club is worth roughly eight coaches, so the two earn on separate ladders.
+enum ReferralKind {
+  coach
+  club
+}
+
+/// The plan the referrer holds. A free month is worth £2.99 to a Pro coach and
+/// £24.99 to a Club, so a Club has to bring about twice as many people for it.
+enum ReferrerTier {
+  coach
+  club
+}
+
+/// A rung of the referral ladder that has been reached and paid out.
+///
+/// The unique key is the idempotency guard: the ladder is recomputed from
+/// scratch on every qualifying event, so without it a coach sitting on 8
+/// referrals would be granted tier 3 and tier 8 again on every recount.
+model ReferralReward {
+  id        Int          @id @default(autoincrement())
+  userId    Int          @map("user_id")
+  /// Which ladder paid this out: the referrer's plan and what they brought.
+  referrerTier ReferrerTier @default(coach) @map("referrer_tier")
+  kind      ReferralKind @default(coach)
+  /// Which pass through the ladder this belongs to (1-based). The ladder is
+  /// re-earnable: reaching 12 closes a cycle and the next referral opens
+  /// the next one.
+  cycle     Int
+  /// The referral count that unlocked it — see LADDERS in referral-ladder.ts.
+  tier      Int
+  /// Free months this rung ADDS. Not the running total the referrer is shown:
+  /// the second club rung stores 3 and displays as "6 months".
+  months    Int
+  grantedAt DateTime  @default(now()) @map("granted_at")
+  /// When the months were actually put on the account. Unapplied rewards can
+  /// still be revoked if the referral behind them is reversed.
+  appliedAt DateTime? @map("applied_at")
+  /// Set when a reversal took the count back below this rung.
+  revokedAt DateTime? @map("revoked_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, referrerTier, kind, cycle, tier])
+  @@index([userId])
+  @@map("referral_rewards")
+}
+
+/// An invited coach on the commercial Partner Programme: paid commission
+/// instead of credit, and a comped account so they can demo what they sell.
+model Partner {
+  id             Int           @id @default(autoincrement())
+  userId         Int           @unique @map("user_id")
+  status         PartnerStatus @default(invited)
+  /// Share of the net subscription fee, e.g. 0.2000 for 20%.
+  commissionRate Decimal       @default(0.2000) @map("commission_rate") @db.Decimal(6, 4)
+  /// Trading name on the agreement, if they signed as a business.
+  companyName    String?       @map("company_name") @db.VarChar(150)
+  /// Set when the partner accepted in the app. Until then `status` is `invited`
+  /// and nothing is comped — a comped account handed out before anyone agreed to
+  /// anything is the whole reason this state exists.
+  agreementSignedAt DateTime?  @map("agreement_signed_at")
+  /// Which version of the text they accepted. Stored, not derived, so changing
+  /// the agreement later never rewrites what somebody already agreed to.
+  agreementVersion  String?    @map("agreement_version") @db.VarChar(16)
+  /// Recorded at acceptance. The only useful evidence if it is ever disputed.
+  agreementIp       String?    @map("agreement_ip") @db.VarChar(64)
+  startedAt      DateTime      @default(now()) @map("started_at")
+  endedAt        DateTime?     @map("ended_at")
+  notes          String?       @db.Text
+  createdAt      DateTime      @default(now()) @map("created_at")
+  updatedAt      DateTime      @updatedAt @map("updated_at")
+
+  user        User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  commissions PartnerCommission[]
+
+  @@map("partners")
+}
+
+enum PartnerStatus {
+  /// Invited, agreement not yet accepted. No commission, no comped account.
+  invited
+  active
+  suspended
+  ended
+}
+
+/// One line on a partner's statement: commission owed on one cleared payment.
+///
+/// Amounts are stored in minor units (pence) as integers. Money in a Decimal
+/// read back through a JS number is a rounding bug waiting to be discovered at
+/// the worst possible moment — when someone disputes their invoice.
+model PartnerCommission {
+  id                Int       @id @default(autoincrement())
+  partnerId         Int       @map("partner_id")
+  /// The referred customer this line is for.
+  customerId        Int       @map("customer_id")
+  /// Stripe invoice that produced it — the dedupe key for webhook retries.
+  providerInvoiceId String    @unique @map("provider_invoice_id") @db.VarChar(191)
+  /// What the customer actually paid, excluding VAT.
+  netAmount         Int       @map("net_amount")
+  /// Rate applied at the time — a later rate change must not restate history.
+  rate              Decimal   @db.Decimal(6, 4)
+  commissionAmount  Int       @map("commission_amount")
+  currency          String    @default("GBP") @db.VarChar(3)
+  /// Set when the payment was refunded or charged back: the line is reversed,
+  /// not deleted, so the statement still explains itself.
+  reversedAt        DateTime? @map("reversed_at")
+  paidOutAt         DateTime? @map("paid_out_at")
+  createdAt         DateTime  @default(now()) @map("created_at")
+
+  partner  Partner @relation(fields: [partnerId], references: [id], onDelete: Cascade)
+  customer User    @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@index([partnerId, createdAt])
+  @@map("partner_commissions")
 }
 
 /// One row per successful AI generation — the plan's monthly allowance is
@@ -408,6 +578,70 @@ model ClubInvite {
 /// REFERENCE library items rather than copying them, so fixing a drill once
 /// updates every session that uses it. `brand` carries the coach's PDF
 /// customisation (colour etc.) chosen for this session.
+/// A coach's whole season: the top of the three-level plan (season → week →
+/// session). A coach does not plan a session, he plans a season, and the
+/// session is the last and smallest thing he opens.
+model SeasonPlan {
+  id           Int      @id @default(autoincrement())
+  userId       Int      @map("user_id")
+  title        String   @db.VarChar(255)
+  ageGroup     String?  @map("age_group") @db.VarChar(16)
+  /// Free text as the coach writes it: "2026/27".
+  seasonLabel  String?  @map("season_label") @db.VarChar(40)
+  startDate    DateTime @map("start_date")
+  /// 0 = Sunday … 6 = Saturday. A per-plan setting, not a profile setting —
+  /// a coach can run an academy week and a senior week differently.
+  weekStartsOn Int      @default(1) @map("week_starts_on")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  user  User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  weeks PlanWeek[]
+
+  @@index([userId])
+  @@map("season_plans")
+}
+
+/// One microcycle. Exists as a row rather than being derived from dates because
+/// it carries the coach's own words — the week theme and the phase — which
+/// nothing else can compute.
+model PlanWeek {
+  id        Int          @id @default(autoincrement())
+  planId    Int          @map("plan_id")
+  /// 1-based, counted from the plan's start date.
+  weekIndex Int          @map("week_index")
+  startDate DateTime     @map("start_date")
+  /// "Build-up play against a mid block — match Saturday".
+  theme     String?      @db.VarChar(255)
+  phase     SeasonPhase  @default(in_season)
+  createdAt DateTime     @default(now()) @map("created_at")
+  updatedAt DateTime     @updatedAt @map("updated_at")
+
+  plan     SeasonPlan        @relation(fields: [planId], references: [id], onDelete: Cascade)
+  sessions TrainingSession[]
+
+  @@unique([planId, weekIndex])
+  @@index([planId])
+  @@map("plan_weeks")
+}
+
+enum SeasonPhase {
+  pre_season  @map("pre-season")
+  in_season   @map("in-season")
+  transition
+}
+
+/// What kind of session this is. Drives the colour a coach reads on all three
+/// screens, so it lives in the database rather than being guessed from a title.
+enum SessionType {
+  physical
+  technical
+  tactical
+  match
+  recovery
+  rest
+}
+
 model TrainingSession {
   id          Int       @id @default(autoincrement())
   userId      Int       @map("user_id")
@@ -416,16 +650,45 @@ model TrainingSession {
   ageGroup    String?   @map("age_group") @db.VarChar(16)
   /// Planned length in minutes (the target the running total is checked against).
   targetMinutes Int?    @map("target_minutes")
-  /// Ordered blocks: [{ kind: 'board'|'sheet'|'text', refId?, title, minutes, note? }]
+  /// Ordered blocks: [{ kind, refId?, title, minutes, note?, part? }]
+  /// `part` groups blocks under warm-up / main / game / cool-down. Absent on
+  /// blocks saved before the redesign; those fall into the main part.
   blocks      Json      @default("[]")
   /// PDF branding: { color?: '#0aa', showClubLogo?: boolean }
   brand       Json      @default("{}")
+
+  // ---- Planner fields -------------------------------------------------------
+  // All nullable. A session with no planWeekId is a standalone session and
+  // behaves exactly as it did before the planner existed, so nothing a coach
+  // has already saved breaks.
+
+  planWeekId   Int?         @map("plan_week_id")
+  sessionType  SessionType  @default(tactical) @map("session_type")
+  /// Perceived intensity 1–10. Load is target_minutes × intensity_rpe and is
+  /// DERIVED, never stored — a stored total drifts out of step with its parts.
+  intensityRpe Int?         @map("intensity_rpe")
+  /// Kick-off / start time as "18:00". A string, not a DateTime: it is a time
+  /// of day in the coach's own timezone, and storing it as an instant makes it
+  /// move when the clocks change.
+  startTime    String?      @map("start_time") @db.VarChar(5)
+  isMatch      Boolean      @default(false) @map("is_match")
+  opponent     String?      @db.VarChar(120)
+  venue        String?      @db.VarChar(120)
+  /// Names of the session's parts, in order: ["Warm-up","Main part",…].
+  /// Between 3 and 5. Empty means the default set.
+  parts        Json         @default("[]")
+
   createdAt   DateTime  @default(now()) @map("created_at")
   updatedAt   DateTime  @updatedAt @map("updated_at")
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// SetNull, not Cascade: deleting a week must not delete the coach's sessions.
+  /// They fall back to being standalone sessions in his library.
+  planWeek PlanWeek? @relation(fields: [planWeekId], references: [id], onDelete: SetNull)
 
   @@index([userId])
+  @@index([planWeekId])
+  @@index([userId, sessionDate])
   @@map("training_sessions")
 }
 

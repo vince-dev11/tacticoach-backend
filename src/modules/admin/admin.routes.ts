@@ -12,6 +12,8 @@ import { readUpload } from '../../lib/multipart.js'
 import { presignUrl as presign } from '../../config/s3.js'
 import { env } from '../../config/env.js'
 import { sendClubPageApprovedEmail, sendClubPageRejectedEmail } from '../../lib/emails.js'
+import { invitePartner, endPartner } from '../partners/partners.service.js'
+import { sendPartnerInviteEmail } from '../../lib/emails.js'
 
 // ---- Schemas -----------------------------------------------------------------
 
@@ -453,5 +455,120 @@ export async function adminRoutes(app: FastifyInstance) {
     const { status } = z.object({ status: z.enum(['new', 'replied', 'closed']) }).parse(request.body)
     const lead = await db.contactMessage.update({ where: { id }, data: { status } })
     return reply.send(lead)
+  })
+
+  // ---- Partner programme ----------------------------------------------------
+  // Partners are invite-only by design (agreement §1), so there is no self-serve
+  // route to become one — it happens here, after an agreement is signed.
+
+  // GET /admin/partners — the roster with what each is owed.
+  app.get('/partners', async (_request, reply) => {
+    const partners = await db.partner.findMany({
+      orderBy: { createdAt: 'desc' },
+      include: {
+        user: { select: { id: true, name: true, surname: true, email: true, referralCode: true } },
+        commissions: { select: { commissionAmount: true, reversedAt: true, paidOutAt: true } },
+      },
+    })
+
+    return reply.send(
+      partners.map((p) => {
+        const live = p.commissions.filter((c) => !c.reversedAt)
+        return {
+          id: p.id,
+          status: p.status,
+          commissionRate: Number(p.commissionRate),
+          companyName: p.companyName,
+          agreementSignedAt: p.agreementSignedAt,
+          agreementVersion: p.agreementVersion,
+          startedAt: p.startedAt,
+          endedAt: p.endedAt,
+          user: p.user,
+          owedPence: live.filter((c) => !c.paidOutAt).reduce((s, c) => s + c.commissionAmount, 0),
+          lifetimePence: live.reduce((s, c) => s + c.commissionAmount, 0),
+        }
+      }),
+    )
+  })
+
+  // POST /admin/partners { email, commissionRate?, companyName?, notes? }
+  // Sends the invitation. They are NOT a partner until they accept in the app.
+  app.post('/partners', async (request, reply) => {
+    const body = z
+      .object({
+        email: z.string().email(),
+        // Stored as a fraction: 0.2 is 20%. Capped at 100% so a typo of "20"
+        // meaning percent cannot commit us to twenty times the revenue.
+        commissionRate: z.number().min(0).max(1).optional(),
+        companyName: z.string().max(150).optional(),
+        notes: z.string().max(2000).optional(),
+      })
+      .parse(request.body)
+
+    const user = await db.user.findUnique({ where: { email: body.email }, select: { id: true } })
+    if (!user) {
+      return reply.status(404).send({
+        statusCode: 404,
+        error: 'Not Found',
+        message: 'No account with that email — the partner needs to sign up first',
+      })
+    }
+
+    const { code } = await invitePartner({
+      userId: user.id,
+      commissionRate: body.commissionRate,
+      companyName: body.companyName ?? null,
+      notes: body.notes ?? null,
+    })
+    const invitee = await db.user.findUniqueOrThrow({
+      where: { id: user.id },
+      select: { name: true, email: true },
+    })
+    // Fire-and-forget: a mail outage must not make the invite look like it
+    // failed when the partner row was created perfectly well.
+    void sendPartnerInviteEmail(invitee, `${env.FRONTEND_URL}/profile#partner`)
+
+    return reply.send({ userId: user.id, code, status: 'invited' })
+  })
+
+  // PATCH /admin/partners/:id { status?, commissionRate? }
+  app.patch('/partners/:id', async (request, reply) => {
+    const id = Number((request.params as { id: string }).id)
+    const body = z
+      .object({
+        status: z.enum(['invited', 'active', 'suspended', 'ended']).optional(),
+        commissionRate: z.number().min(0).max(1).optional(),
+      })
+      .parse(request.body)
+
+    const partner = await db.partner.findUnique({ where: { id }, select: { userId: true } })
+    if (!partner) {
+      return reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'Partner not found' })
+    }
+
+    if (body.status === 'ended') {
+      await endPartner(partner.userId)
+    } else if (body.status) {
+      await db.partner.update({ where: { id }, data: { status: body.status, endedAt: null } })
+    }
+    // A rate change applies to referrals made after it (agreement §7); past
+    // commission lines keep the rate copied onto them at the time.
+    if (body.commissionRate !== undefined) {
+      await db.partner.update({ where: { id }, data: { commissionRate: body.commissionRate } })
+    }
+
+    const updated = await db.partner.findUniqueOrThrow({ where: { id } })
+    return reply.send({ id: updated.id, status: updated.status, commissionRate: Number(updated.commissionRate) })
+  })
+
+  // POST /admin/partners/:id/mark-paid — stamp the open lines as settled after
+  // paying an invoice. Amounts are never edited, only marked.
+  app.post('/partners/:id/mark-paid', async (request, reply) => {
+    const id = Number((request.params as { id: string }).id)
+    const result = await db.partnerCommission.updateMany({
+      where: { partnerId: id, paidOutAt: null, reversedAt: null },
+      data: { paidOutAt: new Date() },
+    })
+    return reply.send({ marked: result.count })
   })
 }

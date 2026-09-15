@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { latinOnly } from '../../lib/latin-only.js'
 import {
   AGE_PROFILES, FORMAT_PROFILES, LEVEL_LABELS, FORMATIONS_BY_FORMAT,
 } from '../ai/ai.context.js'
@@ -25,10 +26,10 @@ const SocialUrl = z
   .nullable()
 
 export const UpdateProfileSchema = z.object({
-  name: z.string().min(1).max(100).optional(),
-  surname: z.string().min(1).max(100).optional(),
+  name: latinOnly(z.string().min(1).max(100)).optional(),
+  surname: latinOnly(z.string().min(1).max(100)).optional(),
   phone: z.string().max(30).optional().nullable(),
-  clubName: z.string().max(150).optional().nullable(),
+  clubName: latinOnly(z.string().max(150)).optional().nullable(),
   instagramUrl: SocialUrl,
   youtubeUrl: SocialUrl,
   twitterUrl: SocialUrl,

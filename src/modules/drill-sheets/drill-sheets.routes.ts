@@ -10,12 +10,13 @@ import { requireEditorAccess } from '../../middleware/entitlement-guard.js'
 import { db } from '../../config/database.js'
 import { uploadToS3, deleteFromS3, presignUrl } from '../../config/s3.js'
 import { readUpload } from '../../lib/multipart.js'
+import { latinOnly } from '../../lib/latin-only.js'
 
 const IMAGE_TYPES = ['image/webp', 'image/png', 'image/jpeg']
 const IMAGE_MAX = 6 * 1024 * 1024 // 6 MB — a scale-2 capture of a full A4 sheet
 
 const CreateSheetSchema = z.object({
-  title: z.string().min(1).max(255),
+  title: latinOnly(z.string().min(1).max(255)),
   description: z.string().max(2000).optional().nullable(),
   data: z.unknown().optional(),
 })
