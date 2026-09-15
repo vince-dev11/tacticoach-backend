@@ -14,6 +14,11 @@ import { getReferralSummary } from './referrals.service.js'
 import { getPartnerStatement, acceptAgreement } from '../partners/partners.service.js'
 import { PARTNER_AGREEMENT } from '../partners/partner-agreement.js'
 
+/** The signed-in user's id, as every other route reads it off the JWT payload. */
+function userId(request: { user: unknown }): number {
+  return (request.user as { sub: number }).sub
+}
+
 const LookupQuery = z.object({ code: z.string().min(1).max(24) })
 
 export async function referralsRoutes(app: FastifyInstance) {
@@ -38,10 +43,10 @@ export async function referralsRoutes(app: FastifyInstance) {
   await app.register(async (scoped) => {
     scoped.addHook('onRequest', authGuard)
 
-    scoped.get('/me', async (request) => getReferralSummary(request.user.sub))
+    scoped.get('/me', async (request) => getReferralSummary(userId(request)))
 
     scoped.get('/partner', async (request, reply) => {
-      const statement = await getPartnerStatement(request.user.sub)
+      const statement = await getPartnerStatement(userId(request))
       if (!statement) return reply.status(404).send({ message: 'Not a partner' })
       return statement
     })
@@ -56,7 +61,7 @@ export async function referralsRoutes(app: FastifyInstance) {
       // Behind a proxy, request.ip is only trustworthy if trustProxy is set; it
       // is evidence of what we recorded, not proof of origin, and is treated
       // that way in the agreement.
-      const ok = await acceptAgreement(request.user.sub, request.ip ?? null)
+      const ok = await acceptAgreement(userId(request), request.ip ?? null)
       if (!ok) {
         return reply.status(409).send({
           statusCode: 409,
@@ -64,7 +69,7 @@ export async function referralsRoutes(app: FastifyInstance) {
           message: 'There is no open partner invitation on this account',
         })
       }
-      return getPartnerStatement(request.user.sub)
+      return getPartnerStatement(userId(request))
     })
   })
 }

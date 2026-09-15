@@ -24,6 +24,30 @@ function periodEnd(sub: Stripe.Subscription): Date | null {
   return end ? new Date(end * 1000) : null
 }
 
+/**
+ * The invoice a charge paid, or null. Walks the customer's recent invoices
+ * (with their payments expanded) looking for this charge's PaymentIntent —
+ * the only link the "basil" API still exposes in this direction.
+ */
+async function invoiceIdForCharge(charge: Stripe.Charge): Promise<string | null> {
+  const customerId = typeof charge.customer === 'string' ? charge.customer : charge.customer?.id
+  const intentId =
+    typeof charge.payment_intent === 'string' ? charge.payment_intent : charge.payment_intent?.id
+  if (!customerId || !intentId || !stripeConfigured()) return null
+  try {
+    const invoices = await stripe().invoices.list({ customer: customerId, limit: 20, expand: ['data.payments'] })
+    for (const inv of invoices.data) {
+      for (const p of inv.payments?.data ?? []) {
+        const pi = p.payment.payment_intent
+        if ((typeof pi === 'string' ? pi : pi?.id) === intentId) return inv.id
+      }
+    }
+  } catch (err) {
+    console.error('Could not resolve the invoice for a refunded charge.', err)
+  }
+  return null
+}
+
 export async function stripeWebhookRoutes(app: FastifyInstance) {
   app.addContentTypeParser('application/json', { parseAs: 'buffer' }, (_req, body, done) => {
     done(null, body)
@@ -85,8 +109,11 @@ export async function stripeWebhookRoutes(app: FastifyInstance) {
 
         // `amount_paid` is what actually moved, after any discount or balance
         // credit — commission on the list price of a discounted first month
-        // would pay out more than we took in.
-        const net = (invoice.amount_paid ?? 0) - (invoice.tax ?? 0)
+        // would pay out more than we took in. Tax is stripped too: it was
+        // never ours. (Stripe API "basil" replaced the single `tax` field with
+        // a per-rate `total_taxes` list.)
+        const tax = (invoice.total_taxes ?? []).reduce((sum, t) => sum + (t.amount ?? 0), 0)
+        const net = (invoice.amount_paid ?? 0) - tax
 
         await qualifyReferral(user.id)
         await recordCommission({
@@ -102,7 +129,10 @@ export async function stripeWebhookRoutes(app: FastifyInstance) {
       // line is reversed (agreement §5).
       case 'charge.refunded': {
         const charge = event.data.object
-        const invoiceId = typeof charge.invoice === 'string' ? charge.invoice : charge.invoice?.id
+        // Stripe API "basil" dropped `charge.invoice`; the link now runs the
+        // other way, invoice → payments → payment_intent. Find the customer's
+        // invoice whose payment is this charge's intent and reverse that line.
+        const invoiceId = await invoiceIdForCharge(charge)
         if (invoiceId) await reverseCommission(invoiceId)
 
         const customerId = typeof charge.customer === 'string' ? charge.customer : charge.customer?.id
