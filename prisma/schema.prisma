@@ -80,6 +80,7 @@ model User {
   drillSheets     DrillSheet[]
   drillSheetLikes DrillSheetLike[]
   trainingSessions TrainingSession[]
+  squads          Squad[]
   squadPlayers    SquadPlayer[]
   aiUsage         AiUsage[]
   aiCorrections   AiCorrection[]
@@ -564,6 +565,12 @@ model ClubMember {
   id        Int      @id @default(autoincrement())
   clubId    Int      @map("club_id")
   userId    Int      @unique @map("user_id")
+  /// An admin may act for every coach in the club — open their sessions and
+  /// write player feedback in their own name. Granted by the OWNER only, one
+  /// member at a time. The owner is an admin implicitly and has no row here
+  /// (see lib/club-staff), because a club owner is never a member of their
+  /// own club.
+  role      ClubRole @default(member)
   createdAt DateTime @default(now()) @map("created_at")
 
   club Club @relation(fields: [clubId], references: [id], onDelete: Cascade)
@@ -571,6 +578,13 @@ model ClubMember {
 
   @@index([clubId])
   @@map("club_members")
+}
+
+/// A seat is a coach unless the owner says otherwise. Deliberately two values:
+/// every extra tier is another person who can read what was written to a child.
+enum ClubRole {
+  member
+  admin
 }
 
 model ClubInvite {
@@ -665,6 +679,9 @@ model TrainingSession {
   title       String    @db.VarChar(255)
   sessionDate DateTime? @map("session_date")
   ageGroup    String?   @map("age_group") @db.VarChar(16)
+  /// Which team this session is for. Null means the coach's default squad, so
+  /// every session saved before squads existed keeps working untouched.
+  squadId     Int?      @map("squad_id")
   /// Planned length in minutes (the target the running total is checked against).
   targetMinutes Int?    @map("target_minutes")
   /// Ordered blocks: [{ kind, refId?, title, minutes, note?, part? }]
@@ -702,8 +719,12 @@ model TrainingSession {
   /// SetNull, not Cascade: deleting a week must not delete the coach's sessions.
   /// They fall back to being standalone sessions in his library.
   planWeek PlanWeek? @relation(fields: [planWeekId], references: [id], onDelete: SetNull)
+  /// SetNull, not Cascade: archiving a team must never delete the sessions the
+  /// coach ran with it. They fall back to the default squad.
+  squad    Squad?    @relation(fields: [squadId], references: [id], onDelete: SetNull)
 
   @@index([userId])
+  @@index([squadId])
   @@index([planWeekId])
   @@index([userId, sessionDate])
   playerNotes PlayerNote[]
@@ -763,13 +784,49 @@ enum AccountType {
   player
 }
 
-/// The coach's real squad ("My Squad"). Entered once in the profile; the
-/// editor's player shelf and formation presets then place the coach's actual
-/// players — names on the board, not anonymous numbers. Replaced as a whole
-/// on save (PUT /users/me/squad), so no per-row endpoints are needed.
+/// A team the coach works with — "U13", "First team", "Thursday keepers".
+///
+/// Most coaches have exactly one, and the app never shows them a picker for
+/// it. The ones who have two have a real problem without this: a merged list
+/// means the feedback drawer offers every child the coach knows for a session
+/// twenty of them were not at, and the editor's player shelf mixes age groups.
+///
+/// Owned by ONE coach. Club-wide shared squads are deliberately not modelled:
+/// notes carry `coachUserId` and a club admin can already reach every coach's
+/// sessions (see lib/club-staff), so shared ownership would buy nothing and
+/// complicate who may edit whom.
+model Squad {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @map("user_id")
+  name      String   @db.VarChar(60)
+  /// Optional, and only a label — the session's own ageGroup still drives the
+  /// playing format and the AI.
+  ageGroup  String?  @map("age_group") @db.VarChar(16)
+  sortOrder Int      @default(0) @map("sort_order")
+  /// Retired rather than deleted: sessions and notes reference it, and a
+  /// coach who stops taking the U13s still has last season's feedback.
+  archivedAt DateTime? @map("archived_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user     User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  players  SquadPlayer[]
+  sessions TrainingSession[]
+
+  @@index([userId, sortOrder])
+  @@map("squads")
+}
+
+/// The coach's real players. Entered once in the profile; the editor's player
+/// shelf and formation presets then place the coach's actual players — names
+/// on the board, not anonymous numbers. Replaced as a whole per squad on save
+/// (PUT /users/me/squad), so no per-row endpoints are needed.
 model SquadPlayer {
   id        Int      @id @default(autoincrement())
   userId    Int      @map("user_id")
+  /// Which of this coach's teams. Back-filled for every existing row by
+  /// migration 22; never null in practice.
+  squadId   Int?     @map("squad_id")
   name      String   @db.VarChar(40)
   number    String   @db.VarChar(3)
   /// Free-ish position tag: GK / DF / MF / FW (validated in the route).
@@ -799,14 +856,24 @@ model SquadPlayer {
   archivedAt DateTime? @map("archived_at")
 
   user       User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  squad      Squad?      @relation(fields: [squadId], references: [id], onDelete: Cascade)
   playerUser User?       @relation("SquadPlayerAccount", fields: [playerUserId], references: [id], onDelete: SetNull)
   notes      PlayerNote[]
 
   @@index([userId, sortOrder])
-  /// Unique PER COACH, not globally: a fourteen-year-old plays for their club
-  /// on Sunday and their school on Wednesday and belongs on both rosters. A
-  /// global unique would let whichever coach linked first lock the player out
-  /// of every other squad.
+  @@index([squadId, sortOrder])
+  /// Unique PER COACH, not per squad, and not globally.
+  ///
+  /// Not globally: a fourteen-year-old plays for their club on Sunday and
+  /// their school on Wednesday and belongs on both rosters. A global unique
+  /// would let whichever coach linked first lock the player out of everywhere
+  /// else.
+  ///
+  /// Not per squad either, which is the subtler half. A second row for the
+  /// same child under the same coach would give them TWO note histories — so
+  /// a player moving up from the U13s to the U15s mid-season would lose their
+  /// record at the moment it finally means something. One coach, one player,
+  /// one row: moving squads moves the row, and the history follows.
   @@unique([userId, playerUserId])
   @@index([playerUserId, linkStatus])
   @@map("squad_players")
@@ -841,8 +908,13 @@ model PlayerNote {
   body      String @db.VarChar(600)
   /// Tag keys from lib/feedback-tags.ts. The same tag can be a strength for
   /// one player and a work-on for another, so one vocabulary, two lists.
+  ///
+  /// `strengths` needs no @map because the field name and the column name are
+  /// already identical. `workOns` does — without it Prisma asks MySQL for a
+  /// column called `workOns`, which migration 20 never created. It shipped
+  /// missing and took the whole player screen down with it.
   strengths Json   @default("[]")
-  workOns   Json   @default("[]")
+  workOns   Json   @default("[]") @map("work_ons")
 
   /// Notes are written, reviewed, then sent as a batch. Nothing reaches a
   /// player (or their guardian) until the coach presses send.

@@ -22,6 +22,25 @@ vi.mock('../src/config/mailer.js', () => ({
   sendMail: vi.fn(async () => {}),
 }))
 
+/**
+ * The squad every coach has.
+ *
+ * `resolveSquad` sits under getSquad, saveSquad and the feedback roster, and
+ * it never returns null — it creates a default squad rather than making each
+ * caller handle "no squad yet". A bare deep mock returns `undefined` from
+ * `findFirst`, so without this every one of those paths throws on `.id` and
+ * the failure looks like a bug in the code under test rather than a missing
+ * fixture.
+ *
+ * A test that cares which squad was used overrides this; most do not, because
+ * a coach with one team is the overwhelming case in production too.
+ */
+export const TEST_SQUAD = { id: 1, userId: 1, name: 'My squad', ageGroup: null, sortOrder: 0, archivedAt: null }
+
 beforeEach(() => {
   mockReset(dbMock)
+  const squad = (dbMock as unknown as {
+    squad: { findFirst: { mockResolvedValue: (v: unknown) => void } }
+  }).squad
+  squad.findFirst.mockResolvedValue(TEST_SQUAD)
 })

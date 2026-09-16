@@ -10,6 +10,8 @@
 
 import { db } from '../../config/database.js'
 import { splitTagLists, tagFrequency } from '../../lib/feedback-tags.js'
+import { coachIdsFor } from '../../lib/club-staff.js'
+import { resolveSquad } from '../users/squads.service.js'
 
 /**
  * How long a coach can fix a note after writing it.
@@ -146,24 +148,54 @@ export async function unlink(squadPlayerId: number, by: { coachId?: number; play
 
 // ---- Writing ----------------------------------------------------------------
 
+/** Name for display, falling back to something rather than an empty string. */
+const authorName = (u: { name: string; surname: string | null } | null) =>
+  u ? [u.name, u.surname].filter(Boolean).join(' ') : ''
+
 /**
- * The roster for a session's feedback strip, each row carrying the note this
- * coach has already written for it (if any).
+ * The roster for a session's feedback strip, each row carrying the note
+ * already written for it (if any).
  *
  * Returns EVERY player, linked or not. A coach should be able to write about
  * a player who has no account yet — the note simply waits, and appears the
  * moment they link. Making the feature conditional on the player having paid
  * would teach coaches it is unreliable.
+ *
+ * `viewerId` may be the session's own coach or a club admin standing in for
+ * them. Two things follow from that, and both matter:
+ *
+ *   - the roster is the SESSION OWNER's squad, never the viewer's. An admin
+ *     opening a coach's session must see that coach's players.
+ *   - notes are returned whatever their author, so a stand-in can see the
+ *     coach already wrote to someone instead of writing a second note.
  */
-export async function rosterForSession(coachId: number, sessionId: number) {
+export async function rosterForSession(viewerId: number, sessionId: number) {
+  const coachIds = await coachIdsFor(viewerId)
+
   const session = await db.trainingSession.findFirst({
-    where: { id: sessionId, userId: coachId },
-    select: { id: true, title: true, sessionDate: true },
+    where: { id: sessionId, userId: { in: coachIds } },
+    select: {
+      id: true,
+      title: true,
+      sessionDate: true,
+      userId: true,
+      squadId: true,
+      user: { select: { name: true, surname: true } },
+    },
   })
   if (!session) return null
 
+  // The team this session was for, not every player the coach knows. A coach
+  // with a U13 and a U15 group was being offered all thirty names for a
+  // session twenty of them were not at, which is the difference between a
+  // twenty-second job and one nobody does twice.
+  //
+  // Resolved against the SESSION'S owner, not the viewer: a club admin
+  // standing in must see that coach's squad.
+  const squadId = (await resolveSquad(session.userId, session.squadId)).id
+
   const squad = await db.squadPlayer.findMany({
-    where: { userId: coachId, archivedAt: null },
+    where: { userId: session.userId, squadId, archivedAt: null },
     orderBy: { sortOrder: 'asc' },
     select: {
       id: true,
@@ -182,17 +214,33 @@ export async function rosterForSession(coachId: number, sessionId: number) {
           sentAt: true,
           readAt: true,
           createdAt: true,
+          coachUserId: true,
+          coach: { select: { name: true, surname: true } },
         },
       },
     },
   })
 
+  const { userId: sessionCoachId, user: sessionCoach, ...sessionInfo } = session
   return {
-    session,
-    players: squad.map(({ notes, ...player }) => ({
-      ...player,
-      note: notes[0] ?? null,
-    })),
+    session: sessionInfo,
+    /** Whose session this is — the admin needs to know they are standing in. */
+    coach: { id: sessionCoachId, name: authorName(sessionCoach) },
+    /** So the client can tell its own drafts from a colleague's. */
+    viewerId,
+    players: squad.map(({ notes, ...player }) => {
+      const note = notes[0]
+      return {
+        ...player,
+        note: note
+          ? {
+              ...note,
+              author: { id: note.coachUserId, name: authorName(note.coach) },
+              mine: note.coachUserId === viewerId,
+            }
+          : null,
+      }
+    }),
   }
 }
 
@@ -212,9 +260,11 @@ export interface WriteNoteInput {
  * (squadPlayerId + sessionId) would forbid the several standalone notes a
  * coach can leave outside a session.
  */
-export async function writeNote(coachId: number, sessionId: number | null, input: WriteNoteInput) {
+export async function writeNote(viewerId: number, sessionId: number | null, input: WriteNoteInput) {
+  const coachIds = await coachIdsFor(viewerId)
+
   const row = await db.squadPlayer.findFirst({
-    where: { id: input.squadPlayerId, userId: coachId, archivedAt: null },
+    where: { id: input.squadPlayerId, userId: { in: coachIds }, archivedAt: null },
     select: { id: true },
   })
   if (!row) return null
@@ -222,14 +272,22 @@ export async function writeNote(coachId: number, sessionId: number | null, input
   const { strengths, workOns } = splitTagLists(input.strengths, input.workOns)
   const body = input.body.trim()
 
+  // Looked up WITHOUT an author filter. One note per player per session, no
+  // matter who wrote it: if a club admin and the coach both write, the player
+  // gets two versions of the same session from two adults, which is worse than
+  // either of them saying nothing.
   const existing = sessionId
     ? await db.playerNote.findFirst({
-        where: { squadPlayerId: row.id, sessionId, coachUserId: coachId },
-        select: { id: true, createdAt: true, sentAt: true },
+        where: { squadPlayerId: row.id, sessionId },
+        select: { id: true, createdAt: true, sentAt: true, coachUserId: true },
       })
     : null
 
   if (existing) {
+    // A stand-in may write where nobody has, but not over somebody's words.
+    // Being allowed to act for a coach is not the same as being allowed to
+    // edit what they said to a child.
+    if (existing.coachUserId !== viewerId) return { notYours: true as const }
     if (!noteIsEditable(existing)) return { locked: true as const }
     return {
       note: await db.playerNote.update({
@@ -243,7 +301,9 @@ export async function writeNote(coachId: number, sessionId: number | null, input
     note: await db.playerNote.create({
       data: {
         squadPlayerId: row.id,
-        coachUserId: coachId,
+        // Whoever actually typed it, which is not necessarily whose squad it
+        // is. The player is shown this name, not the squad owner's.
+        coachUserId: viewerId,
         sessionId,
         boardId: input.boardId ?? null,
         body,
@@ -326,6 +386,8 @@ export async function notesForPlayer(playerUserId: number) {
           boardId: true,
           readAt: true,
           createdAt: true,
+          coachUserId: true,
+          coach: { select: { name: true, surname: true } },
           session: { select: { id: true, title: true, sessionDate: true } },
         },
       },
@@ -334,7 +396,17 @@ export async function notesForPlayer(playerUserId: number) {
 
   const allNotes = rows.flatMap((r) => r.notes)
   return {
-    squads: rows.map(({ notes, ...squad }) => ({ ...squad, notes })),
+    // Each note names whoever wrote it, which is not always the coach who owns
+    // the squad — a club admin can stand in. A child reading "from your coach"
+    // under words a different adult wrote is the kind of small dishonesty that
+    // makes the whole thing feel automated.
+    squads: rows.map(({ notes, ...squad }) => ({
+      ...squad,
+      notes: notes.map(({ coach, coachUserId, ...note }) => ({
+        ...note,
+        author: { id: coachUserId, name: authorName(coach) },
+      })),
+    })),
     /** "Scanning, six times this season" — the answer to "am I getting better?" */
     summary: tagFrequency(allNotes),
     unread: allNotes.filter((n) => !n.readAt).length,

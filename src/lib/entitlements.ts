@@ -10,10 +10,20 @@ export const PARTNER_PLAN_SLUG = 'pro'
 /**
  * The plan a player buys for themselves.
  *
- * It is an ACTIVE subscription that must grant no authoring whatsoever, which
- * is why `playerAccess` exists as a separate flag rather than something clever
- * read off `editorAccess`. Every gated route in the app hangs off
- * `editorAccess`; none of them change behaviour because of this file.
+ * It grants the full product — board, drill sheets, sessions, planner and
+ * exports — PLUS the player's own screens. The player plan is a superset of
+ * Pro, not a cut-down tier.
+ *
+ * `playerAccess` therefore stays a separate flag rather than something read
+ * off `editorAccess`: the two answer different questions. `editorAccess` is
+ * "may this account author?", `playerAccess` is "does this account have a
+ * player's own screens?" — and the second is true for anyone a coach has
+ * linked to a squad, whatever they pay.
+ *
+ * PRICING NOTE: at the current seed, Player is £2.99/mo and Pro is £2.99/mo.
+ * Because Player is now a superset, nothing distinguishes them and a coach has
+ * no reason to pick Pro. Whoever changes the price should change it in
+ * prisma/seed.ts and on the landing page together.
  */
 export const PLAYER_PLAN_SLUG = 'player'
 
@@ -133,17 +143,15 @@ export async function getEntitlements(userId: number): Promise<Entitlements> {
 
   const plan = ownActive ? sub!.plan : clubActive ? ownerSub!.plan : partnerPlan
 
-  // A player subscription is active but authors nothing. Excluded here rather
-  // than anywhere else, so every existing `requireEditorAccess` route refuses
-  // a player with no change of its own.
+  // A player subscription authors like any other paid plan — it is a superset
+  // of Pro, not a lesser tier, so it is NOT excluded from editorAccess.
   // `sub?.plan?.slug`, not `sub!.plan.slug`: a subscription whose plan row has
   // gone (deleted, or a partially-seeded database) must degrade to "no player
   // plan" rather than throw and take every entitlement check down with it.
   const isPlayerPlan = ownActive && sub?.plan?.slug === PLAYER_PLAN_SLUG
 
   return {
-    editorAccess:
-      (ownActive && !isPlayerPlan) || clubActive || (partnerActive && !!partnerPlan),
+    editorAccess: ownActive || clubActive || (partnerActive && !!partnerPlan),
     playerAccess: isPlayerPlan || !!linkedToSquad,
     plan,
     viaClub: !ownActive && clubActive,

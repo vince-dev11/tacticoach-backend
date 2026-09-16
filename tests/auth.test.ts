@@ -2,7 +2,7 @@ import crypto from 'node:crypto'
 import { describe, it, expect } from 'vitest'
 import bcrypt from 'bcryptjs'
 import { dbMock } from './setup.js'
-import { getApp, userRow } from './helpers.js'
+import { getApp, userRow, mockUserFindUnique } from './helpers.js'
 
 const registerBody = {
   name: 'Test',
@@ -14,7 +14,9 @@ const registerBody = {
 describe('POST /api/auth/register', () => {
   it('creates a user, starts a 7-day trial and returns tokens', async () => {
     const app = await getApp()
-    dbMock.user.findUnique.mockResolvedValue(null)
+    // No duplicate (the unselected lookup), then the profile read-back that
+    // builds the response — the same shape GET /users/me returns.
+    mockUserFindUnique(dbMock.user.findUnique, userRow(), { whenNoSelect: null })
     dbMock.user.create.mockResolvedValue(userRow() as never)
     dbMock.membershipPlan.findUnique.mockResolvedValue({ id: 2, slug: 'pro-ai' } as never)
     dbMock.userSubscription.create.mockResolvedValue({} as never)
@@ -77,7 +79,9 @@ describe('POST /api/auth/login', () => {
   it('returns tokens for valid credentials', async () => {
     const app = await getApp()
     const passwordHash = await bcrypt.hash('password123', 4)
-    dbMock.user.findUnique.mockResolvedValue(userRow({ passwordHash }) as never)
+    // Credential check reads the whole row; the response is built from a
+    // SELECTed read, which is why the hash must not appear below.
+    mockUserFindUnique(dbMock.user.findUnique, userRow({ passwordHash, role: 'owner' }))
     dbMock.refreshToken.create.mockResolvedValue({} as never)
 
     const res = await app.inject({
@@ -89,6 +93,10 @@ describe('POST /api/auth/login', () => {
     const body = res.json()
     expect(body.accessToken).toBeTruthy()
     expect(body.user).not.toHaveProperty('passwordHash')
+    // The whole point of the shared shape: `role` decides whether the Admin
+    // link renders, and login used to omit it, so an owner logging in saw no
+    // Admin link until they reloaded the page.
+    expect(body.user.role).toBe('owner')
   })
 
   it('rejects a wrong password with 401', async () => {

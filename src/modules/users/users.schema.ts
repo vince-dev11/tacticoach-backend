@@ -101,5 +101,19 @@ export const SaveSquadSchema = z.object({
       }),
     )
     .max(30),
+  /// Which team was edited. Optional so an older client keeps working — it
+  /// resolves to the coach's default squad, which is the only one that client
+  /// knows about anyway.
+  squadId: z.number().int().positive().optional().nullable(),
 })
 export type SaveSquadInput = z.infer<typeof SaveSquadSchema>
+
+/** A team: "U13", "First team", "Thursday keepers". */
+export const CreateSquadSchema = z.object({
+  name: z.string().trim().min(1).max(60),
+  ageGroup: z.string().trim().max(16).optional().nullable(),
+})
+
+export const MovePlayerSchema = z.object({
+  squadId: z.number().int().positive(),
+})

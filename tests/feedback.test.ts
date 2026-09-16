@@ -15,6 +15,7 @@ import {
   playerAccountExists,
   writeNote,
 } from '../src/modules/feedback/feedback.service.js'
+import { coachIdsFor, clubStandingFor } from '../src/lib/club-staff.js'
 import { saveSquad } from '../src/modules/users/users.service.js'
 
 // Typed once prisma generate has run against the new schema; the deep mock
@@ -135,6 +136,9 @@ describe('writeNote', () => {
       id: 3,
       createdAt: new Date(),
       sentAt: new Date(),
+      // The same coach coming back to it — otherwise this would be refused as
+      // somebody else's note before the sent check is ever reached.
+      coachUserId: 1,
     })
     const result = await writeNote(1, 7, { squadPlayerId: 5, body: 'new', strengths: [], workOns: [] })
     expect(result).toEqual({ locked: true })
@@ -157,6 +161,138 @@ describe('writeNote', () => {
     expect(data.strengths).toEqual(['scanning'])
     expect(data.workOns).toEqual(['weak_foot'])
     expect(data.body).toBe('keep the shape')
+  })
+
+  it('signs the note with whoever typed it, not whose squad it is', async () => {
+    // A club admin standing in for a coach. The player is shown this name.
+    mock.squadPlayer.findFirst.mockResolvedValue({ id: 5 })
+    mock.playerNote.findFirst.mockResolvedValue(null)
+    mock.playerNote.create.mockResolvedValue({ id: 1 })
+
+    await writeNote(42, 7, { squadPlayerId: 5, body: 'good week', strengths: [], workOns: [] })
+
+    expect(mock.playerNote.create.mock.calls[0][0].data.coachUserId).toBe(42)
+  })
+
+  it('refuses to overwrite a note somebody else wrote', async () => {
+    // Acting FOR a coach is not permission to edit what they said to a child,
+    // even inside the 30-minute window.
+    mock.squadPlayer.findFirst.mockResolvedValue({ id: 5 })
+    mock.playerNote.findFirst.mockResolvedValue({
+      id: 3,
+      createdAt: new Date(),
+      sentAt: null,
+      coachUserId: 1,
+    })
+
+    const result = await writeNote(42, 7, { squadPlayerId: 5, body: 'mine now', strengths: [], workOns: [] })
+    expect(result).toEqual({ notYours: true })
+    expect(mock.playerNote.update).not.toHaveBeenCalled()
+    expect(mock.playerNote.create).not.toHaveBeenCalled()
+  })
+
+  it('looks for an existing note without filtering by author', async () => {
+    // One note per player per session, whoever wrote it. Filtering by author
+    // here would let an admin and a coach both write, and the player would get
+    // two versions of the same session from two adults.
+    mock.squadPlayer.findFirst.mockResolvedValue({ id: 5 })
+    mock.playerNote.findFirst.mockResolvedValue(null)
+    mock.playerNote.create.mockResolvedValue({ id: 1 })
+
+    await writeNote(42, 7, { squadPlayerId: 5, body: 'x', strengths: [], workOns: [] })
+
+    const { where } = mock.playerNote.findFirst.mock.calls[0][0]
+    expect(where).toEqual({ squadPlayerId: 5, sessionId: 7 })
+  })
+})
+
+describe('club-staff — who may act for whom', () => {
+  const clubPlan = (slug: string) => ({
+    status: 'active',
+    expiresAt: null,
+    plan: { slug },
+  })
+
+  it('gives a plain coach exactly themselves', async () => {
+    mock.club.findUnique.mockResolvedValue(null)
+    mock.clubMember.findUnique.mockResolvedValue(null)
+    expect(await coachIdsFor(9)).toEqual([9])
+  })
+
+  it('treats the club owner as an admin even though they hold no seat', async () => {
+    // clubs.routes only ever creates member rows from accepted invites, so an
+    // owner is never a ClubMember of their own club. Anything resolving club
+    // staff through clubMember alone misses the person paying for it.
+    mock.club.findUnique.mockResolvedValue({ id: 3, ownerId: 1 })
+    mock.userSubscription.findUnique.mockResolvedValue(clubPlan('club'))
+    mock.clubMember.findMany.mockResolvedValue([{ userId: 5 }, { userId: 6 }])
+
+    expect((await coachIdsFor(1)).sort()).toEqual([1, 5, 6])
+  })
+
+  it('withdraws admin powers the day the club stops paying', async () => {
+    mock.club.findUnique.mockResolvedValue({ id: 3, ownerId: 1 })
+    mock.userSubscription.findUnique.mockResolvedValue({
+      status: 'cancelled',
+      expiresAt: null,
+      plan: { slug: 'club' },
+    })
+    expect(await coachIdsFor(1)).toEqual([1])
+  })
+
+  it('does not treat a Pro owner as a club admin', async () => {
+    // Owning a club row is not enough — the money has to be on the club plan.
+    mock.club.findUnique.mockResolvedValue({ id: 3, ownerId: 1 })
+    mock.userSubscription.findUnique.mockResolvedValue(clubPlan('pro'))
+    expect(await coachIdsFor(1)).toEqual([1])
+  })
+
+  it('keeps an ordinary seat scoped to their own squad', async () => {
+    mock.club.findUnique.mockResolvedValue(null)
+    mock.clubMember.findUnique.mockResolvedValue({
+      clubId: 3,
+      role: 'member',
+      club: { owner: { subscription: clubPlan('club') } },
+    })
+    expect(await coachIdsFor(5)).toEqual([5])
+  })
+
+  it('widens a promoted seat to every coach in the club', async () => {
+    mock.club.findUnique
+      .mockResolvedValueOnce(null) // not an owner
+      .mockResolvedValueOnce({ ownerId: 1 }) // …looking up the club's owner
+    mock.clubMember.findUnique.mockResolvedValue({
+      clubId: 3,
+      role: 'admin',
+      club: { owner: { subscription: clubPlan('club') } },
+    })
+    mock.clubMember.findMany.mockResolvedValue([{ userId: 5 }, { userId: 6 }])
+
+    expect((await coachIdsFor(5)).sort()).toEqual([1, 5, 6])
+  })
+
+  it('refuses an admin seat whose club owner has lapsed', async () => {
+    mock.club.findUnique.mockResolvedValue(null)
+    mock.clubMember.findUnique.mockResolvedValue({
+      clubId: 3,
+      role: 'admin',
+      club: { owner: { subscription: null } },
+    })
+    expect(await coachIdsFor(5)).toEqual([5])
+  })
+
+  it('reports the owner as owner, so only they can promote anyone', async () => {
+    mock.club.findUnique.mockResolvedValue({ id: 3 })
+    mock.userSubscription.findUnique.mockResolvedValue(clubPlan('club'))
+    expect(await clubStandingFor(1)).toEqual({ clubId: 3, isAdmin: true, isOwner: true })
+
+    mock.club.findUnique.mockResolvedValue(null)
+    mock.clubMember.findUnique.mockResolvedValue({
+      clubId: 3,
+      role: 'admin',
+      club: { owner: { subscription: clubPlan('club') } },
+    })
+    expect(await clubStandingFor(5)).toEqual({ clubId: 3, isAdmin: true, isOwner: false })
   })
 })
 
@@ -218,7 +354,9 @@ describe('saveSquad — the destructive-save regression', () => {
     await saveSquad(7, [{ id: 4321, name: 'Léo', number: '4' }])
     expect(mock.squadPlayer.update).not.toHaveBeenCalled()
     expect(mock.squadPlayer.create).toHaveBeenCalledWith({
-      data: { userId: 7, name: 'Léo', number: '4', position: null, sortOrder: 0 },
+      // squadId comes from resolveSquad, not from the client — a new player
+      // lands in the squad being edited, never in one the caller named.
+      data: { userId: 7, squadId: 1, name: 'Léo', number: '4', position: null, sortOrder: 0 },
     })
   })
 

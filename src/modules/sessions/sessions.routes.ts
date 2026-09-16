@@ -65,6 +65,9 @@ const CreateSessionSchema = z.object({
   title: latinOnly(z.string().max(255)).transform((t) => t.trim() || 'Untitled session'),
   sessionDate: z.coerce.date().optional().nullable(),
   ageGroup: z.string().max(16).optional().nullable(),
+  /// Which of the coach's teams this session is for. Null = their default
+  /// squad, which is what every session saved before squads existed uses.
+  squadId: z.number().int().positive().optional().nullable(),
   targetMinutes: z.coerce.number().min(1).max(600).transform((m) => Math.round(m)).optional().nullable(),
   blocks: z.array(BlockSchema).max(40).default([]),
   brand: BrandSchema.default({}),
@@ -126,6 +129,7 @@ export async function sessionsRoutes(app: FastifyInstance) {
         title: true,
         sessionDate: true,
         ageGroup: true,
+        squadId: true,
         targetMinutes: true,
         blocks: true,
         updatedAt: true,
@@ -161,6 +165,7 @@ export async function sessionsRoutes(app: FastifyInstance) {
         title: input.title,
         sessionDate: input.sessionDate ?? null,
         ageGroup: input.ageGroup ?? null,
+        squadId: input.squadId ?? null,
         targetMinutes: input.targetMinutes ?? null,
         blocks: input.blocks,
         brand: input.brand,
@@ -194,6 +199,7 @@ export async function sessionsRoutes(app: FastifyInstance) {
         ...(input.title !== undefined && { title: input.title }),
         ...(input.sessionDate !== undefined && { sessionDate: input.sessionDate }),
         ...(input.ageGroup !== undefined && { ageGroup: input.ageGroup }),
+        ...(input.squadId !== undefined && { squadId: input.squadId }),
         ...(input.targetMinutes !== undefined && { targetMinutes: input.targetMinutes }),
         ...(input.blocks !== undefined && { blocks: input.blocks }),
         ...(input.brand !== undefined && { brand: input.brand }),

@@ -151,3 +151,50 @@ describe('getEntitlements', () => {
     expect(ent.isClubOwner).toBe(true)
   })
 })
+
+describe('the player plan', () => {
+  // A deliberate product decision, pinned here because it is invisible in the
+  // code that depends on it: the player plan is a SUPERSET of Pro. It grants
+  // the whole coach product plus the player's own screens. An earlier build
+  // excluded it from editorAccess; if that exclusion ever comes back it will
+  // silently lock every paying player out of the board, so these fail loudly.
+  const playerSub = () => activeSubscription({ plan: { id: 9, name: 'Player', slug: 'player' } })
+
+  it('grants the full product, not a cut-down one', async () => {
+    dbMock.userSubscription.findUnique.mockResolvedValue(playerSub() as never)
+    dbMock.clubMember.findUnique.mockResolvedValue(null)
+    dbMock.club.findUnique.mockResolvedValue(null)
+    dbMock.squadPlayer.findFirst.mockResolvedValue(null as never)
+
+    const ent = await getEntitlements(1)
+    expect(ent.editorAccess).toBe(true)
+    expect(ent.playerAccess).toBe(true)
+    expect(ent.plan?.slug).toBe('player')
+  })
+
+  it('gives a linked player their own screens even with no subscription', async () => {
+    // Their club or their coach pays; the notes are still theirs to read.
+    dbMock.userSubscription.findUnique.mockResolvedValue(null)
+    dbMock.clubMember.findUnique.mockResolvedValue(null)
+    dbMock.club.findUnique.mockResolvedValue(null)
+    dbMock.squadPlayer.findFirst.mockResolvedValue({ id: 4 } as never)
+
+    const ent = await getEntitlements(1)
+    expect(ent.playerAccess).toBe(true)
+    // Reading what your coach wrote you is not a licence to author.
+    expect(ent.editorAccess).toBe(false)
+  })
+
+  it('takes the product back when the player stops paying', async () => {
+    dbMock.userSubscription.findUnique.mockResolvedValue(
+      activeSubscription({ status: 'cancelled', plan: { id: 9, name: 'Player', slug: 'player' } }) as never,
+    )
+    dbMock.clubMember.findUnique.mockResolvedValue(null)
+    dbMock.club.findUnique.mockResolvedValue(null)
+    dbMock.squadPlayer.findFirst.mockResolvedValue(null as never)
+
+    const ent = await getEntitlements(1)
+    expect(ent.editorAccess).toBe(false)
+    expect(ent.playerAccess).toBe(false)
+  })
+})

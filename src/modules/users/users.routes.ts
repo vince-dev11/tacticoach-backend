@@ -1,5 +1,9 @@
 import type { FastifyInstance } from 'fastify'
 import { authGuard } from '../../middleware/auth-guard.js'
+import { CreateSquadSchema, MovePlayerSchema } from './users.schema.js'
+import {
+  listSquads, defaultSquad, createSquad, renameSquad, archiveSquad, movePlayer,
+} from './squads.service.js'
 import { UpdateProfileSchema, TourDoneSchema, SaveSquadSchema, ALLOWED_LOGO_TYPES, EXT_FOR_LOGO_TYPE, MAX_LOGO_SIZE } from './users.schema.js'
 import { getUserProfile, updateUserProfile, uploadClubLogo, deleteClubLogo, markTourDone, getSquad, saveSquad } from './users.service.js'
 
@@ -32,17 +36,72 @@ export async function usersRoutes(app: FastifyInstance) {
     return reply.send({ toursDone })
   })
 
-  // GET /users/me/squad — the coach's real players, in display order.
-  app.get('/me/squad', async (request, reply) => {
+  // ---- Squads --------------------------------------------------------------
+  // A coach with one team never sees any of this; the client hides the picker
+  // when the list has a single entry. Everything below still answers for that
+  // coach, because `defaultSquad` makes their first squad on demand.
+
+  // GET /users/me/squads — this coach's teams.
+  app.get('/me/squads', async (request, reply) => {
     const userId = (request.user as any).sub as number
-    return reply.send({ players: await getSquad(userId) })
+    const squads = await listSquads(userId)
+    // Never an empty list: an account that has never had players still gets
+    // one squad, so the client has something to select.
+    return reply.send({ squads: squads.length > 0 ? squads : [await defaultSquad(userId)] })
   })
 
-  // PUT /users/me/squad — replace-all save from the profile's squad editor.
+  app.post('/me/squads', async (request, reply) => {
+    const userId = (request.user as any).sub as number
+    const input = CreateSquadSchema.parse(request.body)
+    return reply.status(201).send(await createSquad(userId, input.name, input.ageGroup ?? null))
+  })
+
+  app.patch('/me/squads/:id', async (request, reply) => {
+    const userId = (request.user as any).sub as number
+    const id = Number((request.params as { id: string }).id)
+    const input = CreateSquadSchema.partial().parse(request.body)
+    return (await renameSquad(userId, id, input))
+      ? reply.send({ ok: true })
+      : reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'Squad not found' })
+  })
+
+  app.delete('/me/squads/:id', async (request, reply) => {
+    const userId = (request.user as any).sub as number
+    const id = Number((request.params as { id: string }).id)
+    const result = await archiveSquad(userId, id)
+    if (result.ok) return reply.status(204).send()
+    // A coach with no squads at all would get one recreated on the next read,
+    // which looks like the app undoing what they just did.
+    const status = result.reason === 'last_one' ? 409 : 404
+    return reply.status(status).send({ statusCode: status, error: 'Cannot archive', message: result.reason })
+  })
+
+  // POST /users/me/squad-players/:id/move { squadId } — promote a player.
+  // One UPDATE: the row carries their account link and every note ever
+  // written to them, so it must survive the move intact.
+  app.post('/me/squad-players/:id/move', async (request, reply) => {
+    const userId = (request.user as any).sub as number
+    const id = Number((request.params as { id: string }).id)
+    const { squadId } = MovePlayerSchema.parse(request.body)
+    return (await movePlayer(userId, id, squadId))
+      ? reply.send({ ok: true })
+      : reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'Player or squad not found' })
+  })
+
+  // GET /users/me/squad?squadId= — one squad's players, in display order.
+  app.get('/me/squad', async (request, reply) => {
+    const userId = (request.user as any).sub as number
+    const squadId = Number((request.query as { squadId?: string }).squadId) || null
+    const { squad, players } = await getSquad(userId, squadId)
+    return reply.send({ squad, players })
+  })
+
+  // PUT /users/me/squad — replace-all save, scoped to ONE squad.
   app.put('/me/squad', async (request, reply) => {
     const userId = (request.user as any).sub as number
     const input = SaveSquadSchema.parse(request.body)
-    return reply.send({ players: await saveSquad(userId, input.players) })
+    const { squad, players } = await saveSquad(userId, input.players, input.squadId ?? null)
+    return reply.send({ squad, players })
   })
 
   // POST /users/me/logo — multipart upload

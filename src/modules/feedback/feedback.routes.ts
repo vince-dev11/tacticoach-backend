@@ -2,8 +2,11 @@
 //
 // Three audiences, three authorisation stories:
 //
-//   coach   — must own the squad row. Every query is scoped by userId; there
-//             is no route that takes an id and trusts it.
+//   coach   — must own the squad row, OR be an admin of the club that coach
+//             belongs to (lib/club-staff resolves which). Every query is
+//             scoped to that set; no route takes an id and trusts it.
+//             Linking a player is NOT widened — asking a child to connect
+//             their account belongs to the coach who actually knows them.
 //   player  — resolves their own roster rows from playerUserId. A player can
 //             never pass an id and read someone else's notes.
 //   guardian— a signed token scoped to one squad row, read-only, no account.
@@ -72,6 +75,9 @@ export async function feedbackRoutes(app: FastifyInstance) {
           orderBy: { createdAt: 'desc' },
           select: {
             id: true, body: true, strengths: true, workOns: true, createdAt: true,
+            // Named individually: a parent is entitled to know which adult
+            // wrote to their child, and it is not always the squad's coach.
+            coach: { select: { name: true, surname: true } },
             session: { select: { title: true, sessionDate: true } },
           },
         },
@@ -130,6 +136,13 @@ export async function feedbackRoutes(app: FastifyInstance) {
     const input = NoteSchema.parse(request.body)
     const result = await writeNote(userId(request), id, input)
     if (!result) return reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'Player not found' })
+    if ('notYours' in result) {
+      return reply.status(409).send({
+        statusCode: 409,
+        error: 'Conflict',
+        message: 'Another coach has already written to this player for this session',
+      })
+    }
     if ('locked' in result) {
       return reply.status(409).send({
         statusCode: 409,

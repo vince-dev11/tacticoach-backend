@@ -22,6 +22,7 @@ const INVITE_TTL_MS = 14 * 24 * 60 * 60 * 1000 // 14 days
 const MEMBER_SELECT = {
   id: true,
   createdAt: true,
+  role: true,
   user: { select: { id: true, name: true, surname: true, email: true } },
 } as const
 
@@ -77,7 +78,15 @@ export async function clubsRoutes(app: FastifyInstance) {
     })
     if (!membership) return reply.send(null)
     return reply.send({
+      // Standing in the club (owner vs seat-holder) — not the same axis as
+      // `myRole` below, which is what the owner has granted this seat.
       role: 'member',
+      // Read through a cast until `prisma generate` runs against migration 21:
+      // a client generated before the column exists types `role` as `never`,
+      // which is a stale-client artefact rather than a real type error. The
+      // value itself is always 'member' | 'admin' — the column is NOT NULL
+      // with a default.
+      myRole: (membership as { role?: 'member' | 'admin' }).role ?? 'member',
       id: membership.club.id,
       name: membership.club.name,
       owner: membership.club.owner,
@@ -199,6 +208,31 @@ export async function clubsRoutes(app: FastifyInstance) {
       db.clubInvite.update({ where: { id: invite.id }, data: { acceptedAt: new Date() } }),
     ])
     return reply.send({ joined: true, clubName: invite.club.name })
+  })
+
+  // PATCH /clubs/members/:userId/role { role } — the OWNER promotes a coach to
+  // club admin, or takes it back.
+  //
+  // Owner-only, deliberately: an admin who could appoint other admins would
+  // make the list of adults who can read a child's feedback grow without the
+  // person paying for the club ever seeing it happen.
+  app.patch('/members/:userId/role', async (request, reply) => {
+    const requesterId = (request.user as any).sub as number
+    const targetId = Number((request.params as { userId: string }).userId)
+    const { role } = z.object({ role: z.enum(['member', 'admin']) }).parse(request.body)
+
+    const club = await db.club.findUnique({ where: { ownerId: requesterId }, select: { id: true } })
+    if (!club) {
+      return reply.status(403).send({ statusCode: 403, error: 'Forbidden', message: 'Only the club owner can do this' })
+    }
+
+    const { count } = await db.clubMember.updateMany({
+      where: { clubId: club.id, userId: targetId },
+      data: { role },
+    })
+    return count > 0
+      ? reply.send({ userId: targetId, role })
+      : reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'Member not found' })
   })
 
   // DELETE /clubs/members/:userId — owner removes a member (or a member leaves)

@@ -21,6 +21,7 @@ import { env } from '../../config/env.js'
 import { isMailConfigured } from '../../config/mailer.js'
 import { sendWelcomeEmail, sendVerificationEmail, sendPasswordResetEmail } from '../../lib/emails.js'
 import { authGuard } from '../../middleware/auth-guard.js'
+import { getUserProfile } from '../users/users.service.js'
 import { db } from '../../config/database.js'
 
 /**
@@ -61,7 +62,8 @@ export async function authRoutes(app: FastifyInstance) {
     await saveRefreshToken(user.id, refreshToken)
     // Fire-and-forget: the welcome email must never delay or fail a signup.
     void sendWelcomeEmail(user, verifyUrlFor(user.id, user.email))
-    return reply.status(201).send({ user, accessToken, refreshToken })
+    // Same shape as GET /users/me — see the note on /login below.
+    return reply.status(201).send({ user: await getUserProfile(user.id), accessToken, refreshToken })
   })
 
   // POST /auth/verify-email { token } — consume a verification link.
@@ -115,7 +117,15 @@ export async function authRoutes(app: FastifyInstance) {
     const accessToken = signAccess(user.id, user.email)
     const refreshToken = signRefresh(user.id)
     await saveRefreshToken(user.id, refreshToken)
-    return reply.send({ user: { id: user.id, name: user.name, surname: user.surname, email: user.email, accountType: user.accountType }, accessToken, refreshToken })
+    // The SAME payload as GET /users/me, not a hand-picked subset.
+    //
+    // This used to send five fields, so everything else — `role` above all —
+    // arrived undefined and stayed that way until the next full page load.
+    // Log in as the owner and the Admin link was missing until you refreshed;
+    // the app had simply never been told. Any field the client reads outside
+    // that subset had the same bug waiting in it, which is why the fix is one
+    // shared shape rather than adding `role` to the list.
+    return reply.send({ user: await getUserProfile(user.id), accessToken, refreshToken })
   })
 
   // POST /auth/refresh

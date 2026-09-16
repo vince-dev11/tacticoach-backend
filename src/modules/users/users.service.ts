@@ -1,4 +1,5 @@
 import { db } from '../../config/database.js'
+import { resolveSquad } from './squads.service.js'
 import { uploadToS3, deleteFromS3, presignUrl } from '../../config/s3.js'
 import type { UpdateProfileInput, TourId, SaveSquadInput } from './users.schema.js'
 
@@ -124,14 +125,23 @@ const SQUAD_SELECT = {
   guardianEmail: true,
 } as const
 
-export async function getSquad(userId: number) {
-  return db.squadPlayer.findMany({
+/**
+ * One squad's players.
+ *
+ * `squadId` is resolved, not trusted: an id belonging to another coach, or one
+ * archived in another tab, falls back to this coach's default squad rather
+ * than erroring or — far worse — reading someone else's roster.
+ */
+export async function getSquad(userId: number, squadId?: number | null) {
+  const squad = await resolveSquad(userId, squadId)
+  const players = await db.squadPlayer.findMany({
     // Archived rows are kept only so the notes written to that player survive;
     // they are not part of the squad any more and never come back in reads.
-    where: { userId, archivedAt: null },
+    where: { userId, squadId: squad.id, archivedAt: null },
     orderBy: { sortOrder: 'asc' },
     select: SQUAD_SELECT,
   })
+  return { squad, players }
 }
 
 /**
@@ -147,9 +157,17 @@ export async function getSquad(userId: number) {
  * archived when it has anything worth keeping, and only deleted outright when
  * it is genuinely empty.
  */
-export async function saveSquad(userId: number, players: SaveSquadInput['players']) {
+export async function saveSquad(
+  userId: number,
+  players: SaveSquadInput['players'],
+  squadId?: number | null,
+) {
+  const squad = await resolveSquad(userId, squadId)
+  // Scoped to ONE squad. Without the squadId here, saving the U13s would
+  // archive every U15 as "dropped" — the replace-all shape is only safe
+  // against the list the coach was actually editing.
   const existing = await db.squadPlayer.findMany({
-    where: { userId, archivedAt: null },
+    where: { userId, squadId: squad.id, archivedAt: null },
     select: { id: true, playerUserId: true, _count: { select: { notes: true } } },
   })
   const existingById = new Map(existing.map((row) => [row.id, row]))
@@ -165,7 +183,7 @@ export async function saveSquad(userId: number, players: SaveSquadInput['players
       keptIds.add(p.id)
       ops.push(db.squadPlayer.update({ where: { id: p.id }, data }))
     } else {
-      ops.push(db.squadPlayer.create({ data: { userId, ...data } }))
+      ops.push(db.squadPlayer.create({ data: { userId, squadId: squad.id, ...data } }))
     }
   })
 
@@ -186,5 +204,5 @@ export async function saveSquad(userId: number, players: SaveSquadInput['players
   }
 
   await db.$transaction(ops)
-  return getSquad(userId)
+  return getSquad(userId, squad.id)
 }

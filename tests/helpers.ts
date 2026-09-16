@@ -66,3 +66,36 @@ export function userRow(overrides: Record<string, unknown> = {}) {
     ...overrides,
   }
 }
+
+/**
+ * `db.user.findUnique` that honours `select`, the way Prisma does.
+ *
+ * The deep mock returns whatever row you hand it and ignores the query, which
+ * is fine until one route calls findUnique twice for different reasons. The
+ * login route reads the full row to check the password, then reads it again
+ * through USER_SELECT to build the response; register checks for a duplicate
+ * (expecting null) and then reads the new account back. With a plain
+ * mockResolvedValue both calls get the same answer, so either the password
+ * hash leaks into the response or the profile read comes back null — neither
+ * of which is true of the real client.
+ *
+ * `whenNoSelect` covers the unselected call; selecting nothing otherwise
+ * returns the whole row, which is also what Prisma does.
+ */
+export function mockUserFindUnique(
+  mock: { mockImplementation: (fn: (args?: unknown) => unknown) => unknown },
+  row: Record<string, unknown>,
+  options: { whenNoSelect?: unknown } = {},
+) {
+  mock.mockImplementation((args?: unknown) => {
+    const select = (args as { select?: Record<string, unknown> } | undefined)?.select
+    if (!select) {
+      return Promise.resolve('whenNoSelect' in options ? options.whenNoSelect : row)
+    }
+    const picked: Record<string, unknown> = {}
+    for (const key of Object.keys(select)) {
+      if (select[key]) picked[key] = row[key] ?? null
+    }
+    return Promise.resolve(picked)
+  })
+}
