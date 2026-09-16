@@ -28,6 +28,9 @@ const SocialUrl = z
 export const UpdateProfileSchema = z.object({
   name: latinOnly(z.string().min(1).max(100)).optional(),
   surname: latinOnly(z.string().min(1).max(100)).optional(),
+  /// Correctable after signup — someone who signed up solo and later runs a
+  /// club should be able to say so. Still grants nothing on its own.
+  accountType: z.enum(['coach', 'club', 'player']).optional(),
   phone: z.string().max(30).optional().nullable(),
   clubName: latinOnly(z.string().max(150)).optional().nullable(),
   instagramUrl: SocialUrl,
@@ -88,6 +91,10 @@ export const SaveSquadSchema = z.object({
   players: z
     .array(
       z.object({
+        /// Present for a row that already exists. Without it the save could
+        /// not tell "renamed Marco" from "deleted Marco, added Marc", and the
+        /// difference is a player's entire feedback history.
+        id: z.number().int().positive().optional(),
         name: z.string().trim().min(1).max(40),
         number: z.string().trim().min(1).max(3),
         position: z.enum(SQUAD_POSITIONS).optional().nullable(),

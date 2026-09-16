@@ -172,11 +172,21 @@ describe('GET /api/users/me/squad', () => {
 })
 
 describe('PUT /api/users/me/squad', () => {
-  it('replaces the squad and returns the saved list', async () => {
+  it('saves the squad and returns the saved list', async () => {
     const app = await getApp()
     dbMock.$transaction.mockResolvedValue([] as never)
+    // Two reads: the existing rows (with the note count that decides archive
+    // vs delete), then the list read back afterwards.
     squadMock().findMany.mockResolvedValue([
-      { id: 3, name: 'Leo Keeper', number: '1', position: 'GK', sortOrder: 0 },
+      {
+        id: 3,
+        name: 'Leo Keeper',
+        number: '1',
+        position: 'GK',
+        sortOrder: 0,
+        playerUserId: null,
+        _count: { notes: 0 },
+      },
     ])
     const res = await app.inject({
       method: 'PUT',

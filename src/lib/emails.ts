@@ -402,6 +402,93 @@ export function buildContactEmail(input: {
  * Branded password-reset email. Found in pre-launch review: this was the one
  * flow still sending a bare unstyled HTML string from the route.
  */
+/**
+ * "Your account is ready" — for an account created by an admin rather than by
+ * the person themselves. Deliberately not the reset email: someone who never
+ * asked for anything needs to be told who made the account and why, or the
+ * mail reads as a phishing attempt.
+ */
+export async function sendAccountSetupEmail(
+  user: { name: string; email: string },
+  setupUrl: string,
+): Promise<void> {
+  await sendSafely(
+    {
+      to: user.email,
+      subject: 'Your TactiCoach account is ready',
+      text:
+        `Hi ${user.name},\n\n` +
+        `An account has been created for you on TactiCoach.\n\n` +
+        `Choose your password to get started (link valid for 7 days):\n${setupUrl}\n\n` +
+        `If you weren't expecting this, you can ignore this email — the account cannot be used until a password is set.\n\n` +
+        `— TactiCoach`,
+      html: layout(
+        'Your TactiCoach account is ready — choose a password to get started.',
+        `${kicker('YOUR ACCOUNT')}
+         <h1 style="margin:0 0 12px;font-size:21px">Your account is ready ⚽</h1>
+         <p style="margin:0 0 4px">Hi ${user.name}, an account has been created for you on TactiCoach. Choose your password to get started (the link is valid for 7 days):</p>
+         ${button(setupUrl, 'Choose your password')}
+         <p style="margin:0 0 8px;color:#6b7280;font-size:13px">Or paste this link into your browser:<br>${setupUrl}</p>
+         <p style="margin:0;color:#6b7280;font-size:13px">If you weren't expecting this, you can ignore this email — the account cannot be used until a password is set.</p>`,
+      ),
+    },
+    'account setup',
+  )
+}
+
+/**
+ * "Your coach left you a note."
+ *
+ * Copied to the guardian when one is set, with a read-only link to the whole
+ * log — transparency is the safeguarding expectation for adult-to-child
+ * communication, and a parent who reads this every week is a parent who tells
+ * the club to renew.
+ *
+ * The note body is deliberately included in full. A "you have a new message,
+ * log in to read it" email is a notification nobody opens twice.
+ */
+export async function sendPlayerNoteEmail(params: {
+  to: string
+  cc: string | null
+  playerName: string
+  coachName: string
+  clubName: string | null
+  body: string
+  guardianToken: string | null
+}): Promise<void> {
+  const from = params.clubName ? `${params.coachName} · ${params.clubName}` : params.coachName
+  const guardianLine = params.guardianToken
+    ? `\n\nParent or guardian — see everything ${params.playerName}'s coach has written:\n${env.FRONTEND_URL}/guardian/${params.guardianToken}`
+    : ''
+
+  await sendSafely(
+    {
+      to: params.cc ? `${params.to}, ${params.cc}` : params.to,
+      subject: `${params.coachName} left you a note`,
+      text:
+        `Hi ${params.playerName},\n\n` +
+        `${from} wrote:\n\n` +
+        `"${params.body}"\n\n` +
+        `See it with the rest of your season:\n${env.FRONTEND_URL}/my-season` +
+        guardianLine,
+      html: layout(
+        `${params.coachName} left you a note.`,
+        `${kicker('FROM YOUR COACH')}
+         <h1 style="margin:0 0 12px;font-size:21px">${params.coachName} left you a note ⚽</h1>
+         <p style="margin:0 0 4px">Hi ${params.playerName},</p>
+         <blockquote style="margin:14px 0;padding:12px 16px;border-left:4px solid #00a76f;background:#f0fdf7;color:#14532d;font-size:15px;line-height:1.6">${params.body}</blockquote>
+         ${button(`${env.FRONTEND_URL}/my-season`, 'See your season')}
+         ${
+           params.guardianToken
+             ? `<p style="margin:16px 0 0;color:#6b7280;font-size:13px">Parent or guardian: <a href="${env.FRONTEND_URL}/guardian/${params.guardianToken}" style="color:#00a76f">see everything ${params.playerName}'s coach has written</a>.</p>`
+             : ''
+         }`,
+      ),
+    },
+    'player note',
+  )
+}
+
 export async function sendPasswordResetEmail(
   user: { name: string; email: string },
   resetUrl: string,

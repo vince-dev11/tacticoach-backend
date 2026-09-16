@@ -4,6 +4,9 @@ import { latinOnly } from '../../lib/latin-only.js'
 export const RegisterSchema = z.object({
   name: latinOnly(z.string().min(1).max(100)),
   surname: latinOnly(z.string().min(1).max(100)),
+  /// What they say they are. Routes onboarding and segments reporting; grants
+  /// nothing — see User.accountType in the schema.
+  accountType: z.enum(['coach', 'club', 'player']).default('coach'),
   email: z.string().email(),
   password: z.string().min(8).max(128),
   phone: z.string().max(30).optional(),

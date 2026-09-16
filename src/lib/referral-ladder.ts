@@ -31,7 +31,7 @@
 export type ReferrerTier = 'coach' | 'club'
 
 /** What the REFERRED customer bought. Decides which ladder they land on. */
-export type ReferralKind = 'coach' | 'club'
+export type ReferralKind = 'coach' | 'club' | 'player'
 
 /** A rung: reach `at` paid referrals in a cycle, get `months` more free. */
 export interface Tier {
@@ -48,18 +48,33 @@ export interface Tier {
  */
 const COACH_STEPS = [1, 2, 9] as const
 const CLUB_STEPS = [3, 3, 6] as const
+/** Players reach the same totals, just over far more heads — see below. */
+const PLAYER_STEPS = [1, 2, 9] as const
 
 const rungs = (ats: readonly number[], steps: readonly number[]): readonly Tier[] =>
   ats.map((at, i) => ({ at, months: steps[i] }))
 
+/**
+ * Every ladder scales by what a free month is WORTH against what was brought
+ * in. A Club month is worth roughly eight Pro months, which is why a Club has
+ * to bring about twice as many people for the same reward.
+ *
+ * A player subscription is a fraction of a coach's, so the player rungs are
+ * correspondingly longer — 9 / 24 / 36 rather than 3 / 8 / 12. That looks
+ * steep next to the coach ladder and is in fact the easier climb: a coach's
+ * eighteen players stand in front of them every Tuesday, whereas three
+ * *coaches* takes networking.
+ */
 export const LADDERS: Record<ReferrerTier, Record<ReferralKind, readonly Tier[]>> = {
   coach: {
     coach: rungs([3, 8, 12], COACH_STEPS),
     club: rungs([1, 2, 3], CLUB_STEPS),
+    player: rungs([9, 24, 36], PLAYER_STEPS),
   },
   club: {
     coach: rungs([6, 16, 24], COACH_STEPS),
     club: rungs([2, 3, 6], CLUB_STEPS),
+    player: rungs([18, 48, 72], PLAYER_STEPS),
   },
 }
 
@@ -117,16 +132,20 @@ export function owedRewards(
 /** A referral count for each of the four ladders. */
 export type LadderCounts = Record<ReferrerTier, Record<ReferralKind, number>>
 
+/** Every referrer tier, and every kind that can be referred. */
+export const REFERRER_TIERS = ['coach', 'club'] as const
+export const REFERRAL_KINDS = ['coach', 'club', 'player'] as const
+
 export const emptyCounts = (): LadderCounts => ({
-  coach: { coach: 0, club: 0 },
-  club: { coach: 0, club: 0 },
+  coach: { coach: 0, club: 0, player: 0 },
+  club: { coach: 0, club: 0, player: 0 },
 })
 
-/** Everything owed across all four ladders. */
+/** Everything owed across every ladder. */
 export function allOwedRewards(counts: LadderCounts): OwedReward[] {
   const out: OwedReward[] = []
-  for (const referrer of ['coach', 'club'] as ReferrerTier[]) {
-    for (const kind of ['coach', 'club'] as ReferralKind[]) {
+  for (const referrer of REFERRER_TIERS) {
+    for (const kind of REFERRAL_KINDS) {
       out.push(...owedRewards(referrer, kind, counts[referrer][kind]))
     }
   }

@@ -31,11 +31,12 @@ export async function registerUser(input: RegisterInput) {
       surname: input.surname,
       email: input.email,
       phone: input.phone ?? null,
+      accountType: input.accountType,
       passwordHash,
       // The configured company-owner account gets the admin role immediately.
       ...(env.OWNER_EMAIL && input.email === env.OWNER_EMAIL ? { role: 'owner' as const } : {}),
     },
-    select: { id: true, name: true, surname: true, email: true },
+    select: { id: true, name: true, surname: true, email: true, accountType: true },
   })
 
   // Credit whoever invited them. Attribution is decided here, once — see
@@ -110,6 +111,26 @@ export async function findRefreshToken(token: string) {
  * either way so the endpoint can't be used to discover which emails are registered.
  * Only the token's hash is persisted.
  */
+/**
+ * A set-your-password link for an account someone else created.
+ *
+ * Same table and same redemption path as a password reset — but a week to use
+ * it rather than an hour. A reset is something you asked for thirty seconds
+ * ago; an account set up for you by a club or by support might be opened on
+ * Monday when the email arrived on Friday, and an expired link on first contact
+ * is a support ticket.
+ */
+const SETUP_TTL_MS = 7 * 24 * 60 * 60 * 1000
+
+export async function createAccountSetupToken(userId: number): Promise<string> {
+  await db.passwordResetToken.deleteMany({ where: { userId, usedAt: null } })
+  const token = crypto.randomBytes(32).toString('hex')
+  await db.passwordResetToken.create({
+    data: { userId, tokenHash: sha256(token), expiresAt: new Date(Date.now() + SETUP_TTL_MS) },
+  })
+  return token
+}
+
 export async function createPasswordResetToken(
   email: string,
 ): Promise<{ user: { id: number; name: string; email: string }; token: string } | null> {

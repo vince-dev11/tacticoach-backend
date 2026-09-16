@@ -11,7 +11,11 @@ import { uploadToS3, deleteFromS3, presignUrl } from '../../config/s3.js'
 import { readUpload } from '../../lib/multipart.js'
 import { presignUrl as presign } from '../../config/s3.js'
 import { env } from '../../config/env.js'
-import { sendClubPageApprovedEmail, sendClubPageRejectedEmail } from '../../lib/emails.js'
+import crypto from 'node:crypto'
+import bcrypt from 'bcryptjs'
+import { sendClubPageApprovedEmail, sendClubPageRejectedEmail, sendAccountSetupEmail } from '../../lib/emails.js'
+import { createAccountSetupToken } from '../auth/auth.service.js'
+import { latinOnly } from '../../lib/latin-only.js'
 import { invitePartner, endPartner } from '../partners/partners.service.js'
 import { sendPartnerInviteEmail } from '../../lib/emails.js'
 
@@ -251,7 +255,11 @@ export async function adminRoutes(app: FastifyInstance) {
         take,
         select: {
           id: true, name: true, surname: true, email: true, clubName: true,
-          emailVerifiedAt: true, createdAt: true, role: true,
+          emailVerifiedAt: true, createdAt: true, role: true, accountType: true,
+          // The derived reality next to the declared type: someone who picked
+          // "club" at signup and never took the plan has no Club row, which
+          // makes them a sales lead rather than a club.
+          ownedClub: { select: { id: true } },
           subscription: { select: { status: true, expiresAt: true, paymentProvider: true, plan: { select: { name: true, slug: true } } } },
           _count: { select: { boards: true, drillSheets: true } },
         },
@@ -259,6 +267,113 @@ export async function adminRoutes(app: FastifyInstance) {
       db.user.count({ where }),
     ])
     return reply.send({ users, total, page: Number(page) || 1, limit: take })
+  })
+
+  /**
+   * Put a complimentary subscription on an account, replacing whatever was
+   * there (trial, paid, nothing). No Stripe involved. `months` null = no
+   * expiry. Granting the Club plan also creates the Club so seats can be
+   * invited straight away, exactly as a paid activation does.
+   *
+   * Shared by "give plan" on an existing user and by the create-user route, so
+   * an account made by an admin lands in precisely the same state as one that
+   * was upgraded by hand afterwards.
+   */
+  async function grantPlan(
+    userId: number,
+    plan: { id: number; slug: string; name: string },
+    months: number | null,
+    user: { name: string; clubName: string | null },
+  ) {
+    const expiresAt = months ? new Date(new Date().setMonth(new Date().getMonth() + months)) : null
+    const data = {
+      planId: plan.id,
+      status: 'active' as const,
+      billingCycle: null,
+      startedAt: new Date(),
+      expiresAt,
+      cancelledAt: null,
+      trialReminderSentAt: null,
+      paymentProvider: 'complimentary',
+      providerSubscriptionId: null,
+    }
+    const sub = await db.userSubscription.upsert({
+      where: { userId },
+      update: data,
+      create: { userId, ...data },
+    })
+    if (plan.slug === 'club') {
+      await db.club.upsert({
+        where: { ownerId: userId },
+        update: {},
+        create: { ownerId: userId, name: user.clubName || `${user.name}'s Club` },
+      })
+    }
+    return sub
+  }
+
+  // POST /admin/users — create an account on someone's behalf.
+  //
+  // For comping a partner, setting a club up on a call, or migrating a coach
+  // across. Deliberately NO password field: the account is created with a
+  // random hash nobody has ever seen, and the person chooses their own via a
+  // set-password link. An admin who can type a customer's password is an admin
+  // who knows it, which is not a thing we want to be true when a club asks.
+  app.post('/users', async (request, reply) => {
+    const input = z
+      .object({
+        name: latinOnly(z.string().min(1).max(100)),
+        surname: latinOnly(z.string().min(1).max(100)),
+        email: z.string().email().max(191),
+        accountType: z.enum(['coach', 'club', 'player']).default('coach'),
+        clubName: latinOnly(z.string().max(150)).optional().nullable(),
+        /// Grant a plan immediately. Omit for an account with no access yet.
+        planSlug: z.string().min(1).max(50).optional().nullable(),
+        /// null with a planSlug = comped forever.
+        months: z.number().int().min(1).max(120).optional().nullable(),
+        /// Send the set-password email. False = the admin passes the returned
+        /// link on themselves (on a call, in a DM).
+        sendEmail: z.boolean().default(true),
+      })
+      .parse(request.body)
+
+    const email = input.email.trim().toLowerCase()
+    if (await db.user.findUnique({ where: { email }, select: { id: true } })) {
+      return reply.status(409).send({ statusCode: 409, error: 'Conflict', message: 'That email already has an account' })
+    }
+
+    const plan = input.planSlug
+      ? await db.membershipPlan.findUnique({ where: { slug: input.planSlug }, select: { id: true, slug: true, name: true } })
+      : null
+    if (input.planSlug && !plan) {
+      return reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'Plan not found' })
+    }
+
+    const user = await db.user.create({
+      data: {
+        name: input.name,
+        surname: input.surname,
+        email,
+        accountType: input.accountType,
+        clubName: input.clubName ?? null,
+        // Unguessable and never transmitted: the only way in is the setup link.
+        passwordHash: await bcrypt.hash(crypto.randomBytes(32).toString('hex'), 12),
+        // The admin typed this address on purpose, and the setup link proves
+        // the mailbox anyway — nobody can sign in without receiving it.
+        emailVerifiedAt: new Date(),
+      },
+      select: { id: true, name: true, surname: true, email: true, accountType: true, clubName: true },
+    })
+
+    if (plan) await grantPlan(user.id, plan, input.months ?? null, user)
+
+    const token = await createAccountSetupToken(user.id)
+    const setupUrl = `${env.FRONTEND_URL}/reset-password?token=${token}`
+    if (input.sendEmail) void sendAccountSetupEmail(user, setupUrl)
+
+    // The link comes back either way: email is slow, lands in spam, or the
+    // admin is on a call with the person right now.
+    return reply.status(201).send({ user, setupUrl, emailSent: input.sendEmail })
   })
 
   // PATCH /admin/users/:id/trial { days } — extend (or start) a trial
@@ -324,31 +439,7 @@ export async function adminRoutes(app: FastifyInstance) {
     const user = await db.user.findUnique({ where: { id }, select: { id: true, name: true, clubName: true } })
     if (!user) return reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'User not found' })
 
-    const expiresAt = months ? new Date(new Date().setMonth(new Date().getMonth() + months)) : null
-    const data = {
-      planId: plan.id,
-      status: 'active' as const,
-      billingCycle: null,
-      startedAt: new Date(),
-      expiresAt,
-      cancelledAt: null,
-      trialReminderSentAt: null,
-      paymentProvider: 'complimentary',
-      providerSubscriptionId: null,
-    }
-    const sub = await db.userSubscription.upsert({
-      where: { userId: id },
-      update: data,
-      create: { userId: id, ...data },
-    })
-    if (plan.slug === 'club') {
-      await db.club.upsert({
-        where: { ownerId: id },
-        update: {},
-        create: { ownerId: id, name: user.clubName || `${user.name}'s Club` },
-      })
-    }
-    return reply.send(sub)
+    return reply.send(await grantPlan(id, plan, months, user))
   })
 
   // DELETE /admin/users/:id/plan — revoke a complimentary plan (marks the

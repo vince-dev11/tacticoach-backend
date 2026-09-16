@@ -53,6 +53,32 @@ async function main() {
       isActive: true,
       sortOrder: 3,
     },
+    {
+      // The player's own plan. Authors nothing — no boards, no seats — so
+      // entitlements resolves editorAccess false for it and every gated route
+      // refuses a player without knowing this plan exists.
+      //
+      // Priced well under Pro deliberately: the comparison is ~£4/month for a
+      // player training app against parents already spending thousands a year
+      // on youth football. A player plan that costs more than a couple of
+      // coffees does not convert.
+      name: 'Player',
+      slug: 'player',
+      description: 'For players. See your coach\'s tactics board and the feedback they write you.',
+      monthlyPrice: '2.99',
+      annualPrice: '29.00', // 2 months free
+      currency: 'GBP',
+      features: [
+        'Your coach\'s tactics board, animated',
+        'Feedback from your coach after every session',
+        'Your season record',
+        'Share with a parent or guardian',
+      ],
+      maxBoards: 0,
+      maxTeamMembers: 0,
+      isActive: true,
+      sortOrder: 4,
+    },
   ]
 
   for (const plan of plans) {

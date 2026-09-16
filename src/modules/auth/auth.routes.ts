@@ -115,7 +115,7 @@ export async function authRoutes(app: FastifyInstance) {
     const accessToken = signAccess(user.id, user.email)
     const refreshToken = signRefresh(user.id)
     await saveRefreshToken(user.id, refreshToken)
-    return reply.send({ user: { id: user.id, name: user.name, surname: user.surname, email: user.email }, accessToken, refreshToken })
+    return reply.send({ user: { id: user.id, name: user.name, surname: user.surname, email: user.email, accountType: user.accountType }, accessToken, refreshToken })
   })
 
   // POST /auth/refresh

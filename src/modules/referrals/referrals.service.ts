@@ -98,8 +98,8 @@ export async function qualifyReferral(referredUserId: number): Promise<void> {
   if (!referral || referral.status !== 'pending') return
 
   const [kind, referrerTier] = await Promise.all([
-    planTierOf(referredUserId),
-    planTierOf(referral.referrerId),
+    kindOf(referredUserId),
+    tierOf(referral.referrerId),
   ])
 
   await db.referral.update({
@@ -109,20 +109,39 @@ export async function qualifyReferral(referredUserId: number): Promise<void> {
   await syncRewards(referral.referrerId)
 }
 
-/**
- * Whether an account counts as a coach or a club, read from the plan it holds.
- *
- * Used twice at qualification, for two different questions: what the new
- * customer bought (which ladder they land on) and what the REFERRER is on
- * (which thresholds apply to them). Both are recorded on the referral and then
- * left alone — see the field comments on the Referral model for why.
- */
-async function planTierOf(userId: number): Promise<ReferrerTier> {
+/** The plan slug an account holds, or null if it has no subscription. */
+async function planSlugOf(userId: number): Promise<string | null> {
   const sub = await db.userSubscription.findUnique({
     where: { userId },
     select: { plan: { select: { slug: true } } },
   })
-  return sub?.plan.slug === 'club' ? 'club' : 'coach'
+  return sub?.plan.slug ?? null
+}
+
+/**
+ * What the new customer BOUGHT — which ladder they land on.
+ *
+ * Recorded on the referral at qualification and then left alone, so a coach
+ * who later upgrades does not silently re-bucket a referral that was already
+ * paid out on.
+ */
+async function kindOf(userId: number): Promise<ReferralKind> {
+  const slug = await planSlugOf(userId)
+  if (slug === 'club') return 'club'
+  if (slug === 'player') return 'player'
+  return 'coach'
+}
+
+/**
+ * What the REFERRER is on — which thresholds apply to them.
+ *
+ * Only two sets of thresholds exist, because they are set by what a free month
+ * COSTS us. A player who refers someone is rewarded in player months, which
+ * are cheap, so they sit on the coach thresholds rather than needing a third
+ * column of their own.
+ */
+async function tierOf(userId: number): Promise<ReferrerTier> {
+  return (await planSlugOf(userId)) === 'club' ? 'club' : 'coach'
 }
 
 /** A refund or chargeback: the referral stops counting and the ladder recomputes. */
@@ -273,11 +292,11 @@ export async function getReferralSummary(userId: number): Promise<ReferralSummar
       },
     }),
     qualifiedCounts(userId),
-    planTierOf(userId),
+    tierOf(userId),
   ])
 
   // Show the bars for the plan they are on NOW. A referrer who moved from Pro
-  // to Club keeps everything already earned — `monthsEarned` counts all four
+  // to Club keeps everything already earned — `monthsEarned` counts every
   // ladders — but their progress bars restart against the Club thresholds,
   // because those are the ones the next referral will be judged by.
   return {

@@ -11,6 +11,14 @@ model User {
   // 'owner' unlocks the /admin area (blog CMS + CRM). Assigned only via the
   // OWNER_EMAIL env var — never through the API.
   role             Role      @default(user)
+  /// What the person SAID they are at signup. Segmentation and onboarding
+  /// routing only — never authorisation. What an account can actually do is
+  /// always resolved by lib/entitlements (subscription + club seat + partner),
+  /// and whether someone is "really" a club is the Club row plus an active
+  /// owner subscription. The two can legitimately disagree: a coach invited to
+  /// a club later still says `coach`, and someone who picks `club` and never
+  /// takes the plan is a sales lead, not a club.
+  accountType      AccountType @default(coach) @map("account_type")
   name             String    @db.VarChar(100)
   surname          String    @db.VarChar(100)
   email            String    @unique @db.VarChar(191)
@@ -64,6 +72,10 @@ model User {
   bonusCredits Int @default(0) @map("bonus_credits")
 
   ownedClub       Club?             @relation("ClubOwner")
+  /// Roster rows this account is linked to — one per coach who added them.
+  squadEntries    SquadPlayer[]     @relation("SquadPlayerAccount")
+  /// Feedback this user has WRITTEN (as a coach).
+  writtenNotes    PlayerNote[]      @relation("CoachNotes")
   clubMembership  ClubMember?
   drillSheets     DrillSheet[]
   drillSheetLikes DrillSheetLike[]
@@ -131,9 +143,12 @@ enum ReferralStatus {
 }
 
 /// A club is worth roughly eight coaches, so the two earn on separate ladders.
+/// A player subscription is worth a fraction of a coach's, so its rungs are
+/// correspondingly longer — see lib/referral-ladder.ts.
 enum ReferralKind {
   coach
   club
+  player
 }
 
 /// The plan the referrer holds. A free month is worth £2.99 to a Pro coach and
@@ -438,6 +453,8 @@ model CanvasBoard {
 
   @@index([userId])
   @@index([published, publishedAt])
+  playerNotes PlayerNote[]
+
   @@map("canvas_boards")
 }
 
@@ -689,6 +706,8 @@ model TrainingSession {
   @@index([userId])
   @@index([planWeekId])
   @@index([userId, sessionDate])
+  playerNotes PlayerNote[]
+
   @@map("training_sessions")
 }
 
@@ -733,6 +752,17 @@ enum Role {
   owner
 }
 
+/// Declared at signup; see User.accountType for why this grants nothing.
+///
+/// `player` exists ahead of any player-facing feature so the column is already
+/// there when one is built. Until then a player account is parked on a holding
+/// screen rather than dropped into a coach dashboard it cannot use.
+enum AccountType {
+  coach
+  club
+  player
+}
+
 /// The coach's real squad ("My Squad"). Entered once in the profile; the
 /// editor's player shelf and formation presets then place the coach's actual
 /// players — names on the board, not anonymous numbers. Replaced as a whole
@@ -748,10 +778,89 @@ model SquadPlayer {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // ---- Player account link --------------------------------------------------
+  // A player buys their own subscription and signs up themselves; the coach
+  // then asks to link that account to this roster row. Null for most players —
+  // a roster is complete long before anyone subscribes, and it has to keep
+  // working either way.
+
+  playerUserId Int?             @map("player_user_id")
+  /// pending until the PLAYER accepts. A coach knowing an email address must
+  /// never be enough to start writing to a child.
+  linkStatus   SquadLinkStatus? @map("link_status")
+  linkedAt     DateTime?        @map("linked_at")
+  /// Where notifications are copied. For an under-16 this is the guardian's
+  /// address. Set by the player in their own profile, not by the coach.
+  guardianEmail String?         @db.VarChar(191) @map("guardian_email")
+
+  /// Removed from the squad but kept because the notes written to this player
+  /// are the PLAYER's record, not the coach's. A row with no notes and no link
+  /// is deleted outright instead (see users.service saveSquad).
+  archivedAt DateTime? @map("archived_at")
+
+  user       User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  playerUser User?       @relation("SquadPlayerAccount", fields: [playerUserId], references: [id], onDelete: SetNull)
+  notes      PlayerNote[]
 
   @@index([userId, sortOrder])
+  /// Unique PER COACH, not globally: a fourteen-year-old plays for their club
+  /// on Sunday and their school on Wednesday and belongs on both rosters. A
+  /// global unique would let whichever coach linked first lock the player out
+  /// of every other squad.
+  @@unique([userId, playerUserId])
+  @@index([playerUserId, linkStatus])
   @@map("squad_players")
+}
+
+enum SquadLinkStatus {
+  /// The coach has asked; the player has not answered yet.
+  pending
+  active
+}
+
+/// One piece of feedback from a coach to one player.
+///
+/// Everything here is seen by the player and their guardian. There is
+/// deliberately no private "coach only" variant: a note a coach would not show
+/// the player belongs in the club's safeguarding process, not in a tactics
+/// app — and a child or parent has a subject access right to it regardless,
+/// so "private" would be a promise we could not keep.
+model PlayerNote {
+  id            Int      @id @default(autoincrement())
+  squadPlayerId Int      @map("squad_player_id")
+  /// Who wrote it. Kept for audit even after the coach leaves the club.
+  coachUserId   Int      @map("coach_user_id")
+  /// The session that prompted it; null for a note left outside one.
+  sessionId     Int?     @map("session_id")
+  /// Optional animation — "this is the run I meant".
+  boardId       Int?     @map("board_id")
+
+  /// The coach's own words. Short on purpose: the tags carry the structure so
+  /// the sentence can be casual, which is what makes 20 seconds per player
+  /// achievable.
+  body      String @db.VarChar(600)
+  /// Tag keys from lib/feedback-tags.ts. The same tag can be a strength for
+  /// one player and a work-on for another, so one vocabulary, two lists.
+  strengths Json   @default("[]")
+  workOns   Json   @default("[]")
+
+  /// Notes are written, reviewed, then sent as a batch. Nothing reaches a
+  /// player (or their guardian) until the coach presses send.
+  sentAt    DateTime? @map("sent_at")
+  /// When the player first opened it. Drives a "seen" tick for the coach and
+  /// nothing else — nobody is judged on it.
+  readAt    DateTime? @map("read_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+
+  squadPlayer SquadPlayer      @relation(fields: [squadPlayerId], references: [id], onDelete: Cascade)
+  coach       User             @relation("CoachNotes", fields: [coachUserId], references: [id], onDelete: Cascade)
+  session     TrainingSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  board       CanvasBoard?     @relation(fields: [boardId], references: [id], onDelete: SetNull)
+
+  @@index([squadPlayerId, createdAt])
+  @@index([sessionId])
+  @@map("player_notes")
 }
 
 // ---- Blog (marketing content, owner-managed) --------------------------------

@@ -5,6 +5,7 @@ import type { UpdateProfileInput, TourId, SaveSquadInput } from './users.schema.
 const USER_SELECT = {
   id: true,
   role: true,
+  accountType: true,
   name: true,
   surname: true,
   email: true,
@@ -52,6 +53,7 @@ export async function updateUserProfile(userId: number, input: UpdateProfileInpu
     data: {
       ...(input.name !== undefined && { name: input.name }),
       ...(input.surname !== undefined && { surname: input.surname }),
+      ...(input.accountType !== undefined && { accountType: input.accountType }),
       ...(input.phone !== undefined && { phone: input.phone }),
       ...(input.clubName !== undefined && { clubName: input.clubName }),
       ...(input.instagramUrl !== undefined && { instagramUrl: input.instagramUrl }),
@@ -109,32 +111,80 @@ export async function deleteClubLogo(userId: number) {
 
 // ---- My Squad ---------------------------------------------------------------
 
-const SQUAD_SELECT = { id: true, name: true, number: true, position: true, sortOrder: true } as const
+const SQUAD_SELECT = {
+  id: true,
+  name: true,
+  number: true,
+  position: true,
+  sortOrder: true,
+  // The player's own account, once linked. The profile's squad editor shows
+  // this so a coach can see who is connected and who still needs asking.
+  playerUserId: true,
+  linkStatus: true,
+  guardianEmail: true,
+} as const
 
 export async function getSquad(userId: number) {
   return db.squadPlayer.findMany({
-    where: { userId },
+    // Archived rows are kept only so the notes written to that player survive;
+    // they are not part of the squad any more and never come back in reads.
+    where: { userId, archivedAt: null },
     orderBy: { sortOrder: 'asc' },
     select: SQUAD_SELECT,
   })
 }
 
 /**
- * Replace-all save: the profile edits the squad as one list, so persisting it
- * as delete + createMany (in a transaction) is simpler and safer than diffing.
+ * Save the squad the profile edited.
+ *
+ * This USED to be delete-everything + createMany, which was perfectly safe
+ * while a row held nothing but a name, a number and a position. It is not safe
+ * now: a row owns the link to a player's account and every note that coach has
+ * ever written them, so recreating the list would silently destroy a player's
+ * whole record every time their coach fixed a shirt number.
+ *
+ * So rows are matched by id and updated in place. A row the coach dropped is
+ * archived when it has anything worth keeping, and only deleted outright when
+ * it is genuinely empty.
  */
 export async function saveSquad(userId: number, players: SaveSquadInput['players']) {
-  await db.$transaction([
-    db.squadPlayer.deleteMany({ where: { userId } }),
-    db.squadPlayer.createMany({
-      data: players.map((p, i) => ({
-        userId,
-        name: p.name,
-        number: p.number,
-        position: p.position ?? null,
-        sortOrder: i,
-      })),
-    }),
-  ])
+  const existing = await db.squadPlayer.findMany({
+    where: { userId, archivedAt: null },
+    select: { id: true, playerUserId: true, _count: { select: { notes: true } } },
+  })
+  const existingById = new Map(existing.map((row) => [row.id, row]))
+
+  const keptIds = new Set<number>()
+  const ops = []
+
+  players.forEach((p, i) => {
+    const data = { name: p.name, number: p.number, position: p.position ?? null, sortOrder: i }
+    // An id the coach does not own is treated as a new player rather than
+    // trusted — the id comes from the client.
+    if (p.id && existingById.has(p.id)) {
+      keptIds.add(p.id)
+      ops.push(db.squadPlayer.update({ where: { id: p.id }, data }))
+    } else {
+      ops.push(db.squadPlayer.create({ data: { userId, ...data } }))
+    }
+  })
+
+  for (const row of existing) {
+    if (keptIds.has(row.id)) continue
+    // Defensive on `_count`: if this row ever arrives from a narrower select,
+    // the safe reading is "might have notes", so archive rather than delete.
+    const noteCount = row._count?.notes
+    const worthKeeping = noteCount === undefined || noteCount > 0 || row.playerUserId !== null
+    ops.push(
+      worthKeeping
+        ? db.squadPlayer.update({
+            where: { id: row.id },
+            data: { archivedAt: new Date(), linkStatus: null },
+          })
+        : db.squadPlayer.delete({ where: { id: row.id } }),
+    )
+  }
+
+  await db.$transaction(ops)
   return getSquad(userId)
 }
