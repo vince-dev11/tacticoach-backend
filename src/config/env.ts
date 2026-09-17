@@ -52,7 +52,10 @@ const schema = z.object({
   // billing routes return 503 until both are set.
   STRIPE_SECRET_KEY: z.string().optional(),
   STRIPE_WEBHOOK_SECRET: z.string().optional(),
-  // Frontend base URL for checkout redirects, club invites and reset links.
+  // Frontend base URL for checkout redirects, club invites and reset links —
+  // and every absolute URL inside an EMAIL, including the logo. The localhost
+  // default is a development convenience that must never survive into
+  // production; see the boot check below.
   FRONTEND_URL: z.string().default('http://localhost:5280'),
 
   // SMTP — optional so the API still boots without email configured. Password
@@ -103,13 +106,44 @@ if (parsed.data.JWT_ACCESS_SECRET === parsed.data.JWT_REFRESH_SECRET) {
   process.exit(1)
 }
 
+/** Hostnames that mean "this is a developer's machine, not a real site". */
+const LOCALHOST_HOSTNAMES = new Set(['localhost', '127.0.0.1', '[::1]'])
+
+/**
+ * A production server must never mail localhost links.
+ *
+ * FRONTEND_URL is the base for every absolute URL in an email: the
+ * set-password button, the reset link, the club invite, the guardian view and
+ * the logo in the header. Left unset, the default quietly sent real coaches a
+ * `http://localhost:5280/reset-password?token=…` they could not use and a logo
+ * that rendered as a broken image — nothing failed, nothing logged, and the
+ * only way to find out was for someone to open the mail.
+ *
+ * So it is checked at boot, where it is loud and cheap, instead of at send
+ * time, where it is invisible.
+ */
+if (parsed.data.NODE_ENV === 'production') {
+  let host = ''
+  try {
+    host = new URL(parsed.data.FRONTEND_URL).hostname
+  } catch {
+    console.error(`❌  FRONTEND_URL is not a valid URL: ${parsed.data.FRONTEND_URL}`)
+    process.exit(1)
+  }
+  if (LOCALHOST_HOSTNAMES.has(host)) {
+    console.error(`❌  FRONTEND_URL is ${parsed.data.FRONTEND_URL} in production.`)
+    console.error('   Every link and image in every email would point at localhost.')
+    console.error('   Set it in .env, e.g. FRONTEND_URL=https://app.tacticoach.co.uk')
+    process.exit(1)
+  }
+}
+
 export const env = parsed.data
 
 export const corsOrigins = env.CORS_ORIGINS.split(',')
   .map((o) => o.trim())
   .filter(Boolean)
 
-const LOCALHOST_HOSTNAMES = new Set(['localhost', '127.0.0.1', '[::1]'])
 
 export function isAllowedCorsOrigin(origin: string | undefined) {
   if (!origin) {
