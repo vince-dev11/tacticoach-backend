@@ -203,7 +203,9 @@ model Partner {
   userId         Int           @unique @map("user_id")
   status         PartnerStatus @default(invited)
   /// Share of the net subscription fee, e.g. 0.2000 for 20%.
-  commissionRate Decimal       @default(0.2000) @map("commission_rate") @db.Decimal(6, 4)
+  /// A FRACTION: 0.1500 is 15%. Default for new partners only — existing
+  /// partners keep the rate their agreement states (see migration 25).
+  commissionRate Decimal       @default(0.1500) @map("commission_rate") @db.Decimal(6, 4)
   /// Trading name on the agreement, if they signed as a business.
   companyName    String?       @map("company_name") @db.VarChar(150)
   /// Set when the partner accepted in the app. Until then `status` is `invited`

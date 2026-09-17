@@ -35,7 +35,16 @@ export async function invitePartner(params: {
   companyName?: string | null
   notes?: string | null
 }): Promise<{ code: string }> {
-  const { userId, commissionRate = 0.2, companyName = null, notes = null } = params
+  // 0.15 = 15%. A FRACTION, never a percent — the route caps it at 1 so that
+  // typing "15" meaning 15% cannot commit us to fifteen times the revenue.
+  //
+  // Changed from 0.20 on 2026-09-17. This is the default for NEW invitations
+  // only: the rate is stored per partner, and everyone already invited keeps
+  // the number their agreement states. Do not back-fill it — that would be
+  // rewriting a signed commercial term after the fact.
+  //
+  // The public /referrals page quotes this figure. Change both together.
+  const { userId, commissionRate = 0.15, companyName = null, notes = null } = params
   const code = await ensureReferralCode(userId)
 
   await db.partner.upsert({

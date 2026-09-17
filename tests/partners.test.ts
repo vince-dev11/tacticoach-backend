@@ -7,6 +7,7 @@ import {
   recordCommission,
   reverseCommission,
   acceptAgreement,
+  invitePartner,
 } from '../src/modules/partners/partners.service.js'
 import { PARTNER_AGREEMENT, PARTNER_AGREEMENT_VERSION } from '../src/modules/partners/partner-agreement.js'
 import { getEntitlements } from '../src/lib/entitlements.js'
@@ -313,5 +314,53 @@ describe('a partner’s own access', () => {
 
     const ent = await getEntitlements(1)
     expect(ent.editorAccess).toBe(false)
+  })
+})
+
+describe('the default commission rate', () => {
+  // 15% since 2026-09-17, down from 20%. Three things have to agree or we
+  // advertise one number and pay another: this default, the DB column default
+  // (migration 25) and the public /referrals page.
+  beforeEach(() => {
+    mock.user.findUniqueOrThrow.mockResolvedValue({ referralCode: 'ABC123', name: 'Ana' } as never)
+    mock.partner.upsert.mockResolvedValue({ id: 3 } as never)
+  })
+
+  it('invites at 15% when no rate is given', async () => {
+    await invitePartner({ userId: 7 })
+    const args = mock.partner.upsert.mock.calls[0][0] as {
+      create: { commissionRate: number }
+    }
+    expect(args.create.commissionRate).toBe(0.15)
+  })
+
+  it('is a FRACTION, not a percent', async () => {
+    // The whole class of bug this guards: 15 instead of 0.15 would mean
+    // fifteen times the revenue paid out per referral. The route caps at 1,
+    // but the default must never be the thing that breaches it.
+    await invitePartner({ userId: 7 })
+    const args = mock.partner.upsert.mock.calls[0][0] as {
+      create: { commissionRate: number }
+    }
+    expect(args.create.commissionRate).toBeLessThanOrEqual(1)
+  })
+
+  it('still honours a rate that was passed explicitly', async () => {
+    await invitePartner({ userId: 7, commissionRate: 0.25 })
+    const args = mock.partner.upsert.mock.calls[0][0] as {
+      create: { commissionRate: number }
+    }
+    expect(args.create.commissionRate).toBe(0.25)
+  })
+
+  it('does not reset an existing partner to `invited` when re-invited', async () => {
+    // Re-inviting someone who already signed must not pull their active
+    // account out from under them — the update branch deliberately omits
+    // status.
+    await invitePartner({ userId: 7 })
+    const args = mock.partner.upsert.mock.calls[0][0] as {
+      update: Record<string, unknown>
+    }
+    expect(args.update).not.toHaveProperty('status')
   })
 })
