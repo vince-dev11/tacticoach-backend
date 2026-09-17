@@ -105,6 +105,10 @@ async function main() {
   // Default password is for LOCAL DEVELOPMENT — change it on any real server.
   const ownerEmail = process.env.OWNER_EMAIL ?? 'pvp12417@gmail.com'
   const ownerPassword = process.env.OWNER_SEED_PASSWORD ?? 'Admin@123'
+  // Whether the account already existed decides what we may say afterwards:
+  // the update branch deliberately does NOT touch passwordHash, so re-seeding
+  // a live database never resets the owner's password.
+  const ownerExisted = await db.user.findUnique({ where: { email: ownerEmail }, select: { id: true } })
   await db.user.upsert({
     where: { email: ownerEmail },
     update: { role: 'owner' },
@@ -117,7 +121,17 @@ async function main() {
       emailVerifiedAt: new Date(),
     },
   })
-  console.log(`✅  Owner account ready: ${ownerEmail} (password: ${process.env.OWNER_SEED_PASSWORD ? 'from OWNER_SEED_PASSWORD' : ownerPassword + ' — change it!'})`)
+  // Printing the default password when the account ALREADY existed said, in
+  // effect, "your production admin password is now Admin@123" — into a
+  // terminal, a pm2 log and whatever the operator pastes it into. It was never
+  // true, and it is the kind of untrue that costs someone an hour of panic.
+  console.log(
+    ownerExisted
+      ? `✅  Owner account already existed: ${ownerEmail} (role confirmed; password unchanged)`
+      : `✅  Owner account created: ${ownerEmail}${
+          process.env.OWNER_SEED_PASSWORD ? ' (password from OWNER_SEED_PASSWORD)' : ` (password: ${ownerPassword} — change it now)`
+        }`,
+  )
 
   // First weekly tactical challenge — so the Challenges page and Dashboard
   // widgets have real content the moment the app goes live, instead of an

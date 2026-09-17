@@ -1,6 +1,24 @@
 import { z } from 'zod'
 import 'dotenv/config'
 
+/**
+ * A boolean from an environment variable.
+ *
+ * NOT `z.coerce.boolean()`, which is `Boolean(value)` — and every non-empty
+ * string is truthy, so `SMTP_SECURE=false` parsed as TRUE. nodemailer would
+ * then open a TLS socket to port 587, which expects plaintext then STARTTLS,
+ * and the first password-reset email of the day would hang until it timed out.
+ *
+ * Only the words below are true. Anything else — including a typo — is false,
+ * because the failure modes are not symmetric: `secure: false` on a 465 port
+ * fails loudly at connect time, while `secure: true` on 587 hangs.
+ */
+export const envBool = (fallback: boolean) =>
+  z
+    .string()
+    .optional()
+    .transform((v) => (v === undefined || v === '' ? fallback : ['1', 'true', 'yes', 'on'].includes(v.trim().toLowerCase())))
+
 const schema = z.object({
   PORT: z.coerce.number().default(3001),
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
@@ -44,7 +62,8 @@ const schema = z.object({
   SMTP_PORT: z.coerce.number().default(587),
   SMTP_USER: z.string().optional(),
   SMTP_PASS: z.string().optional(),
-  SMTP_SECURE: z.coerce.boolean().default(false),
+  // true for port 465 (TLS from the first byte), false for 587 (STARTTLS).
+  SMTP_SECURE: envBool(false),
   MAIL_FROM: z.string().default('TactiCoach <no-reply@tacticoach.co.uk>'),
   // Where contact-form submissions are delivered. Defaults to MAIL_FROM.
   SUPPORT_EMAIL: z.string().optional(),
