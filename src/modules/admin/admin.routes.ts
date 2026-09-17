@@ -40,6 +40,38 @@ const emailLogDb = () =>
     emailLog: { findMany(args: unknown): Promise<EmailLogRow[]> }
   }).emailLog
 
+// ---- TEMPORARY: remove once `prisma generate` has run against migration 24 --
+// Same situation one migration later: the generated ContactMessage type has no
+// `source`, `kind` or `note` yet, and `message` is still non-nullable there.
+//
+// Narrow on purpose: only the calls that touch the new columns go through it.
+// `db.contactMessage.count()` and the delete still use the real client, so a
+// genuine mistake in those still fails the build.
+interface LeadRow {
+  id: number
+  firstName: string
+  lastName: string
+  email: string
+  source: 'web' | 'direct' | 'import'
+  kind: 'unknown' | 'coach' | 'club'
+  message: string | null
+  note: string | null
+  status: 'new' | 'replied' | 'closed'
+  createdAt: Date
+  updatedAt: Date
+}
+const leadDb = () =>
+  (db as unknown as {
+    contactMessage: {
+      findMany(args?: unknown): Promise<LeadRow[]>
+      findFirst(args?: unknown): Promise<LeadRow | null>
+      create(args: unknown): Promise<LeadRow>
+      createMany(args: unknown): Promise<{ count: number }>
+      update(args: unknown): Promise<LeadRow>
+      groupBy(args: unknown): Promise<{ _count: { _all: number } }[]>
+    }
+  }).contactMessage
+
 // ---- Schemas -----------------------------------------------------------------
 
 const PostSchema = z.object({
@@ -648,23 +680,204 @@ export async function adminRoutes(app: FastifyInstance) {
     return reply.send({ id: updated.id, pageStatus: updated.pageStatus })
   })
 
-  // GET /admin/leads — contact form inbox
+  // ---- Leads ----------------------------------------------------------------
+  //
+  // One list, three ways in: the website's contact form (source `web`), typed
+  // in by an admin (`direct`), or a spreadsheet (`import`). See migration 24
+  // for why this is one table rather than two.
+
+  const LeadStatus = z.enum(['new', 'replied', 'closed'])
+  const LeadSource = z.enum(['web', 'direct', 'import'])
+  const LeadKind = z.enum(['unknown', 'coach', 'club'])
+
+  /** One row as it arrives from a form or a spreadsheet, before it is trusted. */
+  const LeadInput = z.object({
+    firstName: latinOnly(z.string().min(1).max(100)),
+    lastName: latinOnly(z.string().max(100)).default(''),
+    // `.trim()` BEFORE `.email()`, which is not cosmetic: an address with a
+    // trailing space fails email validation outright. Every address in this
+    // feature is pasted from somewhere — a DM, a spreadsheet cell — and
+    // rejecting "hiksel@hotmail.com " as malformed is both wrong and
+    // impossible for the person to see.
+    email: z.string().trim().toLowerCase().email().max(255),
+    kind: LeadKind.default('unknown'),
+    note: z.string().max(500).optional().nullable(),
+  })
+
+  // GET /admin/leads?status=&source=&kind=&q=
   app.get('/leads', async (request, reply) => {
-    const { status } = request.query as Record<string, string>
-    const leads = await db.contactMessage.findMany({
-      where: status && ['new', 'replied', 'closed'].includes(status) ? { status: status as 'new' | 'replied' | 'closed' } : {},
+    const { status, source, kind, q } = request.query as Record<string, string>
+    const leads = await leadDb().findMany({
+      where: {
+        ...(LeadStatus.safeParse(status).success ? { status: status as 'new' } : {}),
+        ...(LeadSource.safeParse(source).success ? { source: source as 'web' } : {}),
+        ...(LeadKind.safeParse(kind).success ? { kind: kind as 'coach' } : {}),
+        // Name or email. Trimmed, because a search box picks up stray spaces
+        // and " " would otherwise match every row via contains.
+        ...(q?.trim()
+          ? {
+              OR: [
+                { email: { contains: q.trim() } },
+                { firstName: { contains: q.trim() } },
+                { lastName: { contains: q.trim() } },
+              ],
+            }
+          : {}),
+      },
       orderBy: { createdAt: 'desc' },
-      take: 200,
+      take: 500,
     })
     return reply.send(leads)
   })
 
-  // PATCH /admin/leads/:id { status }
+  // GET /admin/leads/stats — the counts the list header shows.
+  app.get('/leads/stats', async (_request, reply) => {
+    const [total, bySource, byKind] = await Promise.all([
+      db.contactMessage.count(),
+      leadDb().groupBy({ by: ['source'], _count: { _all: true } }),
+      leadDb().groupBy({ by: ['kind'], _count: { _all: true } }),
+    ])
+    const tally = (rows: { _count: { _all: number } }[], key: string) =>
+      Object.fromEntries(
+        (rows as unknown as Record<string, unknown>[]).map((r) => [r[key], (r._count as { _all: number })._all]),
+      )
+    return reply.send({ total, source: tally(bySource, 'source'), kind: tally(byKind, 'kind') })
+  })
+
+  // POST /admin/leads — add one by hand.
+  app.post('/leads', async (request, reply) => {
+    const input = LeadInput.parse(request.body)
+    const email = input.email.trim().toLowerCase()
+
+    // Warn rather than refuse. The same person legitimately appears twice —
+    // they filled the form in March and you met them in September — and
+    // throwing away the second record because of the first loses the newer,
+    // better context. The response says so and the UI shows it.
+    const existing = await leadDb().findFirst({
+      where: { email },
+      select: { id: true, source: true, createdAt: true },
+    })
+
+    const lead = await leadDb().create({
+      data: {
+        firstName: input.firstName.trim(),
+        lastName: input.lastName.trim(),
+        email,
+        source: 'direct',
+        kind: input.kind,
+        // Null, not ''. They have not written to us — see the schema comment.
+        message: null,
+        note: input.note?.trim() || null,
+      },
+    })
+    return reply.status(201).send({ lead, duplicateOf: existing })
+  })
+
+  // POST /admin/leads/import { rows } — a spreadsheet, already parsed.
+  //
+  // The file is parsed in the BROWSER and posted as JSON. The alternative —
+  // uploading .xlsx and parsing it here — means a spreadsheet parser running
+  // on untrusted input inside the API process, which is a genuinely nasty
+  // class of vulnerability for a feature used a handful of times a year.
+  app.post('/leads/import', async (request, reply) => {
+    const { rows } = z
+      .object({
+        // Capped. An import is a list a human assembled; anything larger is a
+        // mistake, and the honest failure is "that file is too big" rather
+        // than a request that times out half-applied.
+        rows: z.array(z.unknown()).min(1).max(5000),
+      })
+      .parse(request.body)
+
+    const seen = new Set<string>()
+    const valid: { firstName: string; lastName: string; email: string; kind: 'unknown' | 'coach' | 'club'; note: string | null }[] = []
+    const invalid: { row: number; reason: string }[] = []
+    const duplicateInFile: string[] = []
+
+    rows.forEach((raw, i) => {
+      const parsed = LeadInput.safeParse(raw)
+      if (!parsed.success) {
+        // The spreadsheet row number the person is looking at: +2 for the
+        // header row and for 1-based counting. Telling them "row 0" when
+        // their screen says row 2 is how an import becomes unusable.
+        invalid.push({ row: i + 2, reason: parsed.error.issues[0]?.message ?? 'invalid' })
+        return
+      }
+      const email = parsed.data.email.trim().toLowerCase()
+      if (seen.has(email)) {
+        duplicateInFile.push(email)
+        return
+      }
+      seen.add(email)
+      valid.push({
+        firstName: parsed.data.firstName.trim(),
+        lastName: parsed.data.lastName.trim(),
+        email,
+        kind: parsed.data.kind,
+        note: parsed.data.note?.trim() || null,
+      })
+    })
+
+    // Already on file — skipped, and named so the person can see who.
+    const existing = valid.length
+      ? await leadDb().findMany({
+          where: { email: { in: valid.map((v) => v.email) } },
+          select: { email: true },
+        })
+      : []
+    const known = new Set(existing.map((e) => e.email))
+    const toCreate = valid.filter((v) => !known.has(v.email))
+
+    if (toCreate.length > 0) {
+      await leadDb().createMany({
+        data: toCreate.map((v) => ({ ...v, source: 'import' as const, message: null })),
+      })
+    }
+
+    // Every row is accounted for: imported + already on file + duplicated
+    // inside the file + rejected == what they sent. An import that silently
+    // drops rows is one nobody trusts twice.
+    return reply.send({
+      received: rows.length,
+      imported: toCreate.length,
+      alreadyOnFile: [...known],
+      duplicateInFile,
+      invalid,
+    })
+  })
+
+  // PATCH /admin/leads/:id { status?, kind?, note? }
   app.patch('/leads/:id', async (request, reply) => {
     const id = Number((request.params as { id: string }).id)
-    const { status } = z.object({ status: z.enum(['new', 'replied', 'closed']) }).parse(request.body)
-    const lead = await db.contactMessage.update({ where: { id }, data: { status } })
+    const input = z
+      .object({
+        status: LeadStatus.optional(),
+        kind: LeadKind.optional(),
+        note: z.string().max(500).optional().nullable(),
+      })
+      .parse(request.body)
+    if (Object.keys(input).length === 0) {
+      return reply.status(422).send({ statusCode: 422, error: 'Unprocessable Entity', message: 'Nothing to change' })
+    }
+    const lead = await leadDb().update({
+      where: { id },
+      data: {
+        ...(input.status ? { status: input.status } : {}),
+        ...(input.kind ? { kind: input.kind } : {}),
+        ...(input.note !== undefined ? { note: input.note?.trim() || null } : {}),
+      },
+    })
     return reply.send(lead)
+  })
+
+  // DELETE /admin/leads/:id — for a typo'd import or a row added twice.
+  app.delete('/leads/:id', async (request, reply) => {
+    const { count } = await db.contactMessage.deleteMany({
+      where: { id: Number((request.params as { id: string }).id) },
+    })
+    return count > 0
+      ? reply.status(204).send()
+      : reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'Lead not found' })
   })
 
   // ---- Partner programme ----------------------------------------------------

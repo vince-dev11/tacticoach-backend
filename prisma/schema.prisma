@@ -1015,18 +1015,50 @@ enum EmailStatus {
   skipped
 }
 
+/// A lead. Named ContactMessage because that is where it started — the
+/// contact form — but the admin area has always called this table Leads, and
+/// since migration 24 it holds leads added by hand and imported from a
+/// spreadsheet too. `source` is what tells them apart.
 model ContactMessage {
   id        Int           @id @default(autoincrement())
   firstName String        @map("first_name") @db.VarChar(100)
   lastName  String        @map("last_name") @db.VarChar(100)
   email     String        @db.VarChar(255)
-  message   String        @db.Text
+  /// web = the website's contact form, direct = typed in by an admin,
+  /// import = arrived on a spreadsheet.
+  source    LeadSource    @default(web)
+  /// Set by an admin when they know. `unknown` is the honest default: the
+  /// contact form does not ask, and guessing from a message body would put a
+  /// wrong label on a real person.
+  kind      LeadKind      @default(unknown)
+  /// The lead's OWN words. Null for anyone who has not written to us — a hand
+  /// -added lead has no message, and '' would read as an empty one.
+  message   String?       @db.Text
+  /// The admin's note about them. Kept apart from `message` so a person's own
+  /// words can never be confused with something we wrote about them.
+  note      String?       @db.VarChar(500)
   status    LeadStatus    @default(new)
   createdAt DateTime      @default(now()) @map("created_at")
   updatedAt DateTime      @updatedAt @map("updated_at")
 
   @@index([status, createdAt])
+  @@index([source, kind])
+  /// Not unique — the same person may use the contact form twice. Dedupe on
+  /// import is the importer's job; see admin.routes.
+  @@index([email])
   @@map("contact_messages")
+}
+
+enum LeadSource {
+  web
+  direct
+  import
+}
+
+enum LeadKind {
+  unknown
+  coach
+  club
 }
 
 enum LeadStatus {
