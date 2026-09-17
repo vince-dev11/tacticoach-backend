@@ -152,15 +152,19 @@ describe('getEntitlements', () => {
   })
 })
 
-describe('the player plan', () => {
-  // A deliberate product decision, pinned here because it is invisible in the
-  // code that depends on it: the player plan is a SUPERSET of Pro. It grants
-  // the whole coach product plus the player's own screens. An earlier build
-  // excluded it from editorAccess; if that exclusion ever comes back it will
-  // silently lock every paying player out of the board, so these fail loudly.
+describe('the retired player plan', () => {
+  // The player plan is retired — players are free, and prisma/seed carries the
+  // reasoning. Two things follow, and both are easy to break by accident:
+  //
+  //   1. Anyone who ALREADY holds one keeps what they paid for. Withdrawing
+  //      access from a live subscriber because the tier was discontinued is
+  //      theft, and it is exactly what a `slug !== 'player'` guard added in
+  //      good faith somewhere would do.
+  //   2. playerAccess no longer has anything to do with a subscription. It is
+  //      "is this person somebody's player?" and nothing else.
   const playerSub = () => activeSubscription({ plan: { id: 9, name: 'Player', slug: 'player' } })
 
-  it('grants the full product, not a cut-down one', async () => {
+  it('still honours a subscription somebody already paid for', async () => {
     dbMock.userSubscription.findUnique.mockResolvedValue(playerSub() as never)
     dbMock.clubMember.findUnique.mockResolvedValue(null)
     dbMock.club.findUnique.mockResolvedValue(null)
@@ -168,8 +172,19 @@ describe('the player plan', () => {
 
     const ent = await getEntitlements(1)
     expect(ent.editorAccess).toBe(true)
-    expect(ent.playerAccess).toBe(true)
     expect(ent.plan?.slug).toBe('player')
+  })
+
+  it('does not hand out player screens for holding the old plan', async () => {
+    // playerAccess used to be `isPlayerPlan || linkedToSquad`. It is now the
+    // link alone: a legacy subscriber who is nobody's player has no player
+    // screens to show, because there is no feedback addressed to them.
+    dbMock.userSubscription.findUnique.mockResolvedValue(playerSub() as never)
+    dbMock.clubMember.findUnique.mockResolvedValue(null)
+    dbMock.club.findUnique.mockResolvedValue(null)
+    dbMock.squadPlayer.findFirst.mockResolvedValue(null as never)
+
+    expect((await getEntitlements(1)).playerAccess).toBe(false)
   })
 
   it('gives a linked player their own screens even with no subscription', async () => {

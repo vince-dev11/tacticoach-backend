@@ -92,6 +92,9 @@ model User {
   referralCode String? @unique @map("referral_code") @db.VarChar(24)
 
   seasonPlans      SeasonPlan[]
+  /// Emails sent TO this account, and emails this account (an admin) sent.
+  emailsReceived   EmailLog[]       @relation("EmailLogSubject")
+  emailsSent       EmailLog[]       @relation("EmailLogActor")
   referralsMade    Referral[]       @relation("Referrer")
   referralReceived Referral?        @relation("Referred")
   referralRewards  ReferralReward[]
@@ -965,6 +968,52 @@ enum PostStatus {
 }
 
 // ---- CRM leads (contact form submissions) ------------------------------------
+
+/// Every email the system has tried to send.
+///
+/// Written by `sendMail` itself, not by the routes that call it — a route can
+/// forget to log, and the one that forgets is the one you need a record of.
+/// Failures are rows too: "we tried and it bounced" and "we never tried" look
+/// identical to a coach waiting for a link, and only this table tells them
+/// apart.
+///
+/// Not a queue and not an outbox: it records what happened, it does not drive
+/// sending.
+model EmailLog {
+  id        Int            @id @default(autoincrement())
+  /// Recipient as addressed. Kept verbatim even if the user later changes
+  /// their email — the record is of what was sent WHERE, at the time.
+  to        String         @db.VarChar(255)
+  /// Which template ("account_setup", "password_reset", "player_note"…).
+  /// A plain string rather than an enum: templates are added often, and a
+  /// migration per template is a tax nobody pays happily.
+  kind      String         @db.VarChar(40)
+  subject   String         @db.VarChar(255)
+  status    EmailStatus    @default(sent)
+  /// The provider's complaint, trimmed. Null on success.
+  error     String?        @db.VarChar(500)
+  /// The account it was about, when there is one. SetNull so deleting a user
+  /// never erases the record that they were emailed.
+  userId    Int?           @map("user_id")
+  /// The admin who pressed the button, for the ones a human triggered.
+  actorId   Int?           @map("actor_id")
+  createdAt DateTime       @default(now()) @map("created_at")
+
+  user  User? @relation("EmailLogSubject", fields: [userId], references: [id], onDelete: SetNull)
+  actor User? @relation("EmailLogActor", fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+  @@index([createdAt])
+  @@map("email_log")
+}
+
+enum EmailStatus {
+  sent
+  failed
+  /// SMTP is not configured — nothing was attempted. Distinct from `failed`,
+  /// because the fix is different: one is config, the other is the provider.
+  skipped
+}
 
 model ContactMessage {
   id        Int           @id @default(autoincrement())

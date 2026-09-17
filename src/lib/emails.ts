@@ -8,8 +8,24 @@
 
 import { env } from '../config/env.js'
 import { isMailConfigured, sendMail } from '../config/mailer.js'
+import { tagLabel } from './feedback-tag-labels.js'
 
 const BRAND = '#00A76F'
+
+/**
+ * Escape text that a USER wrote before it goes into an email body.
+ *
+ * Was local to buildContactEmail, which was the wrong place for it to be the
+ * only copy: the contact form is the one template whose text nobody but us
+ * reads. The player note carries a coach's free-typed sentence to a child and
+ * their parent, and a stray "<" there breaks the layout at best.
+ *
+ * Quotes are left alone deliberately — nothing here interpolates into an
+ * attribute, and escaping them would put &#39; in front of a reader the moment
+ * a coach writes "don't".
+ */
+const esc = (s: string): string =>
+  s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 
 function layout(preheader: string, bodyHtml: string): string {
   const site = env.FRONTEND_URL
@@ -21,10 +37,17 @@ function layout(preheader: string, bodyHtml: string): string {
       <tr><td align="center">
         <table role="presentation" width="560" cellpadding="0" cellspacing="0" style="max-width:560px;width:100%">
 
-          <!-- Header: logo (hosted; alt text shows when images are blocked) -->
-          <tr><td style="padding:0 24px 18px" align="center">
+          <!-- Header: logo (hosted; alt text shows when images are blocked).
+               The PNG is FLATTENED onto #0c1120 — no alpha channel. A
+               transparent logo let Gmail's dark mode composite it onto a pale
+               backdrop of its own choosing, and the white half of the wordmark
+               disappeared into it. With no transparency there is nothing for a
+               client to decide. The cell carries the same colour so the seam
+               is invisible if images are slow to load.
+               Served at 400px and displayed at 200 for phone screens. -->
+          <tr><td style="padding:0 24px 18px;background:#0c1120" align="center">
             <a href="${site}" style="text-decoration:none">
-              <img src="${site}/email/logo.png" width="200" alt="TactiCoach" style="display:block;border:0;max-width:200px;height:auto">
+              <img src="${site}/email/logo.png" width="200" alt="TactiCoach" style="display:block;border:0;width:200px;max-width:200px;height:auto;background:#0c1120">
             </a>
           </td></tr>
 
@@ -85,19 +108,37 @@ const pitchCard = (title: string, innerHtml: string) =>
      </td>
    </tr></table>`
 
-/** Send an email without ever throwing — logs and swallows failures. */
+/** Every template this module can send. Recorded against each email_log row. */
+export type EmailKind =
+  | 'welcome'
+  | 'verification'
+  | 'trial_reminder'
+  | 'purchase'
+  | 'club_invite'
+  | 'club_page_approved'
+  | 'club_page_rejected'
+  | 'partner_invite'
+  | 'account_setup'
+  | 'player_note'
+  | 'password_reset'
+
+/**
+ * Send an email without ever throwing — logs and swallows failures.
+ *
+ * The "is SMTP configured" check that used to live here has moved into
+ * sendMail. It returned early, so a skipped email left no trace at all: the
+ * one case where somebody is definitely waiting for a link that is never
+ * coming was the one case with no record of it.
+ */
 async function sendSafely(
   opts: { to: string; subject: string; html: string; text: string },
-  logCtx: string,
+  kind: EmailKind,
+  meta: { userId?: number; actorId?: number } = {},
 ): Promise<void> {
-  if (!isMailConfigured()) {
-    console.warn(`[emails] SMTP not configured — skipped ${logCtx} to ${opts.to}`)
-    return
-  }
   try {
-    await sendMail(opts)
+    await sendMail({ ...opts, kind, ...meta })
   } catch (err) {
-    console.error(`[emails] Failed to send ${logCtx} to ${opts.to}`, err)
+    console.error(`[emails] Failed to send ${kind} to ${opts.to}`, err)
   }
 }
 
@@ -139,7 +180,7 @@ export async function sendWelcomeEmail(
          <p style="margin:0;color:#6b7280;font-size:13px">Happy coaching!<br>The TactiCoach team</p>`,
       ),
     },
-    'welcome email',
+    'welcome',
   )
 }
 
@@ -168,7 +209,7 @@ export async function sendVerificationEmail(
          <p style="margin:0;color:#6b7280;font-size:13px">If you didn't request this, you can safely ignore this email.</p>`,
       ),
     },
-    'verification email',
+    'verification',
   )
 }
 
@@ -202,7 +243,7 @@ export async function sendTrialReminderEmail(
          <p style="margin:0;color:#6b7280;font-size:13px">If the trial lapses you can still sign in and browse — the editor just locks until you upgrade.</p>`,
       ),
     },
-    'trial reminder',
+    'trial_reminder',
   )
 }
 
@@ -235,7 +276,7 @@ export async function sendPurchaseEmail(
          <p style="margin:0;color:#6b7280;font-size:13px">A payment receipt is sent separately by Stripe. You can manage your plan any time from your profile.</p>`,
       ),
     },
-    'purchase confirmation',
+    'purchase',
   )
 }
 
@@ -270,7 +311,7 @@ export async function sendClubInviteEmail(params: {
          <p style="margin:0;color:#6b7280;font-size:13px">The invite is valid until ${expiresAt.toDateString()}. You'll need a TactiCoach account with this email address — signing up is free.</p>`,
       ),
     },
-    'club invite',
+    'club_invite',
   )
 }
 
@@ -299,7 +340,7 @@ export async function sendClubPageApprovedEmail(
          <p style="margin:0;color:#6b7280;font-size:13px">Share it with players, parents and on your socials — everything your coaches publish appears there automatically.</p>`,
       ),
     },
-    'club page approved',
+    'club_page_approved',
   )
 }
 
@@ -334,7 +375,7 @@ export async function sendPartnerInviteEmail(
          <p style="margin:0;color:#6b7280;font-size:13px">Nothing starts until you accept, and there's no obligation to.</p>`,
       ),
     },
-    'partner invite',
+    'partner_invite',
   )
 }
 
@@ -361,7 +402,7 @@ export async function sendClubPageRejectedEmail(
          <p style="margin:0;color:#6b7280;font-size:13px">Update your branding or content and submit again — it only takes a minute.</p>`,
       ),
     },
-    'club page rejected',
+    'club_page_rejected',
   )
 }
 
@@ -378,8 +419,6 @@ export function buildContactEmail(input: {
   email: string
   message: string
 }): { to: string; subject: string; html: string; text: string } {
-  const esc = (s: string) =>
-    s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
   return {
     to: env.SUPPORT_EMAIL ?? env.MAIL_FROM,
     subject: `Contact form: ${input.firstName} ${input.lastName}`,
@@ -409,8 +448,9 @@ export function buildContactEmail(input: {
  * mail reads as a phishing attempt.
  */
 export async function sendAccountSetupEmail(
-  user: { name: string; email: string },
+  user: { id?: number; name: string; email: string },
   setupUrl: string,
+  actorId?: number,
 ): Promise<void> {
   await sendSafely(
     {
@@ -432,7 +472,8 @@ export async function sendAccountSetupEmail(
          <p style="margin:0;color:#6b7280;font-size:13px">If you weren't expecting this, you can ignore this email — the account cannot be used until a password is set.</p>`,
       ),
     },
-    'account setup',
+    'account_setup',
+    { userId: user.id, actorId },
   )
 }
 
@@ -447,51 +488,217 @@ export async function sendAccountSetupEmail(
  * The note body is deliberately included in full. A "you have a new message,
  * log in to read it" email is a notification nobody opens twice.
  */
-export async function sendPlayerNoteEmail(params: {
+export interface PlayerNoteEmail {
   to: string
   cc: string | null
   playerName: string
   coachName: string
   clubName: string | null
   body: string
+  strengths: string[]
+  workOns: string[]
+  session: { title: string; date: Date | null } | null
+  /** Notes so far with this coach, and what they keep coming back to. */
+  digest: { total: number; strengths: [string, number][]; workOns: [string, number][] }
+  /** An animated board the coach attached to this note, if any. */
+  boardId: number | null
   guardianToken: string | null
-}): Promise<void> {
+}
+
+/**
+ * A chip row — the tags, rendered as pills.
+ *
+ * Built from table cells rather than inline-block spans with margins. Outlook
+ * (Word's rendering engine) drops margin on inline elements, so a span-based
+ * version arrives as one long run of touching pills. Cells with explicit
+ * padding are the only thing that survives everywhere.
+ */
+const chipRow = (tags: string[], tone: 'good' | 'work'): string => {
+  if (tags.length === 0) return ''
+  const bg = tone === 'good' ? '#E6F7F0' : '#FFF4E5'
+  const fg = tone === 'good' ? '#067A52' : '#8A5300'
+  const cells = tags
+    .map(
+      (tag) =>
+        `<td style="padding:0 6px 6px 0"><table role="presentation" cellpadding="0" cellspacing="0"><tr>
+           <td style="background:${bg};color:${fg};border-radius:999px;padding:6px 13px;font-size:13px;font-weight:700;font-family:Arial,Helvetica,sans-serif;white-space:nowrap">${tagLabel(tag)}</td>
+         </tr></table></td>`,
+    )
+    .join('')
+  // A single row that wraps by table width rather than a flex container —
+  // there is no flexbox in email.
+  return `<table role="presentation" cellpadding="0" cellspacing="0" style="margin:6px 0 0"><tr>${cells}</tr></table>`
+}
+
+const sectionLabel = (text: string) =>
+  `<div style="font-size:11px;letter-spacing:.1em;font-weight:800;color:#6b7280;text-transform:uppercase;margin:20px 0 0">${text}</div>`
+
+/**
+ * The note a coach sends a player after a session — the product's whole
+ * retention story in one email, and now the only thing players are asked to
+ * open. It is written as a REPORT, not a notification: the full note, the tags
+ * that were chosen, where they are up to this season, and the board if the
+ * coach attached one.
+ *
+ * Copied to the guardian address when the player has set one. That is a
+ * deliberate safeguarding position rather than a feature: adult-to-child
+ * communication in a club setting should be visible to the adult responsible
+ * for that child, and a parent who reads this every week is a parent who tells
+ * the club to renew.
+ *
+ * The note body is included in full. A "you have a new message, log in to read
+ * it" email is a notification nobody opens twice.
+ *
+ * English only, like every email here — see lib/feedback-tag-labels.
+ */
+export async function sendPlayerNoteEmail(params: PlayerNoteEmail): Promise<void> {
+  const site = env.FRONTEND_URL
+  // Everything below that a person typed goes through esc() before it reaches
+  // the HTML. The plain-text alternative uses the raw values — escaping there
+  // would show a parent "Nathan &amp; the back four".
+  const player = esc(params.playerName)
+  const coach = esc(params.coachName)
+  const club = params.clubName ? esc(params.clubName) : null
+  const noteBody = esc(params.body)
+  const sessionTitle = params.session?.title ? esc(params.session.title) : null
+
   const from = params.clubName ? `${params.coachName} · ${params.clubName}` : params.coachName
-  const guardianLine = params.guardianToken
-    ? `\n\nParent or guardian — see everything ${params.playerName}'s coach has written:\n${env.FRONTEND_URL}/guardian/${params.guardianToken}`
-    : ''
+  const fromHtml = club ? `${coach} · ${club}` : coach
+  const seasonUrl = `${site}/my-football`
+  const boardUrl = params.boardId ? `${site}/share/board/${params.boardId}` : null
+  const guardianUrl = params.guardianToken ? `${site}/guardian/${params.guardianToken}` : null
+
+  const when = params.session?.date
+    ? params.session.date.toLocaleDateString('en-GB', {
+        weekday: 'long', day: 'numeric', month: 'long',
+      })
+    : null
+
+  // "Your 7th note" reads oddly at 1, and a first note is worth marking.
+  const ordinal = (n: number) => {
+    const suffix = n % 100 >= 11 && n % 100 <= 13 ? 'th' : ['th', 'st', 'nd', 'rd'][n % 10] ?? 'th'
+    return `${n}${suffix}`
+  }
+  const standing =
+    params.digest.total <= 1
+      ? 'This is the first note from your coach.'
+      : `This is your ${ordinal(params.digest.total)} note this season.`
+
+  // Most-mentioned, only once there is enough history for it to mean anything.
+  // Two notes do not make a pattern, and "mentioned once" as a headline
+  // statistic makes the whole feature look automated.
+  const showDigest = params.digest.total >= 3
+  const topTags = (pairs: [string, number][]) =>
+    pairs
+      .slice(0, 3)
+      .map(([tag, n]) => `${tagLabel(tag)} <strong style="color:#ffffff">×${n}</strong>`)
+      .join('&nbsp;&nbsp;·&nbsp;&nbsp;')
+
+  const textLines = [
+    `Hi ${params.playerName},`,
+    '',
+    `${from} wrote to you${when ? ` after ${params.session?.title ?? 'training'} on ${when}` : ''}:`,
+    '',
+    params.body ? `"${params.body}"` : '(no message — see the tags below)',
+  ]
+  if (params.strengths.length > 0) {
+    textLines.push('', `Did well: ${params.strengths.map(tagLabel).join(', ')}`)
+  }
+  if (params.workOns.length > 0) {
+    textLines.push(`Work on: ${params.workOns.map(tagLabel).join(', ')}`)
+  }
+  textLines.push('', standing)
+  if (showDigest && params.digest.strengths.length > 0) {
+    textLines.push(
+      `Mentioned most this season: ${params.digest.strengths.slice(0, 3).map(([t, n]) => `${tagLabel(t)} x${n}`).join(', ')}`,
+    )
+  }
+  if (boardUrl) textLines.push('', `Watch the move your coach attached:\n${boardUrl}`)
+  textLines.push('', `See your whole season:\n${seasonUrl}`)
+  if (guardianUrl) {
+    textLines.push(
+      '',
+      `Parent or guardian — everything ${params.playerName}'s coach has written:\n${guardianUrl}`,
+    )
+  }
 
   await sendSafely(
     {
       to: params.cc ? `${params.to}, ${params.cc}` : params.to,
-      subject: `${params.coachName} left you a note`,
-      text:
-        `Hi ${params.playerName},\n\n` +
-        `${from} wrote:\n\n` +
-        `"${params.body}"\n\n` +
-        `See it with the rest of your season:\n${env.FRONTEND_URL}/my-season` +
-        guardianLine,
+      // Named, and says what it is. "You have a new notification" is what an
+      // unopened email looks like.
+      subject: params.session?.title
+        ? `${params.coachName} on ${params.session.title}`
+        : `${params.coachName} left you a note`,
+      text: textLines.join('\n'),
       html: layout(
-        `${params.coachName} left you a note.`,
-        `${kicker('FROM YOUR COACH')}
-         <h1 style="margin:0 0 12px;font-size:21px">${params.coachName} left you a note ⚽</h1>
-         <p style="margin:0 0 4px">Hi ${params.playerName},</p>
-         <blockquote style="margin:14px 0;padding:12px 16px;border-left:4px solid #00a76f;background:#f0fdf7;color:#14532d;font-size:15px;line-height:1.6">${params.body}</blockquote>
-         ${button(`${env.FRONTEND_URL}/my-season`, 'See your season')}
+        `${coach} wrote to you${when ? ` after ${when}` : ''}.`,
+        `${kicker('YOUR SESSION REPORT')}
+         <h1 style="margin:0 0 6px;font-size:22px;line-height:1.25">Nice work, ${player} ⚽</h1>
+         <p style="margin:0 0 2px;color:#6b7280;font-size:13.5px">
+           From <strong style="color:#1a2332">${fromHtml}</strong>${
+             sessionTitle ? `<br>${sessionTitle}${when ? ` &middot; ${when}` : ''}` : ''
+           }
+         </p>
+
          ${
-           params.guardianToken
-             ? `<p style="margin:16px 0 0;color:#6b7280;font-size:13px">Parent or guardian: <a href="${env.FRONTEND_URL}/guardian/${params.guardianToken}" style="color:#00a76f">see everything ${params.playerName}'s coach has written</a>.</p>`
+           noteBody
+             ? `<blockquote style="margin:20px 0 0;padding:14px 18px;border-left:4px solid #00a76f;background:#f0fdf7;color:#14532d;font-size:15.5px;line-height:1.65;font-style:italic">${noteBody}</blockquote>`
+             : ''
+         }
+
+         ${
+           params.strengths.length > 0
+             ? `${sectionLabel('What you did well')}${chipRow(params.strengths, 'good')}`
+             : ''
+         }
+         ${
+           params.workOns.length > 0
+             ? `${sectionLabel('To work on next')}${chipRow(params.workOns, 'work')}`
+             : ''
+         }
+
+         ${
+           showDigest && params.digest.strengths.length > 0
+             ? pitchCard(
+                 'YOUR SEASON SO FAR',
+                 `${standing}<br><span style="color:#9fe8c8">Mentioned most:</span> ${topTags(params.digest.strengths)}${
+                   params.digest.workOns.length > 0
+                     ? `<br><span style="color:#9fe8c8">Working on:</span> ${topTags(params.digest.workOns)}`
+                     : ''
+                 }`,
+               )
+             : `<p style="margin:20px 0 0;color:#6b7280;font-size:13.5px">${standing}</p>`
+         }
+
+         ${
+           boardUrl
+             ? `<p style="margin:20px 0 0;font-size:14.5px">🎬 Your coach attached a move for you to watch — <a href="${boardUrl}" style="color:#00a76f;font-weight:700">see the animation</a>.</p>`
+             : ''
+         }
+
+         ${button(seasonUrl, 'See your whole season')}
+
+         ${
+           guardianUrl
+             ? `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:8px 0 0"><tr>
+                  <td style="border-top:1px solid #e5e7eb;padding:14px 0 0;color:#6b7280;font-size:12.5px;line-height:1.6">
+                    <strong style="color:#1a2332">Parent or guardian?</strong>
+                    <a href="${guardianUrl}" style="color:#00a76f">See everything ${player}'s coach has written</a> — no account needed.
+                  </td>
+                </tr></table>`
              : ''
          }`,
       ),
     },
-    'player note',
+    'player_note',
   )
 }
 
 export async function sendPasswordResetEmail(
-  user: { name: string; email: string },
+  user: { id?: number; name: string; email: string },
   resetUrl: string,
+  actorId?: number,
 ): Promise<void> {
   await sendSafely(
     {
@@ -512,6 +719,7 @@ export async function sendPasswordResetEmail(
          <p style="margin:0;color:#6b7280;font-size:13px">If you didn't request this, you can safely ignore this email — your password stays unchanged.</p>`,
       ),
     },
-    'password reset',
+    'password_reset',
+    { userId: user.id, actorId },
   )
 }

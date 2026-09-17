@@ -7,34 +7,22 @@ import { db } from '../config/database.js'
  */
 export const PARTNER_PLAN_SLUG = 'pro'
 
-/**
- * The plan a player buys for themselves.
- *
- * It grants the full product — board, drill sheets, sessions, planner and
- * exports — PLUS the player's own screens. The player plan is a superset of
- * Pro, not a cut-down tier.
- *
- * `playerAccess` therefore stays a separate flag rather than something read
- * off `editorAccess`: the two answer different questions. `editorAccess` is
- * "may this account author?", `playerAccess` is "does this account have a
- * player's own screens?" — and the second is true for anyone a coach has
- * linked to a squad, whatever they pay.
- *
- * PRICING NOTE: at the current seed, Player is £2.99/mo and Pro is £2.99/mo.
- * Because Player is now a superset, nothing distinguishes them and a coach has
- * no reason to pick Pro. Whoever changes the price should change it in
- * prisma/seed.ts and on the landing page together.
- */
-export const PLAYER_PLAN_SLUG = 'player'
-
 export interface Entitlements {
   /** Can open the editor: own active subscription OR active club membership. */
   editorAccess: boolean
   /**
    * Can open the player's own screens — this week, my season, the read-only
-   * board viewer. True for an active player subscription, and for anyone a
-   * coach has linked to a squad (a player whose club pays for them should not
-   * lose their feedback because their own card expired).
+   * board viewer.
+   *
+   * FREE, and deliberately so. There is no player plan any more; prisma/seed
+   * carries the reasoning. This is true for anyone a coach has linked to a
+   * squad and false for everyone else, which makes it not an entitlement in
+   * the billing sense at all — it is "is this person somebody's player?", and
+   * no subscription changes the answer.
+   *
+   * The flag stays because the question is still worth asking: the player
+   * screens are useless to a coach and the coach screens are useless to a
+   * player, so something has to decide where a login lands.
    */
   playerAccess: boolean
   /** The plan granting access (own plan, or the club owner's plan via a seat). */
@@ -76,8 +64,39 @@ export async function clubBrandingActive(ownerId: number): Promise<boolean> {
  *      subscription.
  */
 export async function getEntitlements(userId: number): Promise<Entitlements> {
+  const account = await db.user.findUnique({
+    where: { id: userId },
+    select: { role: true, accountType: true },
+  })
+
+  // A player account never authors, whatever it holds.
+  //
+  // Checked FIRST, above the owner branch and above any subscription, because
+  // every other path here can hand out editorAccess and this one must win over
+  // all of them. The case that made it necessary: register gives every new
+  // account a 7-day full-access trial, so for its first week a player account
+  // carried an active trial subscription and `ownActive` was true. A child who
+  // ticked "I'm a player" got the whole coach product for seven days and then
+  // a "your trial has ended, choose a plan" wall for something they never
+  // wanted. Nothing is for sale here — see middleware/player-guard.
+  if (account?.accountType === 'player') {
+    const linked = await db.squadPlayer.findFirst({
+      where: { playerUserId: userId, linkStatus: 'active', archivedAt: null },
+      select: { id: true },
+    })
+    return {
+      editorAccess: false,
+      playerAccess: !!linked,
+      plan: null,
+      viaClub: false,
+      viaPartner: false,
+      isClubOwner: false,
+      subscriptionStatus: null,
+      expiresAt: null,
+    }
+  }
+
   // The company owner (admin) never buys a plan — full access, no trial nags.
-  const account = await db.user.findUnique({ where: { id: userId }, select: { role: true } })
   if (account?.role === 'owner') {
     return {
       editorAccess: true,
@@ -116,9 +135,8 @@ export async function getEntitlements(userId: number): Promise<Entitlements> {
     db.partner.findUnique({ where: { userId }, select: { status: true } }),
   ])
 
-  // Linked to at least one coach's squad. Checked separately from the plan so
-  // a player keeps their history if their subscription lapses — the notes are
-  // theirs, not something they rent.
+  // Linked to at least one coach's squad. This is the WHOLE of playerAccess:
+  // a player's record is theirs, not something they rent.
   const linkedToSquad = await db.squadPlayer.findFirst({
     where: { playerUserId: userId, linkStatus: 'active', archivedAt: null },
     select: { id: true },
@@ -143,16 +161,13 @@ export async function getEntitlements(userId: number): Promise<Entitlements> {
 
   const plan = ownActive ? sub!.plan : clubActive ? ownerSub!.plan : partnerPlan
 
-  // A player subscription authors like any other paid plan — it is a superset
-  // of Pro, not a lesser tier, so it is NOT excluded from editorAccess.
-  // `sub?.plan?.slug`, not `sub!.plan.slug`: a subscription whose plan row has
-  // gone (deleted, or a partially-seeded database) must degrade to "no player
-  // plan" rather than throw and take every entitlement check down with it.
-  const isPlayerPlan = ownActive && sub?.plan?.slug === PLAYER_PLAN_SLUG
-
   return {
+    // The retired player plan is not special-cased out. Anyone still holding
+    // one paid for a plan that granted the full product, and they keep it
+    // until it expires — withdrawing access from an existing subscriber
+    // because we changed our minds about the tier would be theft.
     editorAccess: ownActive || clubActive || (partnerActive && !!partnerPlan),
-    playerAccess: isPlayerPlan || !!linkedToSquad,
+    playerAccess: !!linkedToSquad,
     plan,
     viaClub: !ownActive && clubActive,
     viaPartner: !ownActive && !clubActive && partnerActive && !!partnerPlan,

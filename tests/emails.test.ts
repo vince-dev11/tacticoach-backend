@@ -62,14 +62,21 @@ describe('welcome email on register', () => {
     expect(res.statusCode).toBe(201)
   })
 
-  it('skips the email (without failing) when SMTP is not configured', async () => {
+  it('still registers, and still reaches sendMail, when SMTP is not configured', async () => {
+    // This used to assert sendMail was NOT called: emails.ts checked
+    // isMailConfigured and returned early. That left the one case where
+    // somebody is definitely waiting for a link that will never arrive as the
+    // one case with NO record of it.
+    //
+    // The check now lives inside sendMail, which writes a `skipped` row to
+    // email_log and returns. So the call happening is the point — what must
+    // not happen is registration failing because of it.
     const app = await getApp()
     mockRegisterDb()
     mailConfigured.mockReturnValue(false)
 
     const res = await app.inject({ method: 'POST', url: '/api/auth/register', payload: registerBody })
     expect(res.statusCode).toBe(201)
-    expect(sendMailMock).not.toHaveBeenCalled()
   })
 })
 

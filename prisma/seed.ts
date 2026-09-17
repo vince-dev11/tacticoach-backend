@@ -54,29 +54,38 @@ async function main() {
       sortOrder: 3,
     },
     {
-      // The player's own plan. Authors nothing — no boards, no seats — so
-      // entitlements resolves editorAccess false for it and every gated route
-      // refuses a player without knowing this plan exists.
+      // RETIRED. Players are free and always will be — see the comment on
+      // playerAccess in lib/entitlements.
       //
-      // Priced well under Pro deliberately: the comparison is ~£4/month for a
-      // player training app against parents already spending thousands a year
-      // on youth football. A player plan that costs more than a couple of
-      // coffees does not convert.
+      // Why it was wrong to sell: a player's value is produced by their coach.
+      // Charging the player for words somebody else has to write puts a paywall
+      // between us and the only organic distribution we have — every connected
+      // player is a coach-shaped hole at their next club. It also made the
+      // cheapest plan the most expensive to serve: ~22% of £2.99 goes in card
+      // fees, against ~8% on an annual coach plan, and players outnumber
+      // coaches roughly 20:1.
+      //
+      // Kept as a row rather than deleted. Anyone who did subscribe keeps a
+      // valid plan relation and runs to the end of what they paid for;
+      // isActive:false is enough to close the sale, because GET /plans filters
+      // on it and POST /membership/checkout refuses an inactive plan. Deleting
+      // the row would orphan those subscriptions.
+      //
+      // The upsert below writes isActive on EXISTING rows too, so re-seeding
+      // production is what actually retires it.
       name: 'Player',
       slug: 'player',
-      description: 'For players. See your coach\'s tactics board and the feedback they write you.',
+      description: 'Retired — players are free. Kept so historic subscriptions still resolve.',
+      // Left at what it actually cost. A historic subscriber's billing screen
+      // reads its price from this row, and showing them £0.00 for something
+      // Stripe is still charging them £2.99 for would be a lie.
       monthlyPrice: '2.99',
-      annualPrice: '29.00', // 2 months free
+      annualPrice: '29.00',
       currency: 'GBP',
-      features: [
-        'Your coach\'s tactics board, animated',
-        'Feedback from your coach after every session',
-        'Your season record',
-        'Share with a parent or guardian',
-      ],
+      features: [],
       maxBoards: 0,
       maxTeamMembers: 0,
-      isActive: true,
+      isActive: false,
       sortOrder: 4,
     },
   ]

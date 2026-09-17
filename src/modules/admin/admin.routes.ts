@@ -13,11 +13,32 @@ import { presignUrl as presign } from '../../config/s3.js'
 import { env } from '../../config/env.js'
 import crypto from 'node:crypto'
 import bcrypt from 'bcryptjs'
-import { sendClubPageApprovedEmail, sendClubPageRejectedEmail, sendAccountSetupEmail } from '../../lib/emails.js'
-import { createAccountSetupToken } from '../auth/auth.service.js'
+import {
+  sendClubPageApprovedEmail, sendClubPageRejectedEmail, sendAccountSetupEmail,
+  sendPasswordResetEmail,
+} from '../../lib/emails.js'
+import { isMailConfigured } from '../../config/mailer.js'
+import { createAccountSetupToken, createPasswordResetTokenFor } from '../auth/auth.service.js'
 import { latinOnly } from '../../lib/latin-only.js'
 import { invitePartner, endPartner } from '../partners/partners.service.js'
 import { sendPartnerInviteEmail } from '../../lib/emails.js'
+
+// ---- TEMPORARY: remove once `prisma generate` has run against migration 23 --
+// The generated client has no `emailLog` delegate until then. Narrow on
+// purpose so it cannot mask a mistake elsewhere in this file.
+interface EmailLogRow {
+  id: number
+  to: string
+  kind: string
+  subject: string
+  status: string
+  error: string | null
+  createdAt: Date
+}
+const emailLogDb = () =>
+  (db as unknown as {
+    emailLog: { findMany(args: unknown): Promise<EmailLogRow[]> }
+  }).emailLog
 
 // ---- Schemas -----------------------------------------------------------------
 
@@ -374,6 +395,104 @@ export async function adminRoutes(app: FastifyInstance) {
     // The link comes back either way: email is slow, lands in spam, or the
     // admin is on a call with the person right now.
     return reply.status(201).send({ user, setupUrl, emailSent: input.sendEmail })
+  })
+
+  // PATCH /admin/users/:id/email { email } — correct a typo'd address.
+  //
+  // Email IS the login identity here, so this is not an ordinary field edit.
+  // Two things must happen with it, or the account is left in a state nobody
+  // would predict:
+  //
+  //   - outstanding password-reset / set-password tokens are voided. They were
+  //     issued to reach the OLD address; whoever holds that inbox must not be
+  //     able to finish setting a password on this account.
+  //   - the address is unverified again. It has never been proven.
+  //
+  // Live sessions are deliberately NOT killed: the person may be mid-task and
+  // the change is usually an admin fixing a typo on their behalf.
+  app.patch('/users/:id/email', async (request, reply) => {
+    const id = Number((request.params as { id: string }).id)
+    const { email } = z.object({ email: z.string().trim().email().max(191) }).parse(request.body)
+    const next = email.toLowerCase()
+
+    const user = await db.user.findUnique({ where: { id }, select: { id: true, email: true } })
+    if (!user) {
+      return reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'User not found' })
+    }
+    if (user.email.toLowerCase() === next) {
+      return reply.send({ id, email: next, unchanged: true })
+    }
+
+    const clash = await db.user.findUnique({ where: { email: next }, select: { id: true } })
+    if (clash) {
+      return reply.status(409).send({
+        statusCode: 409,
+        error: 'Conflict',
+        message: 'Another account already uses that email',
+      })
+    }
+
+    const [updated] = await db.$transaction([
+      db.user.update({
+        where: { id },
+        data: { email: next, emailVerifiedAt: null },
+        select: { id: true, name: true, surname: true, email: true },
+      }),
+      // Anything already issued pointed at the old inbox.
+      db.passwordResetToken.deleteMany({ where: { userId: id, usedAt: null } }),
+    ])
+    return reply.send(updated)
+  })
+
+  // POST /admin/users/:id/email/:kind — send this user a mail, now.
+  //
+  // `setup` mints a FRESH token rather than resending the old one: the old one
+  // may have expired, and a link that looks resent but is already dead is
+  // worse than no link. The URL comes back either way, so an admin on a call
+  // can read it out.
+  app.post('/users/:id/email/:kind', async (request, reply) => {
+    const id = Number((request.params as { id: string }).id)
+    const { kind } = z
+      .object({ kind: z.enum(['setup', 'reset']) })
+      .parse(request.params)
+
+    const user = await db.user.findUnique({
+      where: { id },
+      select: { id: true, name: true, surname: true, email: true },
+    })
+    if (!user) {
+      return reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'User not found' })
+    }
+
+    const actorId = (request.user as { sub?: number } | undefined)?.sub
+    const token =
+      kind === 'setup'
+        ? await createAccountSetupToken(user.id)
+        : await createPasswordResetTokenFor(user.id)
+    const url = `${env.FRONTEND_URL}/reset-password?token=${token}`
+
+    // Awaited, not fire-and-forget: the admin is watching, and "sent" needs to
+    // mean it. sendSafely swallows provider failures, and the email_log row
+    // records which of the two it was.
+    if (kind === 'setup') await sendAccountSetupEmail(user, url, actorId)
+    else await sendPasswordResetEmail(user, url, actorId)
+
+    return reply.send({ sent: true, url, mailConfigured: isMailConfigured() })
+  })
+
+  // GET /admin/users/:id/emails — what this account has been sent.
+  app.get('/users/:id/emails', async (request, reply) => {
+    const id = Number((request.params as { id: string }).id)
+    const rows = await emailLogDb().findMany({
+      where: { userId: id },
+      orderBy: { createdAt: 'desc' },
+      take: 50,
+      select: {
+        id: true, to: true, kind: true, subject: true,
+        status: true, error: true, createdAt: true,
+      },
+    })
+    return reply.send(rows)
   })
 
   // PATCH /admin/users/:id/trial { days } — extend (or start) a trial

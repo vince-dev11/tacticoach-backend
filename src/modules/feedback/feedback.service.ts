@@ -323,11 +323,58 @@ export async function discardNote(coachId: number, noteId: number): Promise<bool
 }
 
 /**
+ * What a player's email says about their season so far, with THIS coach.
+ *
+ * Scoped to the squad row rather than the player, because the row is the
+ * relationship: a child at a club and a school has two coaches and two
+ * records, and blending them would tell their school coach's email what their
+ * club coach has been working on.
+ *
+ * Counted over sent notes only — a draft is not part of anyone's history yet.
+ */
+export interface SeasonDigest {
+  /** How many notes this coach has sent them, including the one being sent. */
+  total: number
+  strengths: [string, number][]
+  workOns: [string, number][]
+}
+
+async function seasonDigests(squadPlayerIds: number[]): Promise<Map<number, SeasonDigest>> {
+  const digests = new Map<number, SeasonDigest>()
+  if (squadPlayerIds.length === 0) return digests
+
+  // One query for the whole batch. A squad of twenty was twenty round trips
+  // when this was done per player, on a path a coach waits for.
+  const notes = await db.playerNote.findMany({
+    where: { squadPlayerId: { in: squadPlayerIds }, sentAt: { not: null } },
+    select: { squadPlayerId: true, strengths: true, workOns: true },
+  })
+
+  const byPlayer = new Map<number, { strengths: unknown; workOns: unknown }[]>()
+  for (const note of notes) {
+    const list = byPlayer.get(note.squadPlayerId) ?? []
+    list.push(note)
+    byPlayer.set(note.squadPlayerId, list)
+  }
+
+  for (const id of squadPlayerIds) {
+    const list = byPlayer.get(id) ?? []
+    digests.set(id, { total: list.length, ...tagFrequency(list) })
+  }
+  return digests
+}
+
+/**
  * Deliver everything written for a session.
  *
  * Notes are written, reviewed, then sent — one deliberate pause between "I
  * typed it" and "a child and their parent can read it". Returns the notes that
- * were sent so the caller can email them.
+ * were sent, each carrying what the email needs to be a report rather than a
+ * notification: who it is about, which session, and where they are up to.
+ *
+ * The digest is computed AFTER the rows are marked sent, so the note being
+ * delivered counts itself — "your 7th note this season" has to include the one
+ * the reader is holding, or it is off by one for everybody.
  */
 export async function sendSessionNotes(coachId: number, sessionId: number) {
   const pending = await db.playerNote.findMany({
@@ -337,14 +384,18 @@ export async function sendSessionNotes(coachId: number, sessionId: number) {
       body: true,
       strengths: true,
       workOns: true,
+      boardId: true,
+      squadPlayerId: true,
       squadPlayer: {
         select: {
+          id: true,
           name: true,
           guardianEmail: true,
           linkStatus: true,
           playerUser: { select: { id: true, name: true, email: true } },
         },
       },
+      session: { select: { title: true, sessionDate: true } },
     },
   })
   if (pending.length === 0) return []
@@ -354,7 +405,12 @@ export async function sendSessionNotes(coachId: number, sessionId: number) {
     where: { id: { in: pending.map((n) => n.id) } },
     data: { sentAt: now },
   })
-  return pending
+
+  const digests = await seasonDigests([...new Set(pending.map((n) => n.squadPlayerId))])
+  return pending.map((note) => ({
+    ...note,
+    digest: digests.get(note.squadPlayerId) ?? { total: 1, strengths: [], workOns: [] },
+  }))
 }
 
 // ---- Reading ----------------------------------------------------------------

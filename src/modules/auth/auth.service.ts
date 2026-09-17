@@ -46,7 +46,19 @@ export async function registerUser(input: RegisterInput) {
 
   // Start the 7-day trial. Missing plan (unseeded DB) must not block signup —
   // the user simply starts without editor access.
-  const trialPlan = await db.membershipPlan.findUnique({ where: { slug: TRIAL_PLAN_SLUG } })
+  //
+  // Not for players. A trial is a sample of something you might buy, and there
+  // is nothing here for a player to buy: their account is free and permanent.
+  // Giving them one had two consequences, both bad — for seven days the whole
+  // coach product was open to a child's account, and on day eight they were
+  // shown "your trial has ended, choose a plan" for a product that was never
+  // theirs. getEntitlements refuses a player editorAccess independently, so
+  // this is about not creating a meaningless row and a countdown nobody wants,
+  // rather than about access.
+  const trialPlan =
+    user.accountType === 'player'
+      ? null
+      : await db.membershipPlan.findUnique({ where: { slug: TRIAL_PLAN_SLUG } })
   if (trialPlan) {
     await db.userSubscription.create({
       data: {
@@ -127,6 +139,25 @@ export async function createAccountSetupToken(userId: number): Promise<string> {
   const token = crypto.randomBytes(32).toString('hex')
   await db.passwordResetToken.create({
     data: { userId, tokenHash: sha256(token), expiresAt: new Date(Date.now() + SETUP_TTL_MS) },
+  })
+  return token
+}
+
+/**
+ * A reset token for a user we already have, by id.
+ *
+ * The by-email version exists to answer a public endpoint and deliberately
+ * returns null for an unknown address so it cannot be used to discover who has
+ * an account. An admin acting on a row they are looking at has already passed
+ * that gate, so this one takes an id and does not pretend otherwise.
+ */
+export async function createPasswordResetTokenFor(userId: number): Promise<string> {
+  // Same rule as below: one live token per user, so an older link stops
+  // working the moment a newer one is issued.
+  await db.passwordResetToken.deleteMany({ where: { userId, usedAt: null } })
+  const token = crypto.randomBytes(32).toString('hex')
+  await db.passwordResetToken.create({
+    data: { userId, tokenHash: sha256(token), expiresAt: new Date(Date.now() + RESET_TTL_MS) },
   })
   return token
 }

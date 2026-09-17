@@ -5,11 +5,50 @@ import { describe, it, expect } from 'vitest'
 import { dbMock } from './setup.js'
 import { getApp, accessToken, authHeaders, userRow, activeSubscription } from './helpers.js'
 
+// The CALLER's row, answered for every user.findUnique that asks for `role`
+// or `accountType` — the two "who is asking?" lookups a request makes.
+//
+// These used to be a bare mockResolvedValue, which was fine while the admin
+// role check was the only such lookup on the request. The root-level player
+// lockdown added a second one, ahead of the route, and any test that had
+// chained mockResolvedValueOnce for "first call is the role check, second is
+// the target user" silently handed the guard's answer to the route.
+//
+// Keying on what was SELECTED rather than on call order is what makes that
+// impossible to repeat: a caller lookup and a target-user lookup no longer
+// depend on which happens to run first.
+function callerIs(overrides: { role?: string; accountType?: string } = {}) {
+  const caller = { role: 'user', accountType: 'coach', ...overrides }
+  dbMock.user.findUnique.mockImplementation((args?: unknown) => {
+    const select = (args as { select?: Record<string, unknown> } | undefined)?.select
+    if (select?.accountType && !select.email) return Promise.resolve(caller as never)
+    if (select?.role && Object.keys(select).length <= 2) return Promise.resolve(caller as never)
+    return Promise.resolve(null as never)
+  })
+}
+
 function ownerRole() {
-  dbMock.user.findUnique.mockResolvedValue({ role: 'owner' } as never)
+  callerIs({ role: 'owner' })
 }
 function userRole() {
-  dbMock.user.findUnique.mockResolvedValue({ role: 'user' } as never)
+  callerIs({ role: 'user' })
+}
+
+/**
+ * An owner calling an admin route that also looks up a TARGET user.
+ *
+ * Distinguished by the select, never by call order: "who is asking?" asks for
+ * `role`/`accountType` and nothing else, while a target lookup wants a row.
+ */
+function ownerActingOn(target: Record<string, unknown>) {
+  const caller = { role: 'owner', accountType: 'coach' }
+  dbMock.user.findUnique.mockImplementation((args?: unknown) => {
+    const select = (args as { select?: Record<string, unknown> } | undefined)?.select
+    const keys = select ? Object.keys(select) : []
+    const asksWhoIsAsking =
+      keys.length > 0 && keys.every((k) => k === 'role' || k === 'accountType')
+    return Promise.resolve((asksWhoIsAsking ? caller : target) as never)
+  })
 }
 
 function postRow(overrides: Record<string, unknown> = {}) {
@@ -107,7 +146,7 @@ describe('blog CMS', () => {
     ownerRole()
     dbMock.blogPost.findUnique.mockResolvedValue(postRow({ status: 'draft', publishedAt: null }) as never)
     // requireOwner uses user.findUnique; blog uses blogPost.findUnique — both mocked.
-    dbMock.user.findUnique.mockResolvedValue({ role: 'owner' } as never)
+    ownerRole()
     dbMock.blogPost.update.mockResolvedValue(postRow() as never)
 
     const res = await app.inject({
@@ -312,10 +351,7 @@ describe('complimentary plans', () => {
     const app = await getApp()
     ownerRole()
     dbMock.membershipPlan.findUnique.mockResolvedValue({ id: 2, slug: 'pro', name: 'Pro' } as never)
-    // Second user.findUnique call is the target user lookup.
-    dbMock.user.findUnique
-      .mockResolvedValueOnce({ role: 'owner' } as never)
-      .mockResolvedValueOnce(userRow({ id: 5, name: 'Amara', clubName: null }) as never)
+    ownerActingOn(userRow({ id: 5, name: 'Amara', clubName: null }))
     dbMock.userSubscription.upsert.mockResolvedValue({ id: 9, userId: 5, status: 'active' } as never)
 
     const res = await app.inject({
@@ -336,9 +372,7 @@ describe('complimentary plans', () => {
     const app = await getApp()
     ownerRole()
     dbMock.membershipPlan.findUnique.mockResolvedValue({ id: 3, slug: 'club', name: 'Club' } as never)
-    dbMock.user.findUnique
-      .mockResolvedValueOnce({ role: 'owner' } as never)
-      .mockResolvedValueOnce(userRow({ id: 6, name: 'Carlos', clubName: 'QA United' }) as never)
+    ownerActingOn(userRow({ id: 6, name: 'Carlos', clubName: 'QA United' }))
     dbMock.userSubscription.upsert.mockResolvedValue({ id: 10 } as never)
     dbMock.club.upsert.mockResolvedValue({ id: 1 } as never)
 

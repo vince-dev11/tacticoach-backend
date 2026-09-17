@@ -30,9 +30,28 @@ import { coachPageRoutes } from './modules/coach-page/coach-page.routes.js'
 import { feedbackRoutes } from './modules/feedback/feedback.routes.js'
 import { referralsRoutes } from './modules/referrals/referrals.routes.js'
 import { plansRoutes } from './modules/plans/plans.routes.js'
+import { playerLockdown } from './middleware/player-guard.js'
 
 export async function buildApp(): Promise<FastifyInstance> {
-  const app = Fastify({ logger: env.NODE_ENV !== 'test' })
+  const app = Fastify({
+    logger: env.NODE_ENV !== 'test',
+    // Fastify defaults to 100 characters for a single path parameter and
+    // answers 414 above it — before any handler, hook or error mapper runs.
+    //
+    // GET /feedback/guardian/:token carries a signed JWT, which is ~200-400
+    // characters, so EVERY guardian link a parent has ever been emailed was
+    // rejected by the router. It looked like a broken link rather than a bug:
+    // nothing reached the route, so nothing was logged.
+    //
+    // Bounded rather than disabled. A path parameter is still an unauthenticated
+    // input, and the point of the limit is to stop someone stuffing megabytes
+    // into a URL; 1024 clears our longest token with room to spare.
+    //
+    // Under `routerOptions` because the top-level spelling is deprecated in
+    // Fastify 5 and goes away in 6 — it still works today, but silently, which
+    // is the worst way for a security-adjacent limit to change.
+    routerOptions: { maxParamLength: 1024 },
+  })
 
   // ---- Error handler ----------------------------------------------------------
   // Must be set BEFORE the route plugins are registered: `await register(...)`
@@ -81,6 +100,15 @@ export async function buildApp(): Promise<FastifyInstance> {
     max: env.NODE_ENV === 'test' ? 10_000 : 100,
     timeWindow: '1 minute',
   })
+
+  // ---- Player lockdown ------------------------------------------------------
+  //
+  // MUST be added before the route plugins. A root hook reaches every child
+  // scope, but only children registered after it — which is precisely the trap
+  // the feedback module's guardian route fell into, one level up. Adding it
+  // here means a module added at the bottom of the list below is still covered.
+
+  app.addHook('onRequest', playerLockdown(app))
 
   // ---- Routes ---------------------------------------------------------------
 
