@@ -1,0 +1,8 @@
+Liberation Sans — SIL Open Font License v1.1
+Copyright (c) 2012 Red Hat, Inc. Liberation is a trademark of Red Hat, Inc.
+Full licence: https://github.com/liberationfonts/liberation-fonts/blob/main/LICENSE
+
+Bundled here rather than read from the operating system because the signed
+agreement PDF must render identically wherever the API runs, and a server
+without this font would silently fall back to one that cannot draw Turkish or
+Polish letters — on a document carrying somebody's name.

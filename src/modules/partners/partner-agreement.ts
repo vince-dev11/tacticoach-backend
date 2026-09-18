@@ -9,7 +9,15 @@
 // CHANGING THE TERMS: bump the version. Do not edit clauses in place. Partners
 // on an older version keep their terms until they accept the new one.
 
-export const PARTNER_AGREEMENT_VERSION = '1.0'
+// 1.1 (2026-09-18) — commission rate 20% → 15%, with every worked figure
+// recalculated. 1.0 was never sent to anyone; the bump is still correct,
+// because the version is what proves which text a partner accepted, and an
+// edit in place would make that proof a lie if even one person had signed.
+//
+// Anyone on 1.0 keeps 20%. §7 commits us to 30 days' notice before changing an
+// existing partner's rate, and to the change applying only to referrals made
+// after it — so a 1.0 partner is not moved to 1.1 by this file changing.
+export const PARTNER_AGREEMENT_VERSION = '1.1'
 
 export interface AgreementSection {
   heading: string
@@ -46,21 +54,21 @@ export const PARTNER_AGREEMENT: PartnerAgreement = {
     {
       heading: '2. What you earn',
       body: [
-        'You earn 20% of the subscription fee paid by every customer you refer, for 12 months from that customer\'s first payment.',
-        'The 20% applies to what the customer actually pays, excluding VAT. If they use a discount, your share is 20% of the discounted amount — we pay you a share of money we received, not of a list price.',
+        'You earn 15% of the subscription fee paid by every customer you refer, for 12 months from that customer\'s first payment.',
+        'The 15% applies to what the customer actually pays, excluding VAT. If they use a discount, your share is 15% of the discounted amount — we pay you a share of money we received, not of a list price.',
       ],
       points: [
-        'Pro, monthly — £2.99/mo — you earn £0.60/mo, up to £7.18 over 12 months',
-        'Pro, annual — £29.99/yr — you earn £6.00',
-        'Club, monthly — £24.99/mo — you earn £5.00/mo, up to £59.98 over 12 months',
-        'Club, annual — £249/yr — you earn £49.80',
+        'Pro, monthly — £2.99/mo — you earn £0.45/mo, up to £5.38 over 12 months',
+        'Pro, annual — £29.99/yr — you earn £4.50',
+        'Club, monthly — £24.99/mo — you earn £3.75/mo, up to £44.98 over 12 months',
+        'Club, annual — £249/yr — you earn £37.35',
         'Prices are current at the date of this agreement and may change. Your percentage does not change with them.',
       ],
     },
     {
       heading: '3. Clubs are worth about eight coaches',
       body: [
-        'It is worth being deliberate about where your time goes. Twenty coaches on Pro monthly, all staying a full year, earn you about £144. Three clubs on the annual plan earn you about £149 — from three conversations instead of twenty.',
+        'It is worth being deliberate about where your time goes. Twenty coaches on Pro monthly, all staying a full year, earn you about £108. Three clubs on the annual plan earn you about £112 — from three conversations instead of twenty.',
         'If you have contacts at clubs, academies or county associations, that is where your effort is best spent.',
       ],
     },

@@ -100,6 +100,10 @@ model User {
   referralRewards  ReferralReward[]
   partner          Partner?
   partnerEarnings  PartnerCommission[]
+  agreements       AgreementAcceptance[]
+  ebooks           Ebook[]
+  ebookNotes       EbookNote[]
+  ebookProgress    EbookProgress[]
 
   @@map("users")
 }
@@ -1091,4 +1095,218 @@ model ClubPhoto {
 
   @@index([clubId, sortOrder])
   @@map("club_photos")
+}
+
+/// Who signed which agreement, when, from where.
+///
+/// A row per (user, kind, version) rather than columns on User: a signature is
+/// a historical fact, not a current state. When terms change and someone
+/// accepts 1.1, the record that they accepted 1.0 must survive — that record
+/// is the evidence of what applied while it applied.
+///
+/// The PARTNER agreement still records onto `Partner` (latest only). Not
+/// changed here; live commercial records are not something to move as part of
+/// a feature. See migration 26.
+model AgreementAcceptance {
+  id       Int           @id @default(autoincrement())
+  userId   Int           @map("user_id")
+  kind     AgreementKind
+  /// The version string as it was at acceptance. With the text kept in code
+  /// and never edited in place, this reproduces exactly what they were shown.
+  version  String        @db.VarChar(16)
+  /// The name as the SIGNER typed it, which is not always their account name —
+  /// a secretary signing for a club, or someone whose account says "Vince" but
+  /// who signs "Vincent Okafor". Null only on rows predating migration 27.
+  signerName String?     @db.VarChar(160) @map("signer_name")
+  /// The signature as a PNG data URL. In the database rather than S3: a few
+  /// kilobytes, read almost never, and it must outlive any bucket. See
+  /// migration 27.
+  signature  String?     @db.MediumText
+  /// Set by the database, so it cannot be back-dated by whoever is signing.
+  signedAt DateTime      @default(now()) @map("signed_at")
+  /// Best-effort, and nullable: a missing IP must never refuse an acceptance.
+  ip       String?       @db.VarChar(64)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// Re-posting is idempotent — double-clicking "I accept" is not two
+  /// agreements.
+  @@unique([userId, kind, version])
+  @@index([userId, kind])
+  @@map("agreement_acceptances")
+}
+
+enum AgreementKind {
+  referral
+  partner
+}
+
+/// A book: an ordered list of blocks, never a file. See migration 28 for why
+/// that single decision buys translation, personalisation, chapter-at-a-time
+/// serving and post-publish editing.
+model Ebook {
+  id       Int     @id @default(autoincrement())
+  authorId Int     @map("author_id")
+  title    String  @db.VarChar(160)
+  subtitle String? @db.VarChar(200)
+  slug     String  @unique @db.VarChar(180)
+  blurb    String? @db.Text
+
+  category EbookCategory @default(tactics)
+  ageBand  EbookAgeBand  @default(all) @map("age_band")
+
+  /// THE COVER IS DATA: {template, bg, art, font, weight, style, size}.
+  /// Rendered as vectors by one shared component, so it is sharp at any size,
+  /// identical everywhere, and needs no object storage — which matters, since
+  /// S3 is currently failing in production with a placeholder key.
+  cover Json
+
+  status      EbookStatus @default(draft)
+  publishedAt DateTime?   @map("published_at")
+  /// Pence. 0 = free. Never a float.
+  pricePence  Int         @default(0) @map("price_pence")
+  /// The language the author actually wrote in; translations derive from it.
+  language    String      @default("en") @db.VarChar(8)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  /// RESTRICT: deleting an account must not delete books people have read.
+  author   User            @relation(fields: [authorId], references: [id], onDelete: Restrict)
+  chapters EbookChapter[]
+  notes    EbookNote[]
+  progress EbookProgress[]
+
+  @@index([status, category, ageBand])
+  @@index([authorId])
+  @@map("ebooks")
+}
+
+enum EbookCategory {
+  tactics
+  technique
+  mindset
+  goalkeeping
+  fitness
+  set_pieces
+}
+
+enum EbookAgeBand {
+  u9_11
+  u12_14
+  u15_18
+  adult
+  all
+}
+
+enum EbookStatus {
+  draft
+  published
+  archived
+}
+
+model EbookChapter {
+  id        Int     @id @default(autoincrement())
+  ebookId   Int     @map("ebook_id")
+  title     String  @db.VarChar(200)
+  sortOrder Int     @default(0) @map("sort_order")
+  /// Readable without buying. A column, not "chapter 1 is always free": an
+  /// author may want a later chapter as the sample.
+  isSample  Boolean @default(false) @map("is_sample")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  ebook  Ebook        @relation(fields: [ebookId], references: [id], onDelete: Cascade)
+  blocks EbookBlock[]
+  notes  EbookNote[]
+
+  @@index([ebookId, sortOrder])
+  @@map("ebook_chapters")
+}
+
+model EbookBlock {
+  id        Int            @id @default(autoincrement())
+  chapterId Int            @map("chapter_id")
+  kind      EbookBlockKind
+  sortOrder Int            @default(0) @map("sort_order")
+  /// Shape depends on `kind`. JSON rather than fifteen nullable columns — a
+  /// quiz's answers and a board's id have nothing in common.
+  data      Json
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  chapter EbookChapter @relation(fields: [chapterId], references: [id], onDelete: Cascade)
+  notes   EbookNote[]
+
+  @@index([chapterId, sortOrder])
+  @@map("ebook_blocks")
+}
+
+enum EbookBlockKind {
+  text
+  board
+  /// Two boards side by side — "9v9 becomes 11v11".
+  board_compare
+  /// One board across several of its frames, as panels rather than a video.
+  board_sequence
+  /// A board with Setup and Coaching Points beside it.
+  drill
+  character
+  your_turn
+  quiz
+  image
+  quote
+}
+
+/// A reader's own highlight or note.
+///
+/// Private by default and never surfaced to the author — anything else and
+/// people stop writing honestly. Survives a refund or an unpublish: their own
+/// words are not licensed content.
+model EbookNote {
+  id        Int     @id @default(autoincrement())
+  userId    Int     @map("user_id")
+  ebookId   Int     @map("ebook_id")
+  chapterId Int?    @map("chapter_id")
+  blockId   Int?    @map("block_id")
+  /// Capped so an export of somebody's notes can never become a back door to
+  /// the whole book.
+  quote     String? @db.VarChar(600)
+  body      String? @db.VarChar(2000)
+  colour    NoteColour @default(yellow)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user    User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ebook   Ebook         @relation(fields: [ebookId], references: [id], onDelete: Cascade)
+  /// SET NULL, so a note survives the author reordering or deleting the
+  /// passage it was attached to.
+  chapter EbookChapter? @relation(fields: [chapterId], references: [id], onDelete: SetNull)
+  block   EbookBlock?   @relation(fields: [blockId], references: [id], onDelete: SetNull)
+
+  @@index([userId, ebookId, createdAt])
+  @@map("ebook_notes")
+}
+
+enum NoteColour {
+  yellow
+  green
+  blue
+}
+
+model EbookProgress {
+  userId        Int      @map("user_id")
+  ebookId       Int      @map("ebook_id")
+  lastChapterId Int?     @map("last_chapter_id")
+  /// 0–100. Enough for "38%" and for the minimum-read rule ratings will need.
+  percent       Int      @default(0) @db.TinyInt
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ebook Ebook @relation(fields: [ebookId], references: [id], onDelete: Cascade)
+
+  @@id([userId, ebookId])
+  @@map("ebook_progress")
 }

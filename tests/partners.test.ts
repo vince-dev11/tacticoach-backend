@@ -10,6 +10,7 @@ import {
   invitePartner,
 } from '../src/modules/partners/partners.service.js'
 import { PARTNER_AGREEMENT, PARTNER_AGREEMENT_VERSION } from '../src/modules/partners/partner-agreement.js'
+import { DEFAULT_COMMISSION_RATE } from '../src/modules/partners/partners.service.js'
 import { getEntitlements } from '../src/lib/entitlements.js'
 import { activeSubscription } from './helpers.js'
 
@@ -362,5 +363,43 @@ describe('the default commission rate', () => {
       update: Record<string, unknown>
     }
     expect(args.update).not.toHaveProperty('status')
+  })
+})
+
+describe('the agreement says what the code actually pays', () => {
+  // This is the guard for the failure that nearly shipped: the rate was
+  // changed to 15% in the service, the schema and the public page, while the
+  // agreement partners are asked to SIGN still said 20%. Sending that would
+  // have been a contract promising one number against a system paying
+  // another — recoverable only by re-papering everyone who signed it.
+  //
+  // Asserted against DEFAULT_COMMISSION_RATE rather than a hardcoded string,
+  // so changing the rate fails here until the words are changed too.
+  const pct = `${Math.round(DEFAULT_COMMISSION_RATE * 100)}%`
+
+  const allText = [
+    ...PARTNER_AGREEMENT.intro,
+    ...PARTNER_AGREEMENT.sections.flatMap((s) => [...(s.body ?? []), ...(s.points ?? [])]),
+  ].join('\n')
+
+  it('quotes the current rate and no other', () => {
+    expect(allText).toContain(pct)
+    // Any other percentage in the earnings clause is a leftover.
+    const earnings = PARTNER_AGREEMENT.sections.find((s) => s.heading.startsWith('2.'))!
+    const quoted = [...(earnings.body ?? []).join(' ').matchAll(/(\d+)%/g)].map((m) => m[1])
+    expect([...new Set(quoted)]).toEqual([String(Math.round(DEFAULT_COMMISSION_RATE * 100))])
+  })
+
+  it('has worked examples that match the rate', () => {
+    // £2.99/mo at the current rate, to the penny the agreement quotes.
+    const perMonth = (2.99 * DEFAULT_COMMISSION_RATE).toFixed(2)
+    const perYear = (2.99 * 12 * DEFAULT_COMMISSION_RATE).toFixed(2)
+    expect(allText).toContain(`£${perMonth}/mo`)
+    expect(allText).toContain(`£${perYear}`)
+  })
+
+  it('carries a version, so what someone signed can always be shown', () => {
+    expect(PARTNER_AGREEMENT.version).toBe(PARTNER_AGREEMENT_VERSION)
+    expect(PARTNER_AGREEMENT_VERSION).toMatch(/^\d+\.\d+$/)
   })
 })

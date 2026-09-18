@@ -1,7 +1,10 @@
 // Referral + partner endpoints.
 //
 //   GET /api/referrals/lookup?code=…  public — "Invited by Priya" on signup
-//   GET /api/referrals/me             code, link, ladder progress, credit
+//   GET /api/referrals/me             code, link, ladder progress, credit —
+//                                     or { agreementRequired } until signed
+//   GET /api/referrals/agreement      the referral terms + version
+//   POST /api/referrals/accept        accept them — this is what opens it
 //   GET /api/referrals/partner        the partner statement (404 if not one)
 //   GET /api/referrals/partner/agreement   the agreement text + version
 //   POST /api/referrals/partner/accept     accept it — this is what activates them
@@ -9,10 +12,17 @@
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { authGuard } from '../../middleware/auth-guard.js'
+import { latinOnly } from '../../lib/latin-only.js'
 import { db } from '../../config/database.js'
 import { getReferralSummary } from './referrals.service.js'
 import { getPartnerStatement, acceptAgreement } from '../partners/partners.service.js'
 import { PARTNER_AGREEMENT } from '../partners/partner-agreement.js'
+import { REFERRAL_AGREEMENT, REFERRAL_AGREEMENT_VERSION } from './referral-agreement.js'
+import {
+  hasAccepted, recordAcceptance, getAcceptance, signatureProblem,
+  type AgreementKind,
+} from '../../lib/agreements.js'
+import { renderSignedAgreement } from '../../lib/agreement-pdf.js'
 
 /** The signed-in user's id, as every other route reads it off the JWT payload. */
 function userId(request: { user: unknown }): number {
@@ -20,6 +30,24 @@ function userId(request: { user: unknown }): number {
 }
 
 const LookupQuery = z.object({ code: z.string().min(1).max(24) })
+
+/**
+ * What signing requires. A tick box is no longer the signature.
+ *
+ * `name` is what the SIGNER types, not their account name — a club secretary
+ * signing for the club, or somebody whose account says "Vince" but who signs
+ * "Vincent Okafor". Latin-only for the same reason as every other name in the
+ * product: it has to render in a PDF.
+ */
+const SignatureSchema = z.object({
+  name: latinOnly(z.string().trim().min(2).max(160)),
+  signature: z.string().min(1).max(400_000),
+})
+
+/** Validate the drawn image and answer with something a person can act on. */
+function badSignature(signature: string): string | null {
+  return signatureProblem(signature)
+}
 
 export async function referralsRoutes(app: FastifyInstance) {
   // ---- Public ---------------------------------------------------------------
@@ -43,7 +71,88 @@ export async function referralsRoutes(app: FastifyInstance) {
   await app.register(async (scoped) => {
     scoped.addHook('onRequest', authGuard)
 
-    scoped.get('/me', async (request) => getReferralSummary(userId(request)))
+    // GET /api/referrals/me — the code, the ladders, the credit.
+    //
+    // GATED ON THE TERMS. Somebody has to agree to the rules before they start
+    // recommending us, and this endpoint is where the gate belongs rather than
+    // deeper in the service: getReferralSummary mints the referral code on
+    // first call, so returning early here means an unsigned account never gets
+    // a code at all — there is nothing to share and therefore nothing to
+    // attribute. The alternative, minting the code and hiding it in the UI,
+    // leaves a working link one devtools panel away.
+    //
+    // PARTNERS ARE EXEMPT. Their own agreement already covers referrals in far
+    // more detail, they signed it to become a partner, and asking them to
+    // accept a second, weaker set of terms for the same activity would be
+    // confusing at best and arguably contradictory.
+    scoped.get('/me', async (request) => {
+      const id = userId(request)
+      const partner = await db.partner.findUnique({
+        where: { userId: id },
+        select: { status: true },
+      })
+      const exempt = partner?.status === 'active'
+
+      if (!exempt) {
+        const signedAt = await hasAccepted(id, 'referral', REFERRAL_AGREEMENT_VERSION)
+        if (!signedAt) {
+          return {
+            agreementRequired: true as const,
+            agreement: REFERRAL_AGREEMENT,
+          }
+        }
+      }
+      return { agreementRequired: false as const, ...(await getReferralSummary(id)) }
+    })
+
+    // The exact words, served from the API so that what somebody reads and the
+    // version recorded against them come from the same place.
+    scoped.get('/agreement', async () => REFERRAL_AGREEMENT)
+
+    // POST /api/referrals/accept — the click that opens the programme.
+    scoped.post('/accept', async (request, reply) => {
+      const id = userId(request)
+      const input = SignatureSchema.parse(request.body)
+      const problem = badSignature(input.signature)
+      if (problem) {
+        return reply.status(422).send({
+          statusCode: 422, error: 'Unprocessable Entity', message: problem,
+        })
+      }
+      // request.ip is only trustworthy behind a correctly configured proxy; it
+      // is evidence of what we recorded, not proof of origin, and the terms
+      // describe it that way.
+      await recordAcceptance(id, 'referral', REFERRAL_AGREEMENT_VERSION, request.ip ?? null, input)
+      return { agreementRequired: false as const, ...(await getReferralSummary(id)) }
+    })
+
+    // GET /api/referrals/agreement/:kind/pdf — the signed copy.
+    //
+    // Rendered ON DEMAND from the stored record rather than saved as a file at
+    // signing time. A contract somebody can only download in the ten seconds
+    // after they sign is not much of a contract; this one can be produced
+    // again in two years, from the same record that proves it.
+    scoped.get('/agreement/:kind/pdf', async (request, reply) => {
+      const kind = (request.params as { kind: string }).kind as AgreementKind
+      if (kind !== 'referral' && kind !== 'partner') {
+        return reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'Unknown agreement' })
+      }
+      const record = await getAcceptance(userId(request), kind)
+      if (!record) {
+        return reply.status(404).send({
+          statusCode: 404, error: 'Not Found', message: 'Nothing signed on this account yet',
+        })
+      }
+      const doc = kind === 'partner' ? PARTNER_AGREEMENT : REFERRAL_AGREEMENT
+      const pdf = await renderSignedAgreement(doc, record)
+      return reply
+        .header('Content-Type', 'application/pdf')
+        .header(
+          'Content-Disposition',
+          `attachment; filename="TactiCoach-${kind}-agreement.pdf"`,
+        )
+        .send(pdf)
+    })
 
     scoped.get('/partner', async (request, reply) => {
       const statement = await getPartnerStatement(userId(request))
@@ -58,6 +167,13 @@ export async function referralsRoutes(app: FastifyInstance) {
 
     // POST /api/referrals/partner/accept — the click that activates them.
     scoped.post('/partner/accept', async (request, reply) => {
+      const input = SignatureSchema.parse(request.body)
+      const problem = badSignature(input.signature)
+      if (problem) {
+        return reply.status(422).send({
+          statusCode: 422, error: 'Unprocessable Entity', message: problem,
+        })
+      }
       // Behind a proxy, request.ip is only trustworthy if trustProxy is set; it
       // is evidence of what we recorded, not proof of origin, and is treated
       // that way in the agreement.
@@ -69,6 +185,13 @@ export async function referralsRoutes(app: FastifyInstance) {
           message: 'There is no open partner invitation on this account',
         })
       }
+      // Also recorded in agreement_acceptances, which is where the name and
+      // the signature live. The `partners` row keeps its own signed-at and
+      // version as before — untouched rather than migrated, because moving
+      // live commercial records is not something to bundle into a feature.
+      await recordAcceptance(
+        userId(request), 'partner', PARTNER_AGREEMENT.version, request.ip ?? null, input,
+      )
       return getPartnerStatement(userId(request))
     })
   })

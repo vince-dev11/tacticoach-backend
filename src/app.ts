@@ -30,6 +30,7 @@ import { coachPageRoutes } from './modules/coach-page/coach-page.routes.js'
 import { feedbackRoutes } from './modules/feedback/feedback.routes.js'
 import { referralsRoutes } from './modules/referrals/referrals.routes.js'
 import { plansRoutes } from './modules/plans/plans.routes.js'
+import { ebooksRoutes } from './modules/ebooks/ebooks.routes.js'
 import { playerLockdown } from './middleware/player-guard.js'
 
 export async function buildApp(): Promise<FastifyInstance> {
@@ -133,6 +134,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(plansRoutes, { prefix: '/api/plans' })
   await app.register(coachPageRoutes, { prefix: '/api/coach' })
   await app.register(feedbackRoutes, { prefix: '/api/feedback' })
+  await app.register(ebooksRoutes, { prefix: '/api/ebooks' })
 
   // ---- Local uploads (dev fallback when S3 is unconfigured) -----------------
 

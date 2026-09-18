@@ -20,6 +20,16 @@ import {
 import { isMailConfigured } from '../../config/mailer.js'
 import { createAccountSetupToken, createPasswordResetTokenFor } from '../auth/auth.service.js'
 import { latinOnly } from '../../lib/latin-only.js'
+import { getAcceptance } from '../../lib/agreements.js'
+import { renderSignedAgreement } from '../../lib/agreement-pdf.js'
+import { PARTNER_AGREEMENT } from '../partners/partner-agreement.js'
+import { REFERRAL_AGREEMENT } from '../referrals/referral-agreement.js'
+import {
+  adminList as adminListEbooks, adminGet as adminGetEbook, uniqueSlug as uniqueEbookSlug,
+  adminBoardList, adminBoard,
+  ebookDb, chapterDb, blockDb,
+  CATEGORIES as EBOOK_CATEGORIES, AGE_BANDS as EBOOK_AGE_BANDS, BLOCK_KINDS as EBOOK_BLOCK_KINDS,
+} from '../ebooks/ebooks.service.js'
 import { invitePartner, endPartner } from '../partners/partners.service.js'
 import { sendPartnerInviteEmail } from '../../lib/emails.js'
 
@@ -878,6 +888,201 @@ export async function adminRoutes(app: FastifyInstance) {
     return count > 0
       ? reply.status(204).send()
       : reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'Lead not found' })
+  })
+
+  // ---- Ebooks (authoring) ----------------------------------------------------
+  //
+  // Phase 1: WE write the books, through here, and give them away free. No
+  // author editor for coaches yet — that is deliberate, because the whole
+  // marketplace rests on an unproven assumption (that coaches will write), and
+  // this is the cheap way to find out whether players read at all first.
+
+  const Cover = z.object({
+    template: z.enum(['ball', 'goal', 'boot', 'pitch', 'stand', 'gloves', 'corner', 'kit']),
+    bg: z.string().regex(/^#[0-9a-fA-F]{6}$/),
+    art: z.string().regex(/^#[0-9a-fA-F]{6}$/),
+    font: z.enum(['sans', 'serif', 'cond', 'mono']),
+    weight: z.enum(['300', '500', '700', '900']),
+    style: z.enum(['normal', 'italic', 'upper']),
+    size: z.string().max(6),
+  })
+
+  const BookInput = z.object({
+    title: latinOnly(z.string().trim().min(1).max(160)),
+    subtitle: latinOnly(z.string().trim().max(200)).optional().nullable(),
+    blurb: z.string().max(4000).optional().nullable(),
+    category: z.enum(EBOOK_CATEGORIES),
+    ageBand: z.enum(EBOOK_AGE_BANDS),
+    cover: Cover,
+    status: z.enum(['draft', 'published', 'archived']).default('draft'),
+    // Pence. Free is 0 and is the only value Phase 1 uses, but the column and
+    // the validation exist so that adding payment later is not a migration.
+    pricePence: z.number().int().min(0).max(100_000).default(0),
+    language: z.string().min(2).max(8).default('en'),
+  })
+
+  app.get('/ebooks', async (_request, reply) => reply.send(await adminListEbooks()))
+
+  // The author's own saved boards, for the picker in the book editor.
+  //
+  // Registered BEFORE '/ebooks/:id' on purpose: Fastify's router would not
+  // actually confuse the two (a static segment beats a parameter), but keeping
+  // them adjacent makes it obvious that "boards" is not a book id.
+  app.get('/ebooks/boards', async (request, reply) =>
+    reply.send(await adminBoardList((request.user as { sub: number }).sub)))
+
+  app.get('/ebooks/boards/:id', async (request, reply) => {
+    const board = await adminBoard(
+      (request.user as { sub: number }).sub,
+      Number((request.params as { id: string }).id),
+    )
+    return board
+      ? reply.send(board)
+      : reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'Board not found' })
+  })
+
+  app.get('/ebooks/:id', async (request, reply) => {
+    const book = await adminGetEbook(Number((request.params as { id: string }).id))
+    return book
+      ? reply.send(book)
+      : reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'Book not found' })
+  })
+
+  app.post('/ebooks', async (request, reply) => {
+    const input = BookInput.parse(request.body)
+    const book = await ebookDb().create({
+      data: {
+        ...input,
+        subtitle: input.subtitle || null,
+        blurb: input.blurb || null,
+        slug: await uniqueEbookSlug(input.title),
+        authorId: (request.user as { sub: number }).sub,
+        publishedAt: input.status === 'published' ? new Date() : null,
+      },
+    })
+    return reply.status(201).send(book)
+  })
+
+  app.patch('/ebooks/:id', async (request, reply) => {
+    const id = Number((request.params as { id: string }).id)
+    const input = BookInput.partial().parse(request.body)
+    const existing = await adminGetEbook(id)
+    if (!existing) {
+      return reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'Book not found' })
+    }
+    const book = await ebookDb().update({
+      where: { id },
+      data: {
+        ...input,
+        ...(input.title ? { slug: await uniqueEbookSlug(input.title, id) } : {}),
+        // Stamped on FIRST publish and never moved. Re-publishing an edited
+        // book must not make it look new in the shop.
+        ...(input.status === 'published' && !existing.publishedAt ? { publishedAt: new Date() } : {}),
+      },
+    })
+    return reply.send(book)
+  })
+
+  // PUT /admin/ebooks/:id/chapters — the whole chapter tree, replaced.
+  //
+  // One call rather than per-block CRUD. An editor holds the entire book in
+  // memory and saves it; incremental block endpoints would mean reconciling
+  // order, insertions and deletions across a dozen requests, each able to fail
+  // separately and leave a half-saved chapter on screen.
+  app.put('/ebooks/:id/chapters', async (request, reply) => {
+    const id = Number((request.params as { id: string }).id)
+    const { chapters } = z
+      .object({
+        chapters: z.array(z.object({
+          title: latinOnly(z.string().trim().min(1).max(200)),
+          isSample: z.boolean().default(false),
+          blocks: z.array(z.object({
+            kind: z.enum(EBOOK_BLOCK_KINDS),
+            data: z.record(z.string(), z.unknown()),
+          })).max(200),
+        })).max(60),
+      })
+      .parse(request.body)
+
+    const existing = await adminGetEbook(id)
+    if (!existing) {
+      return reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'Book not found' })
+    }
+
+    // Replace wholesale. Notes reference chapters and blocks with ON DELETE
+    // SET NULL, so a reader's note survives its anchor being rewritten — see
+    // migration 28.
+    await db.$transaction(async () => {
+      for (const ch of existing.chapters ?? []) {
+        await chapterDb().delete({ where: { id: ch.id } })
+      }
+      for (const [ci, ch] of chapters.entries()) {
+        const made = await chapterDb().create({
+          data: { ebookId: id, title: ch.title, sortOrder: ci, isSample: ch.isSample },
+        })
+        for (const [bi, b] of ch.blocks.entries()) {
+          await blockDb().create({
+            data: { chapterId: made.id, kind: b.kind, sortOrder: bi, data: b.data as object },
+          })
+        }
+      }
+    })
+    return reply.send(await adminGetEbook(id))
+  })
+
+  // ---- Signed agreements ----------------------------------------------------
+
+  // GET /admin/users/:id/agreements — what this account has signed.
+  app.get('/users/:id/agreements', async (request, reply) => {
+    const id = Number((request.params as { id: string }).id)
+    const rows = await Promise.all(
+      (['referral', 'partner'] as const).map(async (kind) => {
+        const rec = await getAcceptance(id, kind)
+        return rec
+          ? {
+              kind,
+              version: rec.version,
+              signerName: rec.signerName,
+              signedAt: rec.signedAt,
+              ip: rec.ip,
+              // Never the image itself. This list is rendered in a table;
+              // shipping a few hundred kilobytes of base64 per row to draw a
+              // date is wasteful, and the PDF is where the signature belongs.
+              hasSignature: !!rec.signature,
+            }
+          : null
+      }),
+    )
+    return reply.send(rows.filter(Boolean))
+  })
+
+  // GET /admin/users/:id/agreements/:kind/pdf — their signed copy.
+  //
+  // The same renderer the signer's own download uses, from the same record —
+  // so what an admin pulls for a dispute is byte-for-byte what the other side
+  // has, rather than a second implementation that might disagree.
+  app.get('/users/:id/agreements/:kind/pdf', async (request, reply) => {
+    const { id, kind } = request.params as { id: string; kind: string }
+    if (kind !== 'referral' && kind !== 'partner') {
+      return reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'Unknown agreement' })
+    }
+    const record = await getAcceptance(Number(id), kind)
+    if (!record) {
+      return reply.status(404).send({
+        statusCode: 404, error: 'Not Found', message: 'Nothing signed on this account',
+      })
+    }
+    const user = await db.user.findUnique({
+      where: { id: Number(id) },
+      select: { name: true, surname: true },
+    })
+    const doc = kind === 'partner' ? PARTNER_AGREEMENT : REFERRAL_AGREEMENT
+    const pdf = await renderSignedAgreement(doc, record)
+    const who = [user?.name, user?.surname].filter(Boolean).join('-') || id
+    return reply
+      .header('Content-Type', 'application/pdf')
+      .header('Content-Disposition', `attachment; filename="${who}-${kind}-agreement.pdf"`)
+      .send(pdf)
   })
 
   // ---- Partner programme ----------------------------------------------------

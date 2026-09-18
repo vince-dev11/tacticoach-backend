@@ -55,6 +55,12 @@ const ALLOWED_PREFIXES: readonly string[] = [
   '/api/auth/',
   // Their entire product.
   '/api/feedback/',
+  // Ebooks. Players are the AUDIENCE for these — the whole point of the
+  // feature is a teenager reading something their coach recommended, so a
+  // deny-by-default list that forgot this would have shipped a shop only
+  // coaches could see. Reading is safe to open: every route under here is
+  // read-only for a player, and none of them returns more than one chapter.
+  '/api/ebooks/',
   // The "watch the move" link in a note, and the drill sheet behind it. Public
   // to anyone with the id — a player reaching it is not a privilege escalation.
   '/api/share/',

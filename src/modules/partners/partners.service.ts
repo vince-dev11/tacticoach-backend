@@ -17,6 +17,25 @@ export { PARTNER_PLAN_SLUG } from '../../lib/entitlements.js'
 /** Commission is earned for this long after each customer's first payment. */
 export const COMMISSION_WINDOW_MONTHS = 12
 
+/**
+ * What a new partner earns, as a FRACTION. 0.15 is 15%.
+ *
+ * Never a percent: the admin route caps the rate at 1, so `15` meaning 15%
+ * would be refused rather than committing us to fifteen times the revenue.
+ *
+ * Changed from 0.20 on 2026-09-18. It applies to NEW invitations only — the
+ * rate is stored per partner, and anyone already invited keeps the number
+ * their signed agreement states. Never back-fill it; §7 of the agreement
+ * commits us to 30 days' notice and to changes applying only forwards.
+ *
+ * THREE THINGS MUST AGREE, or we advertise one number and pay another:
+ *   1. this constant (and the DB column default, migration 25)
+ *   2. the words in partner-agreement.ts, which is what people sign
+ *   3. the public /referrals page
+ * A test in tests/partners.test.ts fails the build if 1 and 2 drift apart.
+ */
+export const DEFAULT_COMMISSION_RATE = 0.15
+
 export function isPartnerActive(p: { status: string } | null | undefined): boolean {
   return p?.status === 'active'
 }
@@ -35,16 +54,7 @@ export async function invitePartner(params: {
   companyName?: string | null
   notes?: string | null
 }): Promise<{ code: string }> {
-  // 0.15 = 15%. A FRACTION, never a percent — the route caps it at 1 so that
-  // typing "15" meaning 15% cannot commit us to fifteen times the revenue.
-  //
-  // Changed from 0.20 on 2026-09-17. This is the default for NEW invitations
-  // only: the rate is stored per partner, and everyone already invited keeps
-  // the number their agreement states. Do not back-fill it — that would be
-  // rewriting a signed commercial term after the fact.
-  //
-  // The public /referrals page quotes this figure. Change both together.
-  const { userId, commissionRate = 0.15, companyName = null, notes = null } = params
+  const { userId, commissionRate = DEFAULT_COMMISSION_RATE, companyName = null, notes = null } = params
   const code = await ensureReferralCode(userId)
 
   await db.partner.upsert({
