@@ -48,6 +48,8 @@ const COACH_ROUTES: [string, string, string][] = [
   ['GET', '/api/coach/me/branding', 'the coach public page'],
   ['GET', '/api/users/me/squad', 'a coach squad roster'],
   ['GET', '/api/users/me/squads', 'multiple squads'],
+  ['GET', '/api/my-books', 'writing a book'],
+  ['POST', '/api/my-books', 'starting a book'],
   ['GET', '/api/admin/blog', 'the admin area'],
   ['GET', '/api/referrals/lookup', 'the referral programme'],
   ['POST', '/api/membership/checkout', 'buying a coach plan'],

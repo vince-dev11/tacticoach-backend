@@ -187,7 +187,12 @@ describe('authoring', () => {
     asOwner()
     mock.ebook.findMany.mockResolvedValue([] as never)
     await get('/api/admin/ebooks')
-    expect(mock.ebook.findMany.mock.calls[0][0]!.where).toBeUndefined()
+    // The where clause exists now (adminList also filters by author and by
+    // status for the review queue); what matters is that the OWNER's list
+    // narrows on neither. A `status` here would hide every draft.
+    const where = mock.ebook.findMany.mock.calls[0][0]!.where
+    expect(where.status).toBeUndefined()
+    expect(where.authorId).toBeUndefined()
   })
 
   it('selects publishedAt, so re-publishing an edit cannot restamp it', async () => {

@@ -31,6 +31,7 @@ import { feedbackRoutes } from './modules/feedback/feedback.routes.js'
 import { referralsRoutes } from './modules/referrals/referrals.routes.js'
 import { plansRoutes } from './modules/plans/plans.routes.js'
 import { ebooksRoutes } from './modules/ebooks/ebooks.routes.js'
+import { authoringRoutes } from './modules/ebooks/authoring.routes.js'
 import { playerLockdown } from './middleware/player-guard.js'
 
 export async function buildApp(): Promise<FastifyInstance> {
@@ -135,6 +136,10 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(coachPageRoutes, { prefix: '/api/coach' })
   await app.register(feedbackRoutes, { prefix: '/api/feedback' })
   await app.register(ebooksRoutes, { prefix: '/api/ebooks' })
+  // Writing books. Separate from /api/ebooks (which is the shop and the
+  // reader) because every route here is scoped to the signed-in author and
+  // gated on the plan — see authoring.routes.
+  await app.register(authoringRoutes, { prefix: '/api/my-books' })
 
   // ---- Local uploads (dev fallback when S3 is unconfigured) -----------------
 

@@ -1163,7 +1163,14 @@ model Ebook {
   cover Json
 
   status      EbookStatus @default(draft)
+  /// Stamped on first APPROVAL and never moved — a book rejected twice and
+  /// approved on the third pass must not look three months old in the shop.
   publishedAt DateTime?   @map("published_at")
+  /// When the author last submitted it for review.
+  submittedAt DateTime?   @map("submitted_at")
+  /// Why it was sent back. Shown to the author; a rejection without one is
+  /// the same as silence, and they just resubmit the identical book.
+  reviewNote  String?     @map("review_note") @db.VarChar(500)
   /// Pence. 0 = free. Never a float.
   pricePence  Int         @default(0) @map("price_pence")
   /// The language the author actually wrote in; translations derive from it.
@@ -1180,6 +1187,8 @@ model Ebook {
 
   @@index([status, category, ageBand])
   @@index([authorId])
+  /// The author's own list: "my books, newest first", by status.
+  @@index([authorId, status])
   @@map("ebooks")
 }
 
@@ -1202,7 +1211,11 @@ enum EbookAgeBand {
 
 enum EbookStatus {
   draft
+  /// Submitted by the author, waiting for us. Only an owner moves it on.
+  in_review
   published
+  /// Sent back with a reason (`reviewNote`). The author can edit and resubmit.
+  rejected
   archived
 }
 

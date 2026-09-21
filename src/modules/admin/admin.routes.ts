@@ -27,9 +27,14 @@ import { PARTNER_AGREEMENT } from '../partners/partner-agreement.js'
 import { REFERRAL_AGREEMENT } from '../referrals/referral-agreement.js'
 import {
   adminList as adminListEbooks, adminGet as adminGetEbook, uniqueSlug as uniqueEbookSlug,
+  ebookDelegate,
   ebookDb, chapterDb, blockDb,
   CATEGORIES as EBOOK_CATEGORIES, AGE_BANDS as EBOOK_AGE_BANDS, BLOCK_KINDS as EBOOK_BLOCK_KINDS,
 } from '../ebooks/ebooks.service.js'
+// One state machine for both callers — the author's PATCH and this review
+// action. See ebook-review.ts for why they must not each have their own.
+import { sentOnly } from '../../lib/sent-only.js'
+import { transition as transitionEbook, type EbookStatus as EbookStatusValue } from '../ebooks/ebook-review.js'
 import { invitePartner, endPartner } from '../partners/partners.service.js'
 import { sendPartnerInviteEmail } from '../../lib/emails.js'
 
@@ -921,7 +926,50 @@ export async function adminRoutes(app: FastifyInstance) {
     language: z.string().min(2).max(8).default('en'),
   })
 
+  // The owner sees EVERY author's books. `adminList()` with no argument is
+  // now the explicit way to say that — it used to be the only way it worked.
   app.get('/ebooks', async (_request, reply) => reply.send(await adminListEbooks()))
+
+  // PATCH /admin/ebooks/:id/review { status, note } — approve, reject or
+  // unpublish. The decisions only an owner can make; the author's own moves
+  // go through /api/my-books. One state machine serves both (ebook-review).
+  app.patch('/ebooks/:id/review', async (request, reply) => {
+    const id = Number((request.params as { id: string }).id)
+    const { status, note } = z
+      .object({
+        status: z.enum(['published', 'rejected', 'draft', 'archived']),
+        note: z.string().trim().max(500).optional(),
+      })
+      .parse(request.body)
+
+    const existing = await adminGetEbook(id)
+    if (!existing) {
+      return reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'Book not found' })
+    }
+
+    const move = transitionEbook({
+      from: existing.status as EbookStatusValue,
+      to: status,
+      isOwner: true,
+      firstPublishAt: existing.publishedAt ?? null,
+      note,
+      // An owner reviewing is not bound by the AUTHOR's plan: the question
+      // "may this be published" was answered when the author submitted it.
+      canPublish: true,
+      hasContent: true,
+    })
+    if (!move.ok) {
+      return reply.status(422).send({ statusCode: 422, error: 'Unprocessable Entity', message: move.reason })
+    }
+
+    const book = await ebookDelegate().update({ where: { id }, data: move.patch ?? {} })
+    return reply.send({ id: book.id, status: book.status, reviewNote: book.reviewNote ?? null })
+  })
+
+  // GET /admin/ebooks/review — what is waiting on us. Static segment, so it
+  // is matched before /ebooks/:id.
+  app.get('/ebooks/review', async (_request, reply) =>
+    reply.send(await adminListEbooks(undefined, { status: 'in_review', queue: true })))
 
   app.get('/ebooks/:id', async (request, reply) => {
     const book = await adminGetEbook(Number((request.params as { id: string }).id))
@@ -947,7 +995,11 @@ export async function adminRoutes(app: FastifyInstance) {
 
   app.patch('/ebooks/:id', async (request, reply) => {
     const id = Number((request.params as { id: string }).id)
-    const input = BookInput.partial().parse(request.body)
+    // Only the fields the request carried. Without this, the schema's own
+    // defaults ride along on every PATCH: a request that edits the blurb would
+    // also set status back to 'draft' — quietly pulling a published book out
+    // of the shop — and reset language and price. See sent-only.ts.
+    const input = sentOnly(BookInput.partial().parse(request.body), request.body)
     const existing = await adminGetEbook(id)
     if (!existing) {
       return reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'Book not found' })

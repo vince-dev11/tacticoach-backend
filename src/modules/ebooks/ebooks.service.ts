@@ -43,6 +43,8 @@ function delegate<T>(name: string): T {
 interface EbookRow {
   id: number
   authorId: number
+  submittedAt?: Date | null
+  reviewNote?: string | null
   title: string
   subtitle: string | null
   slug: string
@@ -83,12 +85,13 @@ const ebookDb = () =>
     findFirst(a?: unknown): Promise<EbookRow | null>
     create(a: unknown): Promise<EbookRow>
     update(a: unknown): Promise<EbookRow>
+    delete(a: unknown): Promise<EbookRow>
     count(a?: unknown): Promise<number>
   }>('ebook')
 const chapterDb = () =>
   delegate<{
     findFirst(a?: unknown): Promise<ChapterRow | null>
-    findMany(a?: unknown): Promise<ChapterRow[]>
+    findMany(a?: unknown): Promise<(ChapterRow & { _count?: { blocks: number } })[]>
     create(a: unknown): Promise<ChapterRow>
     update(a: unknown): Promise<ChapterRow>
     delete(a: unknown): Promise<ChapterRow>
@@ -310,13 +313,30 @@ export async function uniqueSlug(title: string, excludeId?: number): Promise<str
  * `{name, surname}` where the component wanted a line of text, and a book that
  * looked fine in the shop and broken in the screen used to build it.
  */
-export async function adminList() {
+/**
+ * The authoring list.
+ *
+ * `authorId` is not optional by accident: pass it for a COACH (their own
+ * books) and omit it only for the owner's review queue. It used to take no
+ * argument at all and return every book in the table — safe while a single
+ * owner was the only author, and a cross-author leak the moment coaches could
+ * reach it. Every caller now has to say whose books it wants.
+ */
+export async function adminList(authorId?: number, opts?: { status?: string; queue?: boolean }) {
   const books = await ebookDb().findMany({
-    orderBy: { updatedAt: 'desc' },
+    where: {
+      ...(authorId === undefined ? {} : { authorId }),
+      ...(opts?.status ? { status: opts.status } : {}),
+    },
+    // A review QUEUE is oldest-waiting-first: whoever has been waiting longest
+    // is served first. Every other listing is most-recently-touched first,
+    // which is what an author wants when they come back to finish a chapter.
+    orderBy: opts?.queue ? { submittedAt: 'asc' } : { updatedAt: 'desc' },
     take: 200,
     select: {
       id: true, title: true, subtitle: true, slug: true, status: true, category: true,
       ageBand: true, cover: true, pricePence: true, publishedAt: true, updatedAt: true,
+      submittedAt: true, reviewNote: true,
       author: { select: { name: true, surname: true, clubLogoKey: true } },
       _count: { select: { chapters: true } },
     },
@@ -333,6 +353,8 @@ export async function adminList() {
     cover: b.cover,
     pricePence: b.pricePence,
     publishedAt: b.publishedAt,
+    submittedAt: b.submittedAt,
+    reviewNote: b.reviewNote,
     updatedAt: b.updatedAt,
     chapters: b._count?.chapters ?? 0,
     author: authorName(b.author),
@@ -342,13 +364,20 @@ export async function adminList() {
   }))
 }
 
-/** One book, whole — the only place blocks are returned outside the reader. */
-export async function adminGet(id: number) {
+/**
+ * One book, whole — the only place blocks are returned outside the reader.
+ *
+ * `authorId` scopes it to that author. Omit it ONLY for the owner. Without
+ * the filter this opened any book by guessing an id, which is a hole that
+ * `requireOwner` was hiding rather than closing.
+ */
+export async function adminGet(id: number, authorId?: number) {
   const book = await ebookDb().findFirst({
-    where: { id },
+    where: authorId === undefined ? { id } : { id, authorId },
     select: {
       id: true, title: true, subtitle: true, slug: true, blurb: true, category: true,
       ageBand: true, cover: true, status: true, pricePence: true, language: true,
+      authorId: true, submittedAt: true, reviewNote: true,
       // Selected because PATCH /admin/ebooks/:id reads it to decide whether
       // this is the FIRST publish. Omitted, it arrived undefined and the route
       // restamped publishedAt on every save — making an edited book look new in
@@ -375,3 +404,74 @@ export async function adminGet(id: number) {
 }
 
 export { ebookDb, chapterDb, blockDb }
+
+// ---- Authoring, shared by the coach routes and the owner's ------------------
+
+export interface ChapterInput {
+  title: string
+  isSample: boolean
+  blocks: { kind: string; data: Record<string, unknown> }[]
+}
+
+/**
+ * Replace a book's whole chapter tree.
+ *
+ * Wholesale rather than per-block CRUD: an editor holds the entire book in
+ * memory and saves it, and incremental endpoints would mean reconciling order,
+ * insertions and deletions across a dozen requests, each able to fail on its
+ * own and leave half a chapter on screen.
+ *
+ * Reader notes reference chapters and blocks with ON DELETE SET NULL, so a
+ * note survives its anchor being rewritten (migration 28).
+ *
+ * Lifted out of the admin route so the coach route runs exactly the same code.
+ * Two copies of a destructive transaction is two chances to get the delete
+ * order wrong.
+ */
+export async function replaceChapters(ebookId: number, chapters: ChapterInput[]): Promise<void> {
+  const existing = await chapterDb().findMany({ where: { ebookId }, select: { id: true } })
+  await db.$transaction(async () => {
+    for (const ch of existing) {
+      await chapterDb().delete({ where: { id: ch.id } })
+    }
+    for (const [ci, ch] of chapters.entries()) {
+      const made = await chapterDb().create({
+        data: { ebookId, title: ch.title, sortOrder: ci, isSample: ch.isSample },
+      })
+      for (const [bi, b] of ch.blocks.entries()) {
+        await blockDb().create({
+          data: { chapterId: made.id, kind: b.kind, sortOrder: bi, data: b.data as object },
+        })
+      }
+    }
+  })
+}
+
+/**
+ * Does this book have anything in it?
+ *
+ * The gate on submitting for review. An empty book wastes a reviewer's time
+ * and embarrasses its author — and "at least one chapter" is not enough,
+ * because a chapter with no blocks is a title and nothing else.
+ */
+export async function hasContent(ebookId: number): Promise<boolean> {
+  const chapters = await chapterDb().findMany({
+    where: { ebookId },
+    select: { id: true, _count: { select: { blocks: true } } },
+  })
+  return chapters.some((c) => (c._count?.blocks ?? 0) > 0)
+}
+
+/**
+ * The ebook delegate, for routes that write.
+ *
+ * Exported rather than re-declared in the routes: the TEMPORARY shim above is
+ * one lie about the generated client, and two copies of it would drift the
+ * day `prisma generate` finally runs.
+ */
+export const ebookDelegate = ebookDb
+
+/** Delete a book. Only ever called after an ownership check. */
+export async function removeBook(id: number): Promise<void> {
+  await ebookDb().delete({ where: { id } })
+}
