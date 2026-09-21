@@ -9,6 +9,7 @@ import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { authGuard } from '../../middleware/auth-guard.js'
 import { requireEditorAccess } from '../../middleware/entitlement-guard.js'
+import { assertQuota } from '../../lib/plan-quota.js'
 import { db } from '../../config/database.js'
 import { SESSION_TYPES, MIN_PARTS, MAX_PARTS, RPE_MIN, RPE_MAX } from '../../lib/planner.js'
 import { latinOnly } from '../../lib/latin-only.js'
@@ -159,6 +160,7 @@ export async function sessionsRoutes(app: FastifyInstance) {
   app.post('/', { preHandler: requireEditorAccess }, async (request, reply) => {
     const userId = (request.user as any).sub as number
     const input = CreateSessionSchema.parse(request.body)
+    await assertQuota(userId, 'sessions')
     const session = await db.trainingSession.create({
       data: {
         userId,

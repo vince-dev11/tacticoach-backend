@@ -1,4 +1,5 @@
 import { db } from '../../config/database.js'
+import { isClubPlan } from '../../lib/capabilities.js'
 import { stripe } from '../../config/stripe.js'
 import { sendPurchaseEmail } from '../../lib/emails.js'
 
@@ -63,7 +64,7 @@ export async function activateSubscription(params: {
     select: { name: true, email: true, clubName: true },
   })
 
-  if (plan?.slug === 'club') {
+  if (isClubPlan(plan?.slug)) {
     await db.club.upsert({
       where: { ownerId: userId },
       update: {},

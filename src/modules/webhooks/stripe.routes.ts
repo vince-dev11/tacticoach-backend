@@ -16,7 +16,7 @@ import { env } from '../../config/env.js'
 import { stripe, stripeConfigured } from '../../config/stripe.js'
 import { activateSubscription, syncSubscriptionFromStripe } from '../membership/membership.service.js'
 import { db } from '../../config/database.js'
-import { qualifyReferral, reverseReferral } from '../referrals/referrals.service.js'
+import { qualifyPendingFor, qualifyReferral, reverseReferral } from '../referrals/referrals.service.js'
 import { recordCommission, reverseCommission } from '../partners/partners.service.js'
 
 function periodEnd(sub: Stripe.Subscription): Date | null {
@@ -116,6 +116,10 @@ export async function stripeWebhookRoutes(app: FastifyInstance) {
         const net = (invoice.amount_paid ?? 0) - tax
 
         await qualifyReferral(user.id)
+        // …and if THIS payment is the one that moved them off the free tier,
+        // settle whatever their own referrals already earned while they were
+        // on it. Harmless when they were already paying.
+        await qualifyPendingFor(user.id)
         await recordCommission({
           customerId: user.id,
           providerInvoiceId: invoice.id,

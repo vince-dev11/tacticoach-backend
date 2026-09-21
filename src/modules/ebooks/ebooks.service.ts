@@ -245,57 +245,12 @@ export async function getChapter(slug: string, chapterId: number) {
 
   const book = await ebookDb().findFirst({
     where: { id: chapter.ebookId },
-    select: { pricePence: true, title: true, slug: true, authorId: true },
+    select: { pricePence: true, title: true, slug: true },
   })
   const readable = (book?.pricePence ?? 0) === 0 || chapter.isSample
   if (!readable) return { locked: true as const, title: chapter.title }
 
-  // The boards this chapter draws, resolved in one query. Sent alongside the
-  // blocks rather than inlined into each one, so a board used twice in a
-  // chapter crosses the wire once.
-  const boards = await boardsFor(chapter.blocks ?? [], book?.authorId ?? 0)
-
-  return { locked: false as const, ...chapter, boards }
-}
-
-/** Every board id a set of blocks refers to, whatever kind of block it is. */
-export function boardIdsIn(blocks: { kind: string; data: unknown }[]): number[] {
-  const ids = new Set<number>()
-  const add = (v: unknown) => {
-    if (typeof v === 'number' && Number.isInteger(v) && v > 0) ids.add(v)
-  }
-  for (const b of blocks) {
-    const d = (b.data ?? {}) as Record<string, unknown>
-    // One key per block kind; listing them beats guessing, because a stray
-    // number in some unrelated field would otherwise become a board lookup.
-    add(d.boardId)
-    add(d.leftId)
-    add(d.rightId)
-  }
-  return [...ids]
-}
-
-/**
- * The board scenes a chapter needs, by id.
- *
- * Scoped to the book's AUTHOR, always. A book stores a board id, and an id is
- * trivially editable — without this scope, changing one number in a draft
- * would pull any coach's private board into a published book and serve it to
- * readers. Boards the author does not own simply do not come back, and the
- * reader shows a missing-board figure rather than someone else's work.
- */
-async function boardsFor(
-  blocks: { kind: string; data: unknown }[],
-  authorId: number,
-): Promise<Record<number, unknown>> {
-  const ids = boardIdsIn(blocks)
-  if (ids.length === 0 || !authorId) return {}
-
-  const rows = await db.canvasBoard.findMany({
-    where: { id: { in: ids }, userId: authorId },
-    select: { id: true, state: true, title: true },
-  })
-  return Object.fromEntries(rows.map((r) => [r.id, { state: r.state, title: r.title }]))
+  return { locked: false as const, ...chapter }
 }
 
 /** Every chapter of a book, titles only — the reader's own contents list. */
@@ -394,8 +349,6 @@ export async function adminGet(id: number) {
     select: {
       id: true, title: true, subtitle: true, slug: true, blurb: true, category: true,
       ageBand: true, cover: true, status: true, pricePence: true, language: true,
-      // Needed to scope the board lookup below to the book's own author.
-      authorId: true,
       // Selected because PATCH /admin/ebooks/:id reads it to decide whether
       // this is the FIRST publish. Omitted, it arrived undefined and the route
       // restamped publishedAt on every save — making an edited book look new in
@@ -414,37 +367,11 @@ export async function adminGet(id: number) {
     },
   })
   if (!book) return null
-  // Every board the whole book draws, so the editor's preview renders without
-  // a fetch per block. The reader gets the same map one chapter at a time.
-  const blocks = (book.chapters ?? []).flatMap((c) => c.blocks ?? [])
   return {
     ...book,
     author: authorName(book.author),
     authorLogoUrl: await authorLogo(book.author),
-    boards: await boardsFor(blocks, book.authorId),
   }
-}
-
-/** The author's own boards, for the picker. Titles only — see `adminBoard`. */
-export async function adminBoardList(userId: number) {
-  const rows = await db.canvasBoard.findMany({
-    where: { userId },
-    orderBy: { updatedAt: 'desc' },
-    take: 200,
-    // Deliberately NOT `state`. A coach with 200 saved boards would otherwise
-    // be sending megabytes of scene JSON to draw a list of names; the picker
-    // asks for the ones it is about to show, one at a time.
-    select: { id: true, title: true, hasAnimation: true, updatedAt: true, pitchKey: true },
-  })
-  return rows
-}
-
-/** One board's scene, for a thumbnail or a block. Scoped to its owner. */
-export async function adminBoard(userId: number, id: number) {
-  return db.canvasBoard.findFirst({
-    where: { id, userId },
-    select: { id: true, title: true, state: true },
-  })
 }
 
 export { ebookDb, chapterDb, blockDb }

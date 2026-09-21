@@ -12,6 +12,7 @@ import {
 import { PARTNER_AGREEMENT, PARTNER_AGREEMENT_VERSION } from '../src/modules/partners/partner-agreement.js'
 import { DEFAULT_COMMISSION_RATE } from '../src/modules/partners/partners.service.js'
 import { getEntitlements } from '../src/lib/entitlements.js'
+import { can } from '../src/lib/capabilities.js'
 import { activeSubscription } from './helpers.js'
 
 const mock = dbMock as unknown as Record<string, Record<string, ReturnType<typeof vi.fn>>>
@@ -291,30 +292,40 @@ describe('a partner’s own access', () => {
     expect(ent.isClubOwner).toBe(true)
   })
 
-  it('gives nothing to an invited partner who has not accepted', async () => {
+  // What "no access" means changed when the free tier landed: a partner who
+  // is not active loses the COMPED PRO ACCOUNT and lands on free, like any
+  // other coach with no plan. That is the right outcome — they are still a
+  // person who coaches, and nothing about ending a commercial arrangement
+  // should delete their boards.
+  it('gives no Pro to an invited partner who has not accepted', async () => {
     noSubscription()
     mock.partner.findUnique.mockResolvedValue({ status: 'invited' } as never)
 
     const ent = await getEntitlements(1)
-    expect(ent.editorAccess).toBe(false)
     expect(ent.viaPartner).toBe(false)
+    expect(ent.plan?.slug).toBe('free')
+    expect(can(ent, 'own_branding')).toBe(false)
   })
 
-  it('closes the editor once the partnership ends', async () => {
+  it('takes Pro back once the partnership ends', async () => {
     noSubscription()
     mock.partner.findUnique.mockResolvedValue({ status: 'ended' } as never)
 
     const ent = await getEntitlements(1)
-    expect(ent.editorAccess).toBe(false)
     expect(ent.viaPartner).toBe(false)
+    expect(ent.plan?.slug).toBe('free')
+    // The comped account is gone; their own work is not.
+    expect(can(ent, 'ai')).toBe(false)
+    expect(can(ent, 'editor')).toBe(true)
   })
 
-  it('closes it while suspended', async () => {
+  it('takes it back while suspended', async () => {
     noSubscription()
     mock.partner.findUnique.mockResolvedValue({ status: 'suspended' } as never)
 
     const ent = await getEntitlements(1)
-    expect(ent.editorAccess).toBe(false)
+    expect(ent.viaPartner).toBe(false)
+    expect(can(ent, 'own_branding')).toBe(false)
   })
 })
 

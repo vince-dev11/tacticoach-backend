@@ -8,6 +8,7 @@ import { dbMock } from './setup.js'
 import {
   attachReferral,
   qualifyReferral,
+  qualifyPendingFor,
   reverseReferral,
   syncRewards,
   ensureReferralCode,
@@ -34,12 +35,28 @@ function onPlan(slug: 'pro' | 'club') {
   mock.userSubscription.findUnique.mockResolvedValue({ plan: { slug } } as never)
 }
 
-/** The referred customer's plan, then the referrer's (the order they're asked). */
-function onPlans(referred: 'pro' | 'club', referrer: 'pro' | 'club') {
-  mock.userSubscription.findUnique
-    .mockResolvedValueOnce({ plan: { slug: referred } } as never)
-    .mockResolvedValueOnce({ plan: { slug: referrer } } as never)
+/**
+ * The referred customer's plan and the referrer's, keyed BY USER ID.
+ *
+ * This used to mock two sequential calls by position — referred first, then
+ * referrer. That encoded the order the service happens to ask in, so adding a
+ * lookup anywhere above them silently shifted every answer by one and three
+ * tests failed pointing at the ladder rather than at the fixture. Keyed by id,
+ * the fixture says what is true about each account and does not care how many
+ * times, or in what order, anyone asks.
+ *
+ * Referrer is user 7 (see `pending()`); the referred customer is 99.
+ */
+function onPlans(referred: 'pro' | 'club' | null, referrer: 'pro' | 'club' | null) {
+  mock.userSubscription.findUnique.mockImplementation((args: any) => {
+    const id = args?.where?.userId
+    const slug = id === REFERRER_ID ? referrer : referred
+    return Promise.resolve(slug ? { plan: { slug }, status: 'active' } : null) as never
+  })
 }
+
+/** The referrer in these tests. */
+const REFERRER_ID = 7
 
 /**
  * Qualified referral counts, as the grouped query returns them.
@@ -312,11 +329,11 @@ describe('which ladder a referral lands on', () => {
     )
   })
 
-  it('defaults to the coach tier when a plan cannot be read', async () => {
-    // An account with no subscription row must not be silently promoted to
-    // either the more valuable ladder or the more generous thresholds.
+  it('defaults to the coach tier when the referrer is on a plan we cannot place', async () => {
+    // An unrecognised slug must not be silently promoted to the more generous
+    // club thresholds.
     pending()
-    mock.userSubscription.findUnique.mockResolvedValue(null as never)
+    onPlans('pro', 'enterprise-mega' as 'pro')
     counts({ coach: { coach: 1 } })
 
     await qualifyReferral(99)
@@ -324,6 +341,82 @@ describe('which ladder a referral lands on', () => {
     expect(mock.referral.update).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ kind: 'coach', referrerTier: 'coach' }) }),
     )
+  })
+})
+
+describe('a referrer on the free tier', () => {
+  function pending() {
+    mock.referral.findUnique.mockResolvedValue({ id: 5, referrerId: REFERRER_ID, status: 'pending' } as never)
+    mock.referral.update.mockResolvedValue({} as never)
+  }
+
+  it('earns nothing yet — the whole ladder pays in free months', async () => {
+    // Granting months to someone who pays nothing would comp a subscription
+    // they never bought, and "one month free" is not a reward you can give
+    // to a person whose bill is already zero.
+    pending()
+    onPlans('pro', null)
+    counts({ coach: { coach: 1 } })
+
+    await qualifyReferral(99)
+
+    expect(mock.referral.update).not.toHaveBeenCalled()
+    expect(mock.referralReward.create).not.toHaveBeenCalled()
+  })
+
+  it('keeps the referral PENDING rather than discarding it', async () => {
+    // The referral is real — someone paid us because of them. Throwing it
+    // away would mean the coach who brought three customers has nothing to
+    // show for it the day they upgrade, and they would be right to be cross.
+    pending()
+    onPlans('pro', null)
+    counts({ coach: { coach: 1 } })
+
+    await qualifyReferral(99)
+
+    // Not marked 'reversed' or anything else terminal — untouched.
+    expect(mock.referral.update).not.toHaveBeenCalled()
+  })
+
+  it('is paid in full the moment they start paying', async () => {
+    // The upgrade argument this creates is better than anything on the
+    // pricing page: "you have three referrals waiting".
+    mock.referral.findMany.mockResolvedValue([{ referredUserId: 99 }] as never)
+    mock.referral.findUnique.mockResolvedValue({ id: 5, referrerId: REFERRER_ID, status: 'pending' } as never)
+    mock.referral.update.mockResolvedValue({} as never)
+    onPlans('pro', 'pro')
+    counts({ coach: { coach: 3 } })
+
+    await qualifyPendingFor(REFERRER_ID)
+
+    expect(mock.referral.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ status: 'qualified', kind: 'coach' }) }),
+    )
+    expect(mock.referralReward.create).toHaveBeenCalled()
+  })
+
+  it('settles nothing for a referred customer who never paid', async () => {
+    // The anti-farming rule survives the sweep: a signup is still worth
+    // nothing, however long it has been sitting in pending.
+    mock.referral.findMany.mockResolvedValue([{ referredUserId: 99 }] as never)
+    mock.referral.findUnique.mockResolvedValue({ id: 5, referrerId: REFERRER_ID, status: 'pending' } as never)
+    mock.userSubscription.findUnique.mockImplementation((args: any) =>
+      Promise.resolve(
+        args?.where?.userId === REFERRER_ID
+          ? { plan: { slug: 'pro' }, status: 'active' }
+          : { plan: { slug: 'pro' }, status: 'trial' },
+      ) as never,
+    )
+
+    await qualifyPendingFor(REFERRER_ID)
+
+    expect(mock.referral.update).not.toHaveBeenCalled()
+  })
+
+  it('does nothing at all if the sweep is run for someone still on free', async () => {
+    onPlans('pro', null)
+    await qualifyPendingFor(REFERRER_ID)
+    expect(mock.referral.findMany).not.toHaveBeenCalled()
   })
 })
 

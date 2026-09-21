@@ -5,6 +5,9 @@ import { db } from '../../config/database.js'
 import { env } from '../../config/env.js'
 import { stripe, stripeConfigured } from '../../config/stripe.js'
 import { getEntitlements } from '../../lib/entitlements.js'
+import { grantedCapabilities, limitsFor, isPaidPlan } from '../../lib/capabilities.js'
+import { videoQuota } from '../../lib/video-quota.js'
+import { allQuotas } from '../../lib/plan-quota.js'
 import { ensureStripeCustomer } from './membership.service.js'
 
 const CheckoutSchema = z.object({
@@ -52,7 +55,27 @@ export async function membershipRoutes(app: FastifyInstance) {
   // frontend's editor gating and the post-purchase redirect).
   app.get('/entitlements', { preHandler: authGuard }, async (request, reply) => {
     const userId = (request.user as any).sub as number
-    return reply.send(await getEntitlements(userId))
+    const ent = await getEntitlements(userId)
+    // Capabilities, limits and the video meter ride along on the call the
+    // frontend already makes. They are sent rather than derived client-side
+    // because a second copy of the tier table is the one that goes stale —
+    // and they are sent here rather than on a new endpoint because the
+    // alternative is the editor firing a quota request on every load.
+    return reply.send({
+      ...ent,
+      capabilities: grantedCapabilities(ent),
+      limits: limitsFor(ent),
+      // Lets the editor check BEFORE it spends thirty seconds encoding a
+      // video the server is going to refuse. The server still checks on
+      // upload — this is courtesy, not enforcement.
+      videoQuota: await videoQuota(userId),
+      // The counted limits, so the UI can say "4 of 5 boards" while there is
+      // still time to act on it. A free tier whose only signal is the refusal
+      // at number six feels broken; one that shows the count feels like a
+      // plan. Same data, entirely different product.
+      quotas: await allQuotas(userId),
+      paid: isPaidPlan(ent.plan?.slug),
+    })
   })
 
   // POST /membership/checkout { planSlug, cycle } → Stripe Checkout URL.

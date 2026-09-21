@@ -9,7 +9,7 @@
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import { authGuard } from '../../middleware/auth-guard.js'
-import { requireEditorAccess } from '../../middleware/entitlement-guard.js'
+import { requireCapability, requireEditorAccess } from '../../middleware/entitlement-guard.js'
 import { geminiConfigured, generateTacticsJson, GeminiError } from '../../config/gemini.js'
 import {
   getCreditState,
@@ -146,6 +146,10 @@ Return a corrected JSON document only.`
 export async function aiRoutes(app: FastifyInstance) {
   app.addHook('preHandler', authGuard)
   app.addHook('preHandler', requireEditorAccess)
+  // AI is a Pro capability. Before the free tier this was covered by
+  // requireEditorAccess above, which then meant "is a paying customer"; it no
+  // longer does, and without this line every free account would reach Gemini.
+  app.addHook('preHandler', requireCapability('ai'))
 
   const guardConfigured = (reply: { status: (c: number) => { send: (b: unknown) => unknown } }) =>
     reply.status(503).send({

@@ -1,4 +1,5 @@
 import { db } from '../config/database.js'
+import { isClubPlan, FREE_PLAN } from './capabilities.js'
 
 /**
  * The plan a Partner is comped on. Declared here rather than in the partners
@@ -8,7 +9,14 @@ import { db } from '../config/database.js'
 export const PARTNER_PLAN_SLUG = 'pro'
 
 export interface Entitlements {
-  /** Can open the editor: own active subscription OR active club membership. */
+  /**
+   * May open the editor at all. True for every coach account, because the
+   * free tier is a real account rather than a locked one.
+   *
+   * It is NOT "is a paying customer" — it used to be, and the rename never
+   * happened. Ask `isPaidPlan(ent.plan?.slug)` for that, or `can()` for what
+   * they may actually do.
+   */
   editorAccess: boolean
   /**
    * Can open the player's own screens — this week, my season, the read-only
@@ -144,7 +152,7 @@ export async function getEntitlements(userId: number): Promise<Entitlements> {
 
   const ownActive = subIsActive(sub)
   const ownerSub = membership?.club.owner.subscription ?? null
-  const clubActive = subIsActive(ownerSub) && ownerSub?.plan.slug === 'club'
+  const clubActive = subIsActive(ownerSub) && isClubPlan(ownerSub?.plan.slug)
 
   // A partner is a supplier, not a customer: they are paid commission and given
   // the product to sell, so access cannot be conditional on them buying it.
@@ -159,19 +167,38 @@ export async function getEntitlements(userId: number): Promise<Entitlements> {
         })
       : null
 
-  const plan = ownActive ? sub!.plan : clubActive ? ownerSub!.plan : partnerPlan
+  // Nothing active anywhere → the free tier, not a wall.
+  //
+  // This is the whole point of having a free tier, and it is one line: a coach
+  // whose trial ran out on day 8 used to get a paywall and leave, taking
+  // eighteen players with them — players who were the only distribution we
+  // have and who arrived through that coach. Now they keep a real account
+  // (five boards, three watermarked videos a month, one squad) and stay
+  // somewhere we can still convert them.
+  //
+  // `free` is synthetic: no subscription row is created, so this also covers
+  // a coach who has NEVER had one.
+  //
+  // The retired player plan is not special-cased out. Anyone still holding one
+  // paid for a plan that granted the full product, and they keep it until it
+  // expires — withdrawing access from an existing subscriber because we
+  // changed our minds about the tier would be theft.
+  const paidPlan = ownActive ? sub!.plan : clubActive ? ownerSub!.plan : partnerPlan
+  const plan = paidPlan ?? { ...FREE_PLAN }
 
   return {
-    // The retired player plan is not special-cased out. Anyone still holding
-    // one paid for a plan that granted the full product, and they keep it
-    // until it expires — withdrawing access from an existing subscriber
-    // because we changed our minds about the tier would be theft.
-    editorAccess: ownActive || clubActive || (partnerActive && !!partnerPlan),
+    // True for everyone who is not a player, now that free exists. It no
+    // longer means "is a customer" — it means "may open the editor at all",
+    // which is what it was always named for. Anything asking the other
+    // question must ask `isPaidPlan(ent.plan?.slug)` instead; `can()` handles
+    // the rest, because the free tier's limits are capabilities and counts,
+    // not a locked door.
+    editorAccess: true,
     playerAccess: !!linkedToSquad,
     plan,
     viaClub: !ownActive && clubActive,
     viaPartner: !ownActive && !clubActive && partnerActive && !!partnerPlan,
-    isClubOwner: !!ownedClub && ownActive && sub?.plan?.slug === 'club',
+    isClubOwner: !!ownedClub && ownActive && isClubPlan(sub?.plan?.slug),
     subscriptionStatus: sub?.status ?? null,
     expiresAt: sub?.expiresAt ?? null,
   }

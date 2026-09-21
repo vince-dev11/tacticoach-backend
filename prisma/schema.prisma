@@ -104,6 +104,7 @@ model User {
   ebooks           Ebook[]
   ebookNotes       EbookNote[]
   ebookProgress    EbookProgress[]
+  videoExports     VideoExport[]
 
   @@map("users")
 }
@@ -1294,6 +1295,21 @@ enum NoteColour {
   yellow
   green
   blue
+}
+
+/// One video export. See migration 30 for why this is a ledger, not a counter.
+model VideoExport {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @map("user_id")
+  boardId   Int?     @map("board_id")
+  /// The plan in force at the time, so a cap can be explained after an upgrade.
+  planSlug  String?  @map("plan_slug") @db.VarChar(50)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@map("video_exports")
 }
 
 model EbookProgress {

@@ -30,7 +30,7 @@ function grantEditorAccess() {
   dbMock.$transaction.mockResolvedValue([] as never)
 }
 
-function revokeEditorAccess() {
+function onFreeTier() {
   dbMock.userSubscription.findUnique.mockResolvedValue(null)
   dbMock.clubMember.findUnique.mockResolvedValue(null)
   dbMock.club.findUnique.mockResolvedValue(null)
@@ -65,17 +65,24 @@ describe('POST /api/canvas/ai-layout', () => {
     expect(res.statusCode).toBe(401)
   })
 
-  it('requires editor entitlement (403 for expired trials)', async () => {
+  it('refuses a free coach with 402 and never reaches Gemini', async () => {
+    // This used to assert a 403 from requireEditorAccess, which worked only
+    // while that guard meant "is a paying customer". Once the free tier made
+    // it true for everyone, the AI routes were one hook away from being free
+    // for the whole internet — a real cost, on someone else's API bill. The
+    // capability guard is now the thing saying no.
     const app = await getApp()
-    revokeEditorAccess()
+    onFreeTier()
     const res = await app.inject({
       method: 'POST',
       url: '/api/canvas/ai-layout',
       headers: authHeaders(await accessToken()),
       payload: { prompt: '4-3-3 press' },
     })
-    expect(res.statusCode).toBe(403)
-    expect(res.json().code).toBe('NO_EDITOR_ACCESS')
+    expect(res.statusCode).toBe(402)
+    expect(res.json().code).toBe('CAPABILITY_REQUIRED')
+    expect(res.json().capability).toBe('ai')
+    // The line that actually costs money if it ever stops being true.
     expect(gemini.generate).not.toHaveBeenCalled()
   })
 

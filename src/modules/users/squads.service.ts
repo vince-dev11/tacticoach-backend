@@ -11,6 +11,8 @@
 // finally means something. Moving squads MOVES the row; the notes follow.
 
 import { db } from '../../config/database.js'
+import { limitsFor } from '../../lib/capabilities.js'
+import { getEntitlements } from '../../lib/entitlements.js'
 
 /** The name a coach's first squad gets when we make it for them. */
 export const DEFAULT_SQUAD_NAME = 'My squad'
@@ -108,8 +110,33 @@ export async function resolveSquad(userId: number, squadId?: number | null) {
   return defaultSquad(userId)
 }
 
+/**
+ * Thrown when a plan's limit stops an action. 402 rather than 403: this is
+ * "not on your plan yet", which is a thing the coach can do something about —
+ * and the frontend turns it into an upgrade prompt at exactly the moment the
+ * feature was wanted, which is the only moment it is persuasive.
+ */
+export function planLimitError(message: string): Error & { statusCode: number } {
+  const e = new Error(message) as Error & { statusCode: number }
+  e.statusCode = 402
+  return e
+}
+
 export async function createSquad(userId: number, name: string, ageGroup: string | null) {
   const count = await squads().count({ where: { userId, archivedAt: null } })
+
+  // Squads are the honest line between the tiers: one team is a volunteer,
+  // three teams is a professional. Counted here rather than in the route so it
+  // cannot be bypassed by any other caller.
+  const limit = limitsFor(await getEntitlements(userId)).squads
+  if (limit !== null && count >= limit) {
+    throw planLimitError(
+      limit === 1
+        ? 'Your plan covers one squad. Upgrade to Pro for unlimited squads.'
+        : `Your plan covers ${limit} squads.`,
+    )
+  }
+
   return squads().create({
     data: { userId, name: name.trim(), ageGroup: ageGroup?.trim() || null, sortOrder: count },
     select: SQUAD_SELECT,

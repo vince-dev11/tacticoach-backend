@@ -20,13 +20,13 @@ import {
 import { isMailConfigured } from '../../config/mailer.js'
 import { createAccountSetupToken, createPasswordResetTokenFor } from '../auth/auth.service.js'
 import { latinOnly } from '../../lib/latin-only.js'
+import { isClubPlan } from '../../lib/capabilities.js'
 import { getAcceptance } from '../../lib/agreements.js'
 import { renderSignedAgreement } from '../../lib/agreement-pdf.js'
 import { PARTNER_AGREEMENT } from '../partners/partner-agreement.js'
 import { REFERRAL_AGREEMENT } from '../referrals/referral-agreement.js'
 import {
   adminList as adminListEbooks, adminGet as adminGetEbook, uniqueSlug as uniqueEbookSlug,
-  adminBoardList, adminBoard,
   ebookDb, chapterDb, blockDb,
   CATEGORIES as EBOOK_CATEGORIES, AGE_BANDS as EBOOK_AGE_BANDS, BLOCK_KINDS as EBOOK_BLOCK_KINDS,
 } from '../ebooks/ebooks.service.js'
@@ -365,7 +365,7 @@ export async function adminRoutes(app: FastifyInstance) {
       update: data,
       create: { userId, ...data },
     })
-    if (plan.slug === 'club') {
+    if (isClubPlan(plan.slug)) {
       await db.club.upsert({
         where: { ownerId: userId },
         update: {},
@@ -923,24 +923,6 @@ export async function adminRoutes(app: FastifyInstance) {
 
   app.get('/ebooks', async (_request, reply) => reply.send(await adminListEbooks()))
 
-  // The author's own saved boards, for the picker in the book editor.
-  //
-  // Registered BEFORE '/ebooks/:id' on purpose: Fastify's router would not
-  // actually confuse the two (a static segment beats a parameter), but keeping
-  // them adjacent makes it obvious that "boards" is not a book id.
-  app.get('/ebooks/boards', async (request, reply) =>
-    reply.send(await adminBoardList((request.user as { sub: number }).sub)))
-
-  app.get('/ebooks/boards/:id', async (request, reply) => {
-    const board = await adminBoard(
-      (request.user as { sub: number }).sub,
-      Number((request.params as { id: string }).id),
-    )
-    return board
-      ? reply.send(board)
-      : reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'Board not found' })
-  })
-
   app.get('/ebooks/:id', async (request, reply) => {
     const book = await adminGetEbook(Number((request.params as { id: string }).id))
     return book
@@ -991,6 +973,22 @@ export async function adminRoutes(app: FastifyInstance) {
   // separately and leave a half-saved chapter on screen.
   app.put('/ebooks/:id/chapters', async (request, reply) => {
     const id = Number((request.params as { id: string }).id)
+
+    // Board drawings live INSIDE a block's data now, so a chapter carries its
+    // own diagrams rather than pointing at boards elsewhere. That is the right
+    // model — a book is self-contained — but it means block data is no longer
+    // a few hundred bytes of text, and an unbounded JSON column is how a
+    // single runaway request fills a disk. A real illustrated chapter is tens
+    // of KB; this is a wide bound on obvious abuse, not a content limit.
+    const size = Buffer.byteLength(JSON.stringify(request.body ?? {}))
+    if (size > 4 * 1024 * 1024) {
+      return reply.status(413).send({
+        statusCode: 413,
+        error: 'Payload Too Large',
+        message: 'This chapter is too large to save. Split it, or simplify its drawings.',
+      })
+    }
+
     const { chapters } = z
       .object({
         chapters: z.array(z.object({

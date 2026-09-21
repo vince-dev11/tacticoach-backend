@@ -15,6 +15,7 @@
 import { db } from '../../config/database.js'
 import { presignUrl } from '../../config/s3.js'
 import { getEntitlements } from '../../lib/entitlements.js'
+import { can } from '../../lib/capabilities.js'
 import { env } from '../../config/env.js'
 
 export const COACH_SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
@@ -89,7 +90,13 @@ export async function publishedCountFor(userId: number): Promise<number> {
 export async function coachPageStatus(user: Pick<BrandRow, 'id' | 'coachSlug' | 'coachPageEnabled'>): Promise<CoachPageStatus> {
   const [ent, publishedCount] = await Promise.all([getEntitlements(user.id), publishedCountFor(user.id)])
   const hasSlug = !!user.coachSlug
-  const planActive = ent.editorAccess
+  // `can(…, 'own_branding')`, not `editorAccess`.
+  //
+  // editorAccess is true for free accounts now, and a free coach putting up a
+  // public page under their own name and badge would be giving away the thing
+  // Pro is mostly sold on. The capability is the question that was always
+  // meant here; editorAccess only looked right while it meant "paying".
+  const planActive = can(ent, 'own_branding')
   const live = hasSlug && user.coachPageEnabled && planActive && publishedCount >= REQUIRED_PUBLISHED
   return {
     live,

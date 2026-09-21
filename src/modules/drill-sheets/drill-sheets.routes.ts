@@ -7,6 +7,7 @@ import { z } from 'zod'
 import type { Prisma } from '@prisma/client'
 import { authGuard } from '../../middleware/auth-guard.js'
 import { requireEditorAccess } from '../../middleware/entitlement-guard.js'
+import { assertQuota } from '../../lib/plan-quota.js'
 import { db } from '../../config/database.js'
 import { uploadToS3, deleteFromS3, presignUrl } from '../../config/s3.js'
 import { readUpload } from '../../lib/multipart.js'
@@ -80,6 +81,7 @@ export async function drillSheetsRoutes(app: FastifyInstance) {
   app.post('/', { preHandler: requireEditorAccess }, async (request, reply) => {
     const userId = (request.user as any).sub as number
     const input = CreateSheetSchema.parse(request.body)
+    await assertQuota(userId, 'drillSheets')
     const sheet = await db.drillSheet.create({
       data: {
         userId,

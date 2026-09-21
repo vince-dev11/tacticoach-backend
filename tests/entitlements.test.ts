@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { dbMock } from './setup.js'
 import { activeSubscription } from './helpers.js'
 import { getEntitlements } from '../src/lib/entitlements.js'
+import { can, isPaidPlan, limitsFor } from '../src/lib/capabilities.js'
 
 function noClubData() {
   dbMock.clubMember.findUnique.mockResolvedValue(null)
@@ -30,24 +31,45 @@ describe('getEntitlements', () => {
     expect(ent.subscriptionStatus).toBe('trial')
   })
 
-  it('denies access once the trial has expired', async () => {
+  it('drops an expired trial onto the FREE tier, not onto a wall', async () => {
+    // The whole reason the free tier exists. A coach who hits a paywall on
+    // day 8 leaves and takes eighteen players with them, and those players
+    // were the only free distribution we have.
     dbMock.userSubscription.findUnique.mockResolvedValue(
       activeSubscription({ status: 'trial', expiresAt: new Date(Date.now() - 1000) }) as never,
     )
     noClubData()
 
     const ent = await getEntitlements(1)
-    expect(ent.editorAccess).toBe(false)
-    expect(ent.plan).toBeNull()
+    expect(ent.editorAccess).toBe(true)
+    expect(ent.plan?.slug).toBe('free')
   })
 
-  it('denies access for cancelled/expired subscriptions', async () => {
+  it('drops cancelled and expired subscriptions onto free too', async () => {
     for (const status of ['cancelled', 'expired']) {
       dbMock.userSubscription.findUnique.mockResolvedValue(activeSubscription({ status }) as never)
       noClubData()
       const ent = await getEntitlements(1)
-      expect(ent.editorAccess).toBe(false)
+      expect(ent.plan?.slug, `${status} should fall to free`).toBe('free')
+      // The paid capabilities go, which is the part that matters.
+      expect(can(ent, 'video_hd'), `${status} should lose HD`).toBe(false)
+      expect(can(ent, 'own_branding'), `${status} should lose branding`).toBe(false)
+      expect(can(ent, 'editor'), `${status} should keep the editor`).toBe(true)
     }
+  })
+
+  it('leaves a lapsed coach their work, capped rather than locked', async () => {
+    // Five boards, not zero. Locking a coach out of boards they already made
+    // would be holding their own work hostage, and it is the single fastest
+    // way to make someone delete their account rather than subscribe.
+    dbMock.userSubscription.findUnique.mockResolvedValue(
+      activeSubscription({ status: 'expired' }) as never,
+    )
+    noClubData()
+
+    const limits = limitsFor(await getEntitlements(1))
+    expect(limits.boards).toBe(5)
+    expect(limits.videoExports).toBe(3)
   })
 
   it('the company owner has full access whatever their subscription row says', async () => {
@@ -71,13 +93,26 @@ describe('getEntitlements', () => {
     dbMock.user.findUnique.mockResolvedValue({ role: 'user' } as never)
   })
 
-  it('denies access when the user has no subscription at all (free login)', async () => {
+  it('gives a coach who never subscribed the free tier', async () => {
     dbMock.userSubscription.findUnique.mockResolvedValue(null)
     noClubData()
 
     const ent = await getEntitlements(1)
-    expect(ent.editorAccess).toBe(false)
+    expect(ent.editorAccess).toBe(true)
+    expect(ent.plan?.slug).toBe('free')
+    // No row exists, and none is created. `free` is synthetic.
     expect(ent.subscriptionStatus).toBeNull()
+    expect(dbMock.userSubscription.create).not.toHaveBeenCalled()
+  })
+
+  it('does not count a free coach as a paying customer', async () => {
+    // editorAccess is true for everyone now, so anything that used to ask it
+    // as "are they a customer?" has to ask this instead.
+    dbMock.userSubscription.findUnique.mockResolvedValue(null)
+    noClubData()
+
+    const ent = await getEntitlements(1)
+    expect(isPaidPlan(ent.plan?.slug)).toBe(false)
   })
 
   it('grants access via a club seat when the owner has an active club plan', async () => {
@@ -122,7 +157,12 @@ describe('getEntitlements', () => {
     dbMock.club.findUnique.mockResolvedValue(null)
 
     const ent = await getEntitlements(2)
-    expect(ent.editorAccess).toBe(false)
+    // The SEAT stops granting anything the moment the owner stops paying —
+    // the coach falls to free like anyone else, rather than keeping Pro on
+    // somebody else's lapsed card.
+    expect(ent.plan?.slug).toBe('free')
+    expect(can(ent, 'own_branding')).toBe(false)
+    expect(ent.viaClub).toBe(false)
   })
 
   it('denies club-seat access when the owner plan is not the club plan', async () => {
@@ -137,7 +177,12 @@ describe('getEntitlements', () => {
     dbMock.club.findUnique.mockResolvedValue(null)
 
     const ent = await getEntitlements(2)
-    expect(ent.editorAccess).toBe(false)
+    // A seat in a club whose owner is on an INDIVIDUAL plan grants nothing —
+    // otherwise one Pro subscription would quietly cover a whole staff. The
+    // member falls to free, like any other coach with no plan of their own.
+    expect(ent.plan?.slug).toBe('free')
+    expect(ent.viaClub).toBe(false)
+    expect(can(ent, 'multi_squad')).toBe(false)
   })
 
   it('flags club ownership only with an active club-plan subscription', async () => {
@@ -189,6 +234,13 @@ describe('the retired player plan', () => {
 
   it('gives a linked player their own screens even with no subscription', async () => {
     // Their club or their coach pays; the notes are still theirs to read.
+    //
+    // accountType matters here and did not used to: before the free tier,
+    // every account with no subscription got editorAccess:false anyway, so
+    // this passed without ever reaching the player branch it describes. Now
+    // that a coach account falls to FREE rather than to nothing, the test has
+    // to actually be about a player.
+    dbMock.user.findUnique.mockResolvedValue({ role: 'user', accountType: 'player' } as never)
     dbMock.userSubscription.findUnique.mockResolvedValue(null)
     dbMock.clubMember.findUnique.mockResolvedValue(null)
     dbMock.club.findUnique.mockResolvedValue(null)
@@ -201,6 +253,7 @@ describe('the retired player plan', () => {
   })
 
   it('takes the product back when the player stops paying', async () => {
+    dbMock.user.findUnique.mockResolvedValue({ role: 'user', accountType: 'player' } as never)
     dbMock.userSubscription.findUnique.mockResolvedValue(
       activeSubscription({ status: 'cancelled', plan: { id: 9, name: 'Player', slug: 'player' } }) as never,
     )

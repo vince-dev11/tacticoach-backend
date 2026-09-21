@@ -29,7 +29,7 @@ function grantEditorAccess() {
   dbMock.club.findUnique.mockResolvedValue(null)
 }
 
-function revokeEditorAccess() {
+function onFreeTier() {
   dbMock.userSubscription.findUnique.mockResolvedValue(null)
   dbMock.clubMember.findUnique.mockResolvedValue(null)
   dbMock.club.findUnique.mockResolvedValue(null)
@@ -60,16 +60,34 @@ describe('GET /api/sessions', () => {
 })
 
 describe('POST /api/sessions', () => {
-  it('blocks users without editor access', async () => {
+  it('lets a free coach save their one session', async () => {
     const app = await getApp()
-    revokeEditorAccess()
+    onFreeTier()
+    dbMock.trainingSession.count.mockResolvedValue(0 as never)
+    dbMock.trainingSession.create.mockResolvedValue(sessionRow() as never)
+
     const res = await app.inject({
       method: 'POST',
       url: '/api/sessions',
       headers: authHeaders(await accessToken()),
-      payload: { title: 'Blocked session' },
+      payload: { title: 'My one session' },
     })
-    expect(res.statusCode).toBe(403)
+    expect(res.statusCode).toBe(201)
+  })
+
+  it('refuses their second with a 402', async () => {
+    const app = await getApp()
+    onFreeTier()
+    dbMock.trainingSession.count.mockResolvedValue(1 as never)
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/sessions',
+      headers: authHeaders(await accessToken()),
+      payload: { title: 'Session two' },
+    })
+    expect(res.statusCode).toBe(402)
+    expect(dbMock.trainingSession.create).not.toHaveBeenCalled()
   })
 
   it('creates a session with blocks and brand colour', async () => {

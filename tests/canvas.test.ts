@@ -27,8 +27,8 @@ function grantEditorAccess() {
   dbMock.club.findUnique.mockResolvedValue(null)
 }
 
-/** No sub, no club → no editor access. */
-function revokeEditorAccess() {
+/** No sub, no club → the FREE tier (five boards), not a locked door. */
+function onFreeTier() {
   dbMock.userSubscription.findUnique.mockResolvedValue(null)
   dbMock.clubMember.findUnique.mockResolvedValue(null)
   dbMock.club.findUnique.mockResolvedValue(null)
@@ -63,18 +63,59 @@ describe('GET /api/canvas/boards', () => {
 })
 
 describe('POST /api/canvas/boards', () => {
-  it('blocks users without editor access (expired trial) with 403 NO_EDITOR_ACCESS', async () => {
+  it('lets a free coach create a board — up to their five', async () => {
+    // This used to assert a 403. An expired trial is no longer a wall: it is
+    // the free tier, and the free tier can draw. The limit is a COUNT now,
+    // and the test below is the one that holds it.
     const app = await getApp()
-    revokeEditorAccess()
+    onFreeTier()
+    dbMock.canvasBoard.count.mockResolvedValue(2 as never)
+    dbMock.canvasBoard.create.mockResolvedValue(boardRow() as never)
 
     const res = await app.inject({
       method: 'POST',
       url: '/api/canvas/boards',
       headers: authHeaders(await accessToken()),
-      payload: { title: 'Blocked board' },
+      payload: { title: 'Board three' },
     })
-    expect(res.statusCode).toBe(403)
-    expect(res.json().code).toBe('NO_EDITOR_ACCESS')
+    expect(res.statusCode).toBe(201)
+  })
+
+  it('refuses the sixth with a 402, not a 403', async () => {
+    // 402 is the whole point: the coach is not forbidden, they are
+    // un-upgraded, and that is what lets the UI show a price rather than an
+    // apology. A 403 here would render as "something went wrong".
+    const app = await getApp()
+    onFreeTier()
+    dbMock.canvasBoard.count.mockResolvedValue(5 as never)
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/canvas/boards',
+      headers: authHeaders(await accessToken()),
+      payload: { title: 'Board six' },
+    })
+    expect(res.statusCode).toBe(402)
+    expect(res.json().message).toMatch(/5 saved boards/)
+    // And nothing was written.
+    expect(dbMock.canvasBoard.create).not.toHaveBeenCalled()
+  })
+
+  it('does not count boards at all for a paid coach', async () => {
+    // Pro is unlimited, so the quota must not even ask the database. An
+    // unnecessary count on every board create is a query per save for a
+    // number nobody reads.
+    const app = await getApp()
+    grantEditorAccess()
+    dbMock.canvasBoard.create.mockResolvedValue(boardRow() as never)
+
+    await app.inject({
+      method: 'POST',
+      url: '/api/canvas/boards',
+      headers: authHeaders(await accessToken()),
+      payload: { title: 'Unlimited' },
+    })
+    expect(dbMock.canvasBoard.count).not.toHaveBeenCalled()
   })
 
   it('creates a board (public by default) for an entitled user', async () => {

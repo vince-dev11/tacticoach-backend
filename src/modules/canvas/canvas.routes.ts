@@ -3,6 +3,9 @@ import { z } from 'zod'
 import type { Prisma } from '@prisma/client'
 import { authGuard } from '../../middleware/auth-guard.js'
 import { requireEditorAccess } from '../../middleware/entitlement-guard.js'
+import { videoQuota, recordVideoExport } from '../../lib/video-quota.js'
+import { assertQuota } from '../../lib/plan-quota.js'
+import { getEntitlements } from '../../lib/entitlements.js'
 import { db } from '../../config/database.js'
 import { uploadToS3, deleteFromS3, presignUrl } from '../../config/s3.js'
 import { readUpload } from '../../lib/multipart.js'
@@ -178,6 +181,9 @@ export async function canvasRoutes(app: FastifyInstance) {
   app.post('/boards', { preHandler: requireEditorAccess }, async (request, reply) => {
     const userId = (request.user as any).sub as number
     const input = CreateBoardSchema.parse(request.body)
+    // Free keeps five. Checked before the create, so the refusal costs the
+    // coach nothing but the click.
+    await assertQuota(userId, 'boards')
     const board = await db.canvasBoard.create({
       data: {
         userId,
@@ -272,13 +278,29 @@ export async function canvasRoutes(app: FastifyInstance) {
     const board = await db.canvasBoard.findFirst({ where: { id: Number(id), userId } })
     if (!board) return reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'Board not found' })
 
+    // Checked BEFORE the upload is read, not after: refusing a coach's video
+    // once the whole file has already crossed the wire wastes their time and
+    // our bandwidth to reach the same answer.
+    const quota = await videoQuota(userId)
+    if (!quota.allowed) {
+      return reply.status(402).send({
+        statusCode: 402,
+        error: 'Payment Required',
+        message: `You have used all ${quota.limit} video exports this month. Upgrade to Pro for unlimited HD exports.`,
+        quota,
+      })
+    }
+
     const file = await readUpload(request, { maxBytes: VIDEO_MAX, allowedTypes: VIDEO_TYPES })
     if (board.videoKey) await deleteFromS3(board.videoKey).catch(() => {/* best-effort */})
     const ext = file.mimetype === 'video/webm' ? 'webm' : 'mp4'
     const key = `boards/${userId}/${board.id}/video-${Date.now()}.${ext}`
     await uploadToS3(key, file.buffer, file.mimetype)
     await db.canvasBoard.update({ where: { id: board.id }, data: { videoKey: key } })
-    return reply.send({ videoUrl: await presignUrl(key) })
+    // Recorded only now, after the upload actually succeeded — a failed upload
+    // must not eat one of a coach's ten.
+    await recordVideoExport(userId, board.id, (await getEntitlements(userId)).plan?.slug ?? null)
+    return reply.send({ videoUrl: await presignUrl(key), quota: await videoQuota(userId) })
   })
 
   // ---- Publish + likes -----------------------------------------------------------

@@ -260,91 +260,49 @@ describe('authoring', () => {
 })
 
 describe('boards drawn inside a chapter', () => {
-  const chapterWith = (blocks: { kind: string; data: unknown }[]) => {
+  const chapterWith = (blocks: { kind: string; data: unknown }[], paid = false) => {
     mock.ebookChapter.findFirst.mockResolvedValue({
-      id: 5, ebookId: 1, title: 'Angles', sortOrder: 0, isSample: true,
+      id: 5, ebookId: 1, title: 'Angles', sortOrder: 0, isSample: !paid,
       blocks: blocks.map((b, i) => ({ id: i + 1, kind: b.kind, sortOrder: i, data: b.data })),
     } as never)
     mock.ebook.findFirst.mockResolvedValue({
-      pricePence: 0, title: 'T', slug: 'playing-out', authorId: 7,
+      pricePence: paid ? 499 : 0, title: 'T', slug: 'playing-out',
     } as never)
   }
 
-  it('fetches ONLY boards belonging to the book\'s author', async () => {
-    // A block stores a board id, and an id is one digit away from another
-    // coach's board. Without the author scope, editing that number in a draft
-    // would pull somebody's private work into a published book.
-    chapterWith([{ kind: 'board', data: { boardId: 12 } }])
-    mock.canvasBoard.findMany.mockResolvedValue([] as never)
+  const scene = { canvas: { version: '5', objects: [{ _id: 'a', tcKey: 'player_blue', tcType: 'player' }] }, frames: [] }
 
-    await get('/api/ebooks/playing-out/c/5')
-
-    const where = mock.canvasBoard.findMany.mock.calls[0][0]!.where
-    expect(where.id).toEqual({ in: [12] })
-    expect(where.userId, 'the board lookup must be scoped to the author').toBe(7)
-  })
-
-  it('collects ids from every kind of board block, including both sides of a compare', async () => {
-    chapterWith([
-      { kind: 'board', data: { boardId: 12 } },
-      { kind: 'board_compare', data: { leftId: 20, rightId: 21 } },
-      { kind: 'board_sequence', data: { boardId: 30, frames: [0, 1] } },
-      { kind: 'drill', data: { boardId: 12 } },
-      { kind: 'text', data: { text: 'not a board' } },
-    ])
-    mock.canvasBoard.findMany.mockResolvedValue([] as never)
-
-    await get('/api/ebooks/playing-out/c/5')
-
-    // 12 appears twice and is asked for once.
-    expect(mock.canvasBoard.findMany.mock.calls[0][0]!.where.id).toEqual({ in: [12, 20, 21, 30] })
-  })
-
-  it('returns the scenes beside the blocks, keyed by id', async () => {
-    chapterWith([{ kind: 'board', data: { boardId: 12 } }])
-    mock.canvasBoard.findMany.mockResolvedValue([
-      { id: 12, title: 'Playing out 1', state: { canvas: { objects: [] }, frames: [] } },
-    ] as never)
+  it('sends the drawing that is stored ON the block', async () => {
+    // The scene lives in the block, not behind a board id. A book is therefore
+    // self-contained: no second lookup, and no way for a stored id to point at
+    // another coach's private board.
+    chapterWith([{ kind: 'board', data: { board: scene, caption: 'The first pass' } }])
 
     const body = (await get('/api/ebooks/playing-out/c/5')).json()
-    expect(body.boards['12'].title).toBe('Playing out 1')
-    expect(body.boards['12'].state).toBeTruthy()
+    expect(body.blocks[0].data.board.canvas.objects).toHaveLength(1)
   })
 
-  it('asks for nothing when the chapter draws no boards', async () => {
-    // A chapter of pure prose must not cost a board query.
-    chapterWith([{ kind: 'text', data: { text: 'Words only.' } }])
-    await get('/api/ebooks/playing-out/c/5')
-    expect(mock.canvasBoard.findMany).not.toHaveBeenCalled()
-  })
-
-  it('ignores junk where a board id should be', async () => {
+  it('looks up no boards at all', async () => {
+    // The whole board-resolution path is gone. If this ever fires again it
+    // means a second source of truth crept back in.
     chapterWith([
-      { kind: 'board', data: { boardId: 'twelve' } },
-      { kind: 'board', data: { boardId: -3 } },
-      { kind: 'board', data: { boardId: 1.5 } },
-      { kind: 'board', data: {} },
+      { kind: 'board', data: { board: scene } },
+      { kind: 'board_compare', data: { left: scene, right: scene } },
+      { kind: 'drill', data: { board: scene, points: ['Press'] } },
     ])
     await get('/api/ebooks/playing-out/c/5')
     expect(mock.canvasBoard.findMany).not.toHaveBeenCalled()
+    expect(mock.canvasBoard.findFirst).not.toHaveBeenCalled()
   })
 
-  it('sends no board scenes with a LOCKED chapter', async () => {
-    // The lock exists to withhold the chapter's content, and on a visual book
-    // the boards ARE the content — handing them over with a 402 would give
-    // away the thing being paid for.
-    mock.ebookChapter.findFirst.mockResolvedValue({
-      id: 5, ebookId: 1, title: 'Angles', sortOrder: 2, isSample: false,
-      blocks: [{ id: 1, kind: 'board', sortOrder: 0, data: { boardId: 12 } }],
-    } as never)
-    mock.ebook.findFirst.mockResolvedValue({
-      pricePence: 499, title: 'T', slug: 'playing-out', authorId: 7,
-    } as never)
+  it('withholds the drawings with a LOCKED chapter', async () => {
+    // On a visual book the diagrams ARE the content, so a 402 that still
+    // carried the scenes would give away the thing being paid for.
+    chapterWith([{ kind: 'board', data: { board: scene } }], true)
 
     const res = await get('/api/ebooks/playing-out/c/5')
     expect(res.statusCode).toBe(402)
-    expect(JSON.stringify(res.json())).not.toContain('boards')
-    expect(mock.canvasBoard.findMany).not.toHaveBeenCalled()
+    expect(JSON.stringify(res.json())).not.toContain('player_blue')
   })
 })
 

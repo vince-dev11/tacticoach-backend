@@ -1,5 +1,6 @@
 import crypto from 'node:crypto'
 import { db } from '../../config/database.js'
+import { isClubPlan, isPaidPlan } from '../../lib/capabilities.js'
 import { env } from '../../config/env.js'
 import {
   allOwedRewards,
@@ -97,6 +98,20 @@ export async function qualifyReferral(referredUserId: number): Promise<void> {
   })
   if (!referral || referral.status !== 'pending') return
 
+  // The referrer has to be paying us.
+  //
+  // The whole ladder pays in free months, which are worth exactly nothing to
+  // someone on the free tier — and worse, granting them would quietly comp a
+  // subscription nobody bought. So a free coach's referrals STAY PENDING
+  // rather than being thrown away: the moment that coach starts paying,
+  // `qualifyPendingFor` below sweeps them up and they are paid in full.
+  //
+  // That turns the free tier's referrals into an upgrade argument instead of
+  // a dead end — "you have three waiting" is a far better reason to subscribe
+  // than anything on the pricing page — and it costs us nothing, because the
+  // three coaches they brought are already paying.
+  if (!isPaidPlan(await planSlugOf(referral.referrerId))) return
+
   const [kind, referrerTier] = await Promise.all([
     kindOf(referredUserId),
     tierOf(referral.referrerId),
@@ -107,6 +122,40 @@ export async function qualifyReferral(referredUserId: number): Promise<void> {
     data: { status: 'qualified', qualifiedAt: new Date(), kind, referrerTier },
   })
   await syncRewards(referral.referrerId)
+}
+
+/**
+ * A coach has just started paying — settle anything their referrals already
+ * earned while they were on the free tier.
+ *
+ * Only referrals whose own customer has ALREADY paid qualify here; the rest
+ * stay pending and are picked up by `qualifyReferral` as they pay, exactly as
+ * before. So this can never pay for a signup, only for a sale.
+ */
+export async function qualifyPendingFor(referrerId: number): Promise<void> {
+  if (!isPaidPlan(await planSlugOf(referrerId))) return
+
+  const pending = await db.referral.findMany({
+    where: { referrerId, status: 'pending' },
+    select: { referredUserId: true },
+  })
+  // Sequential, not Promise.all: each one ends in a `syncRewards` that
+  // recomputes the whole ledger from the referral counts, and running several
+  // of those concurrently races them against each other on the same rows.
+  for (const { referredUserId } of pending) {
+    if (await hasPaid(referredUserId)) await qualifyReferral(referredUserId)
+  }
+}
+
+/** Has this account ever actually paid — the only thing that earns a reward. */
+async function hasPaid(userId: number): Promise<boolean> {
+  const sub = await db.userSubscription.findUnique({
+    where: { userId },
+    select: { status: true, plan: { select: { slug: true } } },
+  })
+  // 'trial' is deliberately not enough. Nothing is earned until money moves,
+  // which is what makes farming free accounts pointless.
+  return !!sub && sub.status !== 'trial' && isPaidPlan(sub.plan.slug)
 }
 
 /** The plan slug an account holds, or null if it has no subscription. */
@@ -127,7 +176,7 @@ async function planSlugOf(userId: number): Promise<string | null> {
  */
 async function kindOf(userId: number): Promise<ReferralKind> {
   const slug = await planSlugOf(userId)
-  if (slug === 'club') return 'club'
+  if (isClubPlan(slug)) return 'club'
   if (slug === 'player') return 'player'
   return 'coach'
 }
@@ -141,7 +190,7 @@ async function kindOf(userId: number): Promise<ReferralKind> {
  * column of their own.
  */
 async function tierOf(userId: number): Promise<ReferrerTier> {
-  return (await planSlugOf(userId)) === 'club' ? 'club' : 'coach'
+  return isClubPlan(await planSlugOf(userId)) ? 'club' : 'coach'
 }
 
 /** A refund or chargeback: the referral stops counting and the ladder recomputes. */
