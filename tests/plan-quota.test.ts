@@ -29,7 +29,7 @@ function onPlan(slug: string | null) {
   )
   mock.clubMember.findUnique.mockResolvedValue(null as never)
   mock.club.findUnique.mockResolvedValue(null as never)
-  mock.partner.findUnique.mockResolvedValue(null as never)
+  mock.collaborator.findUnique.mockResolvedValue(null as never)
   mock.squadPlayer.findFirst.mockResolvedValue(null as never)
 }
 

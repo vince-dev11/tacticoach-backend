@@ -29,6 +29,7 @@ import { clubPageRoutes } from './modules/club-page/club-page.routes.js'
 import { coachPageRoutes } from './modules/coach-page/coach-page.routes.js'
 import { feedbackRoutes } from './modules/feedback/feedback.routes.js'
 import { referralsRoutes } from './modules/referrals/referrals.routes.js'
+import { collaborationsRoutes } from './modules/collaborations/collaborations.routes.js'
 import { plansRoutes } from './modules/plans/plans.routes.js'
 import { ebooksRoutes } from './modules/ebooks/ebooks.routes.js'
 import { authoringRoutes } from './modules/ebooks/authoring.routes.js'
@@ -123,6 +124,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(sessionsRoutes, { prefix: '/api/sessions' })
   await app.register(stripeWebhookRoutes, { prefix: '/api/webhooks' })
   await app.register(contactRoutes, { prefix: '/api/contact' })
+  await app.register(collaborationsRoutes, { prefix: '/api/collaborations' })
   // AI tactics generation lives under the canvas namespace to match the
   // editor's existing client (/api/canvas/ai-layout, /api/canvas/ai-animation).
   await app.register(aiRoutes, { prefix: '/api/canvas' })

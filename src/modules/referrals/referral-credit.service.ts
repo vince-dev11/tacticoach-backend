@@ -14,6 +14,8 @@
 
 import { db } from '../../config/database.js'
 import { stripe, stripeConfigured } from '../../config/stripe.js'
+// TEMPORARY — see prisma-shim.ts.
+import { referralRewardDb } from './prisma-shim.js'
 
 /** Plan a comped account lands on when the coach has never subscribed. */
 const DEFAULT_CREDIT_PLAN = 'pro'
@@ -37,7 +39,7 @@ function addMonths(from: Date, months: number): Date {
  * null, and it is stamped as part of the same step that grants the value.
  */
 export async function applyPendingCredit(userId: number): Promise<number> {
-  const pending = await db.referralReward.findMany({
+  const pending = await referralRewardDb().findMany({
     where: { userId, appliedAt: null, revokedAt: null },
     orderBy: { grantedAt: 'asc' },
   })
@@ -103,7 +105,7 @@ export async function applyPendingCredit(userId: number): Promise<number> {
     })
   }
 
-  await db.referralReward.updateMany({
+  await referralRewardDb().updateMany({
     where: { id: { in: pending.map((r) => r.id) } },
     data: { appliedAt: new Date() },
   })

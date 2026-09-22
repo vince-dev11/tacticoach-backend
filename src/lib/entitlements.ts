@@ -1,12 +1,14 @@
 import { db } from '../config/database.js'
 import { isClubPlan, FREE_PLAN } from './capabilities.js'
+// TEMPORARY — see modules/collaborations/prisma-shim.ts.
+import { collaboratorDb } from '../modules/collaborations/prisma-shim.js'
 
 /**
- * The plan a Partner is comped on. Declared here rather than in the partners
+ * The plan a Collaborator is comped on. Declared here rather than in the
  * module so entitlements — which every request touches — doesn't have to pull
  * in the commission ledger to answer "can this person open the editor".
  */
-export const PARTNER_PLAN_SLUG = 'pro'
+export const COLLABORATION_PLAN_SLUG = 'pro'
 
 export interface Entitlements {
   /**
@@ -37,8 +39,8 @@ export interface Entitlements {
   plan: { id: number; name: string; slug: string } | null
   /** Access comes through a club seat rather than the user's own subscription. */
   viaClub: boolean
-  /** Access is comped because the user is an active Partner, not a customer. */
-  viaPartner: boolean
+  /** Access is comped because the user is an active Collaborator, not a customer. */
+  viaCollaboration: boolean
   /** The user owns a club (active club plan). */
   isClubOwner: boolean
   subscriptionStatus: string | null
@@ -97,7 +99,7 @@ export async function getEntitlements(userId: number): Promise<Entitlements> {
       playerAccess: !!linked,
       plan: null,
       viaClub: false,
-      viaPartner: false,
+      viaCollaboration: false,
       isClubOwner: false,
       subscriptionStatus: null,
       expiresAt: null,
@@ -111,14 +113,14 @@ export async function getEntitlements(userId: number): Promise<Entitlements> {
       playerAccess: false,
       plan: { id: 0, name: 'Owner', slug: 'owner' },
       viaClub: false,
-      viaPartner: false,
+      viaCollaboration: false,
       isClubOwner: false,
       subscriptionStatus: 'active',
       expiresAt: null,
     }
   }
 
-  const [sub, membership, ownedClub, partner] = await Promise.all([
+  const [sub, membership, ownedClub, collaborator] = await Promise.all([
     db.userSubscription.findUnique({
       where: { userId },
       include: { plan: { select: { id: true, name: true, slug: true } } },
@@ -140,7 +142,7 @@ export async function getEntitlements(userId: number): Promise<Entitlements> {
       },
     }),
     db.club.findUnique({ where: { ownerId: userId }, select: { id: true } }),
-    db.partner.findUnique({ where: { userId }, select: { status: true } }),
+    collaboratorDb().findUnique({ where: { userId }, select: { status: true } }),
   ])
 
   // Linked to at least one coach's squad. This is the WHOLE of playerAccess:
@@ -154,15 +156,15 @@ export async function getEntitlements(userId: number): Promise<Entitlements> {
   const ownerSub = membership?.club.owner.subscription ?? null
   const clubActive = subIsActive(ownerSub) && isClubPlan(ownerSub?.plan.slug)
 
-  // A partner is a supplier, not a customer: they are paid commission and given
+  // A collaborator is a supplier, not a customer: they are paid commission and given
   // the product to sell, so access cannot be conditional on them buying it.
-  // Checked last, so a partner who ALSO pays keeps their own plan — someone on
-  // Club must not be silently downgraded to Pro by signing a partner agreement.
-  const partnerActive = partner?.status === 'active'
-  const partnerPlan =
-    partnerActive && !ownActive && !clubActive
+  // Checked last, so a collaborator who ALSO pays keeps their own plan — someone on
+  // Club must not be silently downgraded to Pro by signing a collaboration agreement.
+  const collaborationActive = collaborator?.status === 'active'
+  const collaborationPlan =
+    collaborationActive && !ownActive && !clubActive
       ? await db.membershipPlan.findUnique({
-          where: { slug: PARTNER_PLAN_SLUG },
+          where: { slug: COLLABORATION_PLAN_SLUG },
           select: { id: true, name: true, slug: true },
         })
       : null
@@ -183,7 +185,7 @@ export async function getEntitlements(userId: number): Promise<Entitlements> {
   // paid for a plan that granted the full product, and they keep it until it
   // expires — withdrawing access from an existing subscriber because we
   // changed our minds about the tier would be theft.
-  const paidPlan = ownActive ? sub!.plan : clubActive ? ownerSub!.plan : partnerPlan
+  const paidPlan = ownActive ? sub!.plan : clubActive ? ownerSub!.plan : collaborationPlan
   const plan = paidPlan ?? { ...FREE_PLAN }
 
   return {
@@ -197,7 +199,7 @@ export async function getEntitlements(userId: number): Promise<Entitlements> {
     playerAccess: !!linkedToSquad,
     plan,
     viaClub: !ownActive && clubActive,
-    viaPartner: !ownActive && !clubActive && partnerActive && !!partnerPlan,
+    viaCollaboration: !ownActive && !clubActive && collaborationActive && !!collaborationPlan,
     isClubOwner: !!ownedClub && ownActive && isClubPlan(sub?.plan?.slug),
     subscriptionStatus: sub?.status ?? null,
     expiresAt: sub?.expiresAt ?? null,

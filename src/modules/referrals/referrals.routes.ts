@@ -1,13 +1,13 @@
-// Referral + partner endpoints.
+// Referral + collaboration endpoints.
 //
 //   GET /api/referrals/lookup?code=…  public — "Invited by Priya" on signup
 //   GET /api/referrals/me             code, link, ladder progress, credit —
 //                                     or { agreementRequired } until signed
 //   GET /api/referrals/agreement      the referral terms + version
 //   POST /api/referrals/accept        accept them — this is what opens it
-//   GET /api/referrals/partner        the partner statement (404 if not one)
-//   GET /api/referrals/partner/agreement   the agreement text + version
-//   POST /api/referrals/partner/accept     accept it — this is what activates them
+//   GET /api/referrals/collaboration        the statement (404 if not one)
+//   GET /api/referrals/collaboration/agreement   the agreement text + version
+//   POST /api/referrals/collaboration/accept     accept it — this is what activates them
 
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
@@ -15,14 +15,16 @@ import { authGuard } from '../../middleware/auth-guard.js'
 import { latinOnly } from '../../lib/latin-only.js'
 import { db } from '../../config/database.js'
 import { getReferralSummary } from './referrals.service.js'
-import { getPartnerStatement, acceptAgreement } from '../partners/partners.service.js'
-import { PARTNER_AGREEMENT } from '../partners/partner-agreement.js'
+import { getCollaborationStatement, acceptAgreement } from '../collaborations/collaborations.service.js'
+import { COLLABORATION_AGREEMENT } from '../collaborations/collaboration-agreement.js'
 import { REFERRAL_AGREEMENT, REFERRAL_AGREEMENT_VERSION } from './referral-agreement.js'
 import {
   hasAccepted, recordAcceptance, getAcceptance, signatureProblem,
   type AgreementKind,
 } from '../../lib/agreements.js'
 import { renderSignedAgreement } from '../../lib/agreement-pdf.js'
+// TEMPORARY — see ../collaborations/prisma-shim.ts.
+import { collaboratorDb } from '../collaborations/prisma-shim.js'
 
 /** The signed-in user's id, as every other route reads it off the JWT payload. */
 function userId(request: { user: unknown }): number {
@@ -81,17 +83,17 @@ export async function referralsRoutes(app: FastifyInstance) {
     // attribute. The alternative, minting the code and hiding it in the UI,
     // leaves a working link one devtools panel away.
     //
-    // PARTNERS ARE EXEMPT. Their own agreement already covers referrals in far
-    // more detail, they signed it to become a partner, and asking them to
+    // COLLABORATORS ARE EXEMPT. Their own agreement already covers referrals in far
+    // more detail, they signed it to become a collaborator, and asking them to
     // accept a second, weaker set of terms for the same activity would be
     // confusing at best and arguably contradictory.
     scoped.get('/me', async (request) => {
       const id = userId(request)
-      const partner = await db.partner.findUnique({
+      const collaborator = await collaboratorDb().findUnique({
         where: { userId: id },
         select: { status: true },
       })
-      const exempt = partner?.status === 'active'
+      const exempt = collaborator?.status === 'active'
 
       if (!exempt) {
         const signedAt = await hasAccepted(id, 'referral', REFERRAL_AGREEMENT_VERSION)
@@ -134,7 +136,7 @@ export async function referralsRoutes(app: FastifyInstance) {
     // again in two years, from the same record that proves it.
     scoped.get('/agreement/:kind/pdf', async (request, reply) => {
       const kind = (request.params as { kind: string }).kind as AgreementKind
-      if (kind !== 'referral' && kind !== 'partner') {
+      if (kind !== 'referral' && kind !== 'collaboration') {
         return reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'Unknown agreement' })
       }
       const record = await getAcceptance(userId(request), kind)
@@ -143,7 +145,7 @@ export async function referralsRoutes(app: FastifyInstance) {
           statusCode: 404, error: 'Not Found', message: 'Nothing signed on this account yet',
         })
       }
-      const doc = kind === 'partner' ? PARTNER_AGREEMENT : REFERRAL_AGREEMENT
+      const doc = kind === 'collaboration' ? COLLABORATION_AGREEMENT : REFERRAL_AGREEMENT
       const pdf = await renderSignedAgreement(doc, record)
       return reply
         .header('Content-Type', 'application/pdf')
@@ -154,19 +156,19 @@ export async function referralsRoutes(app: FastifyInstance) {
         .send(pdf)
     })
 
-    scoped.get('/partner', async (request, reply) => {
-      const statement = await getPartnerStatement(userId(request))
-      if (!statement) return reply.status(404).send({ message: 'Not a partner' })
+    scoped.get('/collaboration', async (request, reply) => {
+      const statement = await getCollaborationStatement(userId(request))
+      if (!statement) return reply.status(404).send({ message: 'Not a collaborator' })
       return statement
     })
 
     // The exact words they are being asked to agree to. Served from the API
-    // rather than baked into the frontend bundle so the text a partner accepts
+    // rather than baked into the frontend bundle so the text a collaborator accepts
     // and the version recorded against them come from the same place.
-    scoped.get('/partner/agreement', async () => PARTNER_AGREEMENT)
+    scoped.get('/collaboration/agreement', async () => COLLABORATION_AGREEMENT)
 
-    // POST /api/referrals/partner/accept — the click that activates them.
-    scoped.post('/partner/accept', async (request, reply) => {
+    // POST /api/referrals/collaboration/accept — the click that activates them.
+    scoped.post('/collaboration/accept', async (request, reply) => {
       const input = SignatureSchema.parse(request.body)
       const problem = badSignature(input.signature)
       if (problem) {
@@ -182,17 +184,17 @@ export async function referralsRoutes(app: FastifyInstance) {
         return reply.status(409).send({
           statusCode: 409,
           error: 'Conflict',
-          message: 'There is no open partner invitation on this account',
+          message: 'There is no open collaboration invitation on this account',
         })
       }
       // Also recorded in agreement_acceptances, which is where the name and
-      // the signature live. The `partners` row keeps its own signed-at and
+      // the signature live. The `collaborators` row keeps its own signed-at and
       // version as before — untouched rather than migrated, because moving
       // live commercial records is not something to bundle into a feature.
       await recordAcceptance(
-        userId(request), 'partner', PARTNER_AGREEMENT.version, request.ip ?? null, input,
+        userId(request), 'collaboration', COLLABORATION_AGREEMENT.version, request.ip ?? null, input,
       )
-      return getPartnerStatement(userId(request))
+      return getCollaborationStatement(userId(request))
     })
   })
 }

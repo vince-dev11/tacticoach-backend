@@ -35,7 +35,7 @@ const on = (slug: string): Entitlements => ({
   playerAccess: false,
   plan: { id: 1, name: slug, slug },
   viaClub: false,
-  viaPartner: false,
+  viaCollaboration: false,
   isClubOwner: false,
   subscriptionStatus: 'active',
   expiresAt: null,

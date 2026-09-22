@@ -7,10 +7,10 @@
 -- while it applied. Columns would keep only the latest and quietly destroy the
 -- rest.
 --
--- The partner agreement still records its acceptance on `partners` (one row,
+-- The collaboration agreement still records its acceptance on `collaborators` (one row,
 -- latest only). That is not changed here: it already has signed-at, version
 -- and IP, and moving live commercial records is not something to bundle into
--- a feature. New agreements land here; the partner one can be migrated across
+-- a feature. New agreements land here; the collaboration one can be migrated across
 -- later if we ever need its history.
 
 CREATE TABLE `agreement_acceptances` (
@@ -18,7 +18,7 @@ CREATE TABLE `agreement_acceptances` (
   `user_id`   INT NOT NULL,
   -- Which agreement. An ENUM rather than free text: an acceptance filed under
   -- a typo'd kind is an acceptance nobody can find.
-  `kind`      ENUM('referral', 'partner') NOT NULL,
+  `kind`      ENUM('referral', 'collaboration') NOT NULL,
   -- The version string as it was at acceptance ('1.0'). With the text kept in
   -- code and never edited in place, this is enough to reproduce exactly what
   -- they were shown.

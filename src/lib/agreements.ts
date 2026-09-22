@@ -5,7 +5,7 @@
 
 import { db } from '../config/database.js'
 
-export type AgreementKind = 'referral' | 'partner'
+export type AgreementKind = 'referral' | 'collaboration'
 
 // ---- TEMPORARY: remove once `prisma generate` has run against migration 26 --
 // The generated client has no `agreementAcceptance` delegate until then.
@@ -24,6 +24,9 @@ const acceptanceDb = () =>
   (db as unknown as {
     agreementAcceptance: {
       findFirst(args?: unknown): Promise<AcceptanceRow | null>
+      findMany?(args?: unknown): Promise<AcceptanceRow[]>
+      count?(args?: unknown): Promise<number>
+      groupBy?(args?: unknown): Promise<{ version: string; _count: { _all: number } }[]>
       upsert(args: unknown): Promise<AcceptanceRow>
     }
   }).agreementAcceptance
@@ -125,4 +128,43 @@ export async function recordAcceptance(
     },
   })
   return row.signedAt
+}
+
+/**
+ * The latest acceptance of one agreement for a whole set of users at once.
+ *
+ * For the admin overview, which needs the state of every coach on a page.
+ * Doing it with `getAcceptance` per row is N+1 queries to draw one table, and
+ * that table is the thing somebody refreshes while chasing signatures.
+ *
+ * Returns the LATEST row per user — a coach who signed 1.0 and then 2.0 shows
+ * as 2.0 — so a caller can tell "never signed" from "signed something older"
+ * by comparing the version, which is exactly the distinction the gate makes.
+ * The signature image is never selected: this feeds a table of dates, and a
+ * few hundred kilobytes of base64 per row to draw one is waste.
+ */
+export async function latestAcceptances(
+  userIds: number[],
+  kind: AgreementKind,
+): Promise<Map<number, { version: string; signerName: string | null; signedAt: Date }>> {
+  const out = new Map<number, { version: string; signerName: string | null; signedAt: Date }>()
+  if (userIds.length === 0) return out
+
+  const rows = (await acceptanceDb().findMany?.({
+    where: { userId: { in: userIds }, kind },
+    // Oldest first, so the newest write wins as we walk it. Sorting in the
+    // database rather than in JS because `signedAt` is set by the database and
+    // two rows can share a millisecond.
+    orderBy: [{ signedAt: 'asc' }, { id: 'asc' }],
+    select: { userId: true, version: true, signerName: true, signedAt: true },
+  })) as { userId: number; version: string; signerName: string | null; signedAt: Date }[] | undefined
+
+  for (const row of rows ?? []) {
+    out.set(row.userId, {
+      version: row.version,
+      signerName: row.signerName,
+      signedAt: row.signedAt,
+    })
+  }
+  return out
 }

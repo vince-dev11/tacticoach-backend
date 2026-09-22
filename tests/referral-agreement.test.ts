@@ -9,6 +9,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { dbMock } from './setup.js'
 import { getApp, accessToken, authHeaders } from './helpers.js'
 import { REFERRAL_AGREEMENT, REFERRAL_AGREEMENT_VERSION } from '../src/modules/referrals/referral-agreement.js'
+import { REWARD_CAP_PERCENT } from '../src/lib/referral-ladder.js'
 
 const mock = dbMock as unknown as Record<string, Record<string, ReturnType<typeof vi.fn>>>
 
@@ -26,7 +27,7 @@ const post = async (url: string, payload: unknown = { name: 'Ana Ruiz', signatur
 
 /** Nobody has signed anything, and this account is not a partner. */
 function unsigned() {
-  mock.partner.findUnique.mockResolvedValue(null as never)
+  mock.collaborator.findUnique.mockResolvedValue(null as never)
   mock.agreementAcceptance.findFirst.mockResolvedValue(null as never)
 }
 
@@ -110,7 +111,7 @@ describe('accepting', () => {
 
 describe('after the terms are accepted', () => {
   it('returns the code and the ladders', async () => {
-    mock.partner.findUnique.mockResolvedValue(null as never)
+    mock.collaborator.findUnique.mockResolvedValue(null as never)
     mock.agreementAcceptance.findFirst.mockResolvedValue({ signedAt: new Date() } as never)
     mock.user.findUniqueOrThrow.mockResolvedValue({ referralCode: 'ANA-4K2XQ', name: 'Ana' } as never)
     mock.referral.findMany.mockResolvedValue([] as never)
@@ -127,7 +128,7 @@ describe('after the terms are accepted', () => {
   it('checks the CURRENT version, not any signature ever given', async () => {
     // Somebody who signed 1.0 has not agreed to 1.1. Treating them as though
     // they had is precisely what the version column exists to prevent.
-    mock.partner.findUnique.mockResolvedValue(null as never)
+    mock.collaborator.findUnique.mockResolvedValue(null as never)
     mock.agreementAcceptance.findFirst.mockResolvedValue(null as never)
     await get('/api/referrals/me')
 
@@ -140,9 +141,9 @@ describe('after the terms are accepted', () => {
 describe('partners are not asked twice', () => {
   it('skips the referral terms for an active partner', async () => {
     // Their own agreement covers referrals in far more detail, and they signed
-    // it to become a partner. Asking them to accept a second, weaker set of
+    // it to become a collaborator. Asking them to accept a second, weaker set of
     // terms for the same activity would be contradictory.
-    mock.partner.findUnique.mockResolvedValue({ status: 'active' } as never)
+    mock.collaborator.findUnique.mockResolvedValue({ status: 'active' } as never)
     mock.user.findUniqueOrThrow.mockResolvedValue({ referralCode: 'ANA-4K2XQ', name: 'Ana' } as never)
     mock.referral.findMany.mockResolvedValue([] as never)
     mock.referralReward.findMany.mockResolvedValue([] as never)
@@ -157,7 +158,7 @@ describe('partners are not asked twice', () => {
   it('still asks someone who was only INVITED as a partner', async () => {
     // Invited is not signed. They have agreed to nothing yet, so the ordinary
     // referral terms still apply until they accept one document or the other.
-    mock.partner.findUnique.mockResolvedValue({ status: 'invited' } as never)
+    mock.collaborator.findUnique.mockResolvedValue({ status: 'invited' } as never)
     mock.agreementAcceptance.findFirst.mockResolvedValue(null as never)
 
     const body = (await get('/api/referrals/me')).json()
@@ -172,16 +173,49 @@ describe('the document itself', () => {
     expect(body.title).toMatch(/referral/i)
   })
 
-  it('quotes no ladder figures, which would drift out of step', () => {
-    // The numbers live in lib/referral-ladder and differ across six ladders.
-    // Copying any of them into the contract is how the partner agreement came
-    // to promise 20% while the system paid 15%.
-    const text = [
+  const agreementText = () =>
+    [
       ...REFERRAL_AGREEMENT.intro,
       ...REFERRAL_AGREEMENT.sections.flatMap((s) => [...(s.body ?? []), ...(s.points ?? [])]),
     ].join(' ')
-    expect(text).not.toMatch(/\b\d+\s*(free\s*)?months?\b/i)
-    expect(text).not.toMatch(/\d+%/)
+
+  it('quotes no rate figures, which would drift out of step', () => {
+    // The rates are computed per pair of plans — twenty-five of them — and
+    // every one moves when a price does. Copying any into the contract is how
+    // the collaboration agreement came to promise one commission rate while the
+    // system paid another.
+    expect(agreementText()).not.toMatch(/\b\d+\s*(free\s*)?months?\b/i)
+  })
+
+  it('quotes the cap, and ONLY the cap, and takes it from the constant', () => {
+    // The one exception, and it earns it: REWARD_CAP_PERCENT is what every
+    // rate is derived FROM rather than a figure derived from anything else,
+    // and it is interpolated rather than typed. Saying it is the most
+    // reassuring thing the document can do — one rule, same for everybody.
+    const percentages = agreementText().match(/\d+(?:\.\d+)?%/g) ?? []
+    expect(percentages.length).toBeGreaterThan(0)
+    expect(new Set(percentages)).toEqual(new Set([`${REWARD_CAP_PERCENT}%`]))
+  })
+
+  it('would notice a hand-typed percentage', () => {
+    // Mutation check on the guard above: it must reject a second figure, not
+    // merely tolerate whatever it finds.
+    const tampered = `${agreementText()} and collaborators earn 15% commission`
+    const percentages = tampered.match(/\d+(?:\.\d+)?%/g) ?? []
+    expect(new Set(percentages)).not.toEqual(new Set([`${REWARD_CAP_PERCENT}%`]))
+  })
+
+  it('explains the monthly wait, which is the rule people will ask about', () => {
+    // A monthly customer's referral counts on their SECOND payment. Somebody
+    // who has clearly been paid for will otherwise look unrewarded, and the
+    // support ticket writes itself if the contract does not say why.
+    expect(agreementText()).toMatch(/second payment/i)
+  })
+
+  it('says plainly that cancelling does not claw a reward back', () => {
+    // The reassurance that makes the programme worth joining. It is also a
+    // real commitment: reverseReferral is called on refunds only.
+    expect(agreementText()).toMatch(/cancelling is not a refund/i)
   })
 
   it('tells people where the real numbers are', () => {
@@ -192,7 +226,7 @@ describe('the document itself', () => {
 
 describe('a signature is required, not a tick box', () => {
   beforeEach(() => {
-    mock.partner.findUnique.mockResolvedValue(null as never)
+    mock.collaborator.findUnique.mockResolvedValue(null as never)
     mock.agreementAcceptance.findFirst.mockResolvedValue(null as never)
     mock.agreementAcceptance.upsert.mockResolvedValue({ signedAt: new Date() } as never)
     mock.user.findUniqueOrThrow.mockResolvedValue({ referralCode: 'ANA-4K2XQ', name: 'Ana' } as never)

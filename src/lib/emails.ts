@@ -9,6 +9,11 @@
 import { env } from '../config/env.js'
 import { isMailConfigured, sendMail } from '../config/mailer.js'
 import { tagLabel } from './feedback-tag-labels.js'
+import {
+  COMMISSION_WINDOW_MONTHS,
+  DEFAULT_COACH_RATE,
+  DEFAULT_CLUB_RATE,
+} from '../modules/collaborations/collaboration-terms.js'
 
 const BRAND = '#00A76F'
 
@@ -117,7 +122,7 @@ export type EmailKind =
   | 'club_invite'
   | 'club_page_approved'
   | 'club_page_rejected'
-  | 'partner_invite'
+  | 'collaboration_invite'
   | 'account_setup'
   | 'player_note'
   | 'password_reset'
@@ -345,37 +350,44 @@ export async function sendClubPageApprovedEmail(
 }
 
 /**
- * Partner invitation. Deliberately says "read and accept" rather than "you are
- * now a partner": nothing is comped and no commission accrues until they accept
- * the agreement in the app, and an email that implies otherwise creates an
- * expectation the product will then contradict.
+ * Collaboration invitation. Deliberately says "read and accept" rather than
+ * "you are now a collaborator": nothing is comped and no commission accrues
+ * until they accept the agreement in the app, and an email that implies
+ * otherwise creates an expectation the product will then contradict.
+ *
+ * The rates are INTERPOLATED from the constants, never typed. This email said
+ * a flat 20% for a while after the programme had moved to 15%, which is
+ * exactly the failure the agreement's own tests exist to prevent — and an
+ * email is worse than a contract for it, because nobody ever re-reads one.
  */
-export async function sendPartnerInviteEmail(
+export async function sendCollaborationInviteEmail(
   invitee: { name: string; email: string },
   acceptUrl: string,
 ): Promise<void> {
+  const coachPct = Math.round(DEFAULT_COACH_RATE * 100)
+  const clubPct = Math.round(DEFAULT_CLUB_RATE * 100)
   await sendSafely(
     {
       to: invitee.email,
-      subject: 'An invitation to the TactiCoach Partner Programme',
+      subject: 'An invitation to the TactiCoach Collaboration Programme',
       text:
         `Hi ${invitee.name},\n\n` +
-        `We'd like to invite you onto the TactiCoach Partner Programme.\n\n` +
-        `Partners earn 20% of what every coach and club they refer pays, for 12 months from that customer's first payment — and get a TactiCoach Pro account free for as long as the partnership runs.\n\n` +
+        `We'd like to invite you onto the TactiCoach Collaboration Programme.\n\n` +
+        `Collaborators earn ${coachPct}% of what every coach they introduce pays and ${clubPct}% of what every club pays, for ${COMMISSION_WINDOW_MONTHS} months from that customer's first payment — plus a TactiCoach Pro account free for as long as the collaboration runs.\n\n` +
         `The agreement is waiting in your account. Have a read, and if you're happy with it, accept it there:\n${acceptUrl}\n\n` +
         `Nothing starts until you accept, and there's no obligation to.\n\n` +
         `The TactiCoach team`,
       html: layout(
-        'An invitation to the TactiCoach Partner Programme.',
-        `${kicker('PARTNER INVITATION')}
-         <h1 style="margin:0 0 12px;font-size:21px">We'd like you as a TactiCoach Partner</h1>
-         <p style="margin:0 0 10px">Hi ${invitee.name}, partners earn <strong>20%</strong> of what every coach and club they refer pays, for 12 months from that customer's first payment — plus a TactiCoach Pro account free for as long as the partnership runs.</p>
+        'An invitation to the TactiCoach Collaboration Programme.',
+        `${kicker('COLLABORATION INVITATION')}
+         <h1 style="margin:0 0 12px;font-size:21px">We'd like you as a TactiCoach Collaborator</h1>
+         <p style="margin:0 0 10px">Hi ${invitee.name}, collaborators earn <strong>${coachPct}%</strong> of what every coach they introduce pays and <strong>${clubPct}%</strong> of what every club pays, for ${COMMISSION_WINDOW_MONTHS} months from that customer's first payment — plus a TactiCoach Pro account free for as long as the collaboration runs.</p>
          <p style="margin:0 0 4px">The agreement is waiting in your account:</p>
          ${button(acceptUrl, 'Read and accept the agreement')}
          <p style="margin:0;color:#6b7280;font-size:13px">Nothing starts until you accept, and there's no obligation to.</p>`,
       ),
     },
-    'partner_invite',
+    'collaboration_invite',
   )
 }
 

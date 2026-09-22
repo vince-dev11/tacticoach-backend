@@ -34,7 +34,7 @@ const on = (slug: string | null, over: Partial<Entitlements> = {}): Entitlements
   playerAccess: false,
   plan: slug ? { id: 1, name: slug, slug } : null,
   viaClub: false,
-  viaPartner: false,
+  viaCollaboration: false,
   isClubOwner: false,
   subscriptionStatus: slug ? 'active' : null,
   expiresAt: null,

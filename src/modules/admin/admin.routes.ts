@@ -21,10 +21,10 @@ import { isMailConfigured } from '../../config/mailer.js'
 import { createAccountSetupToken, createPasswordResetTokenFor } from '../auth/auth.service.js'
 import { latinOnly } from '../../lib/latin-only.js'
 import { isClubPlan } from '../../lib/capabilities.js'
-import { getAcceptance } from '../../lib/agreements.js'
+import { getAcceptance, latestAcceptances } from '../../lib/agreements.js'
 import { renderSignedAgreement } from '../../lib/agreement-pdf.js'
-import { PARTNER_AGREEMENT } from '../partners/partner-agreement.js'
-import { REFERRAL_AGREEMENT } from '../referrals/referral-agreement.js'
+import { COLLABORATION_AGREEMENT } from '../collaborations/collaboration-agreement.js'
+import { REFERRAL_AGREEMENT, REFERRAL_AGREEMENT_VERSION } from '../referrals/referral-agreement.js'
 import {
   adminList as adminListEbooks, adminGet as adminGetEbook, uniqueSlug as uniqueEbookSlug,
   ebookDelegate,
@@ -35,8 +35,16 @@ import {
 // action. See ebook-review.ts for why they must not each have their own.
 import { sentOnly } from '../../lib/sent-only.js'
 import { transition as transitionEbook, type EbookStatus as EbookStatusValue } from '../ebooks/ebook-review.js'
-import { invitePartner, endPartner } from '../partners/partners.service.js'
-import { sendPartnerInviteEmail } from '../../lib/emails.js'
+import { inviteCollaborator, endCollaborator } from '../collaborations/collaborations.service.js'
+import {
+  listApplications,
+  approveApplication,
+  rejectApplication,
+  type ApplicationStatus,
+} from '../collaborations/applications.service.js'
+// TEMPORARY — see ../collaborations/prisma-shim.ts.
+import { collaboratorDb, commissionDb } from '../collaborations/prisma-shim.js'
+import { sendCollaborationInviteEmail } from '../../lib/emails.js'
 
 // ---- TEMPORARY: remove once `prisma generate` has run against migration 23 --
 // The generated client has no `emailLog` delegate until then. Narrow on
@@ -1080,13 +1088,155 @@ export async function adminRoutes(app: FastifyInstance) {
     return reply.send(await adminGetEbook(id))
   })
 
+  // ---- Who has signed the referral terms -------------------------------------
+
+  // GET /admin/referrals/signatures — the overview.
+  //
+  // Per-user agreement records already existed, but only one account at a
+  // time: you had to know who to look at before you could find out. Chasing
+  // signatures is the opposite job — you want the list of people who have not
+  // signed, and you want it to stop being a list.
+  //
+  // THREE STATES, NOT TWO. "Signed" and "not signed" is the obvious split and
+  // it is wrong, because the gate is version-specific: somebody who accepted
+  // 1.0 has not accepted 2.0 and is back behind it. Collapsing those two into
+  // "signed" would show a green tick next to a coach who currently cannot see
+  // their own link, which is precisely the question this screen exists to
+  // answer.
+  app.get('/referrals/signatures', async (request, reply) => {
+    const { search = '', page = '1', state = 'all' } = request.query as Record<string, string>
+    const take = 25
+    const skip = (Math.max(1, Number(page) || 1) - 1) * take
+
+    // Players are excluded, not filtered out afterwards. The player plan is
+    // retired and they cannot refer anybody, so listing them would pad the
+    // "not signed" count with accounts that are never going to sign.
+    const eligible: Prisma.UserWhereInput = { accountType: { not: 'player' } }
+
+    // The state filter runs IN THE QUERY, not over the page.
+    //
+    // Filtering the 25 rows we happened to fetch would give a page of eight
+    // and a pager that still claimed nine pages — and "show me everyone who
+    // hasn't signed" is the whole reason somebody opens this screen, so it is
+    // the one path that must not be subtly wrong. Expressed against the
+    // acceptance relation, each state is exact and pages properly.
+    const signedCurrent = { kind: 'referral' as const, version: REFERRAL_AGREEMENT_VERSION }
+    const byState: Record<string, Prisma.UserWhereInput> = {
+      all: {},
+      current: { agreements: { some: signedCurrent } },
+      // Signed something, but not the version the gate is asking for.
+      outdated: {
+        agreements: { some: { kind: 'referral' } },
+        NOT: { agreements: { some: signedCurrent } },
+      },
+      none: { NOT: { agreements: { some: { kind: 'referral' } } } },
+    }
+
+    const where: Prisma.UserWhereInput = {
+      ...eligible,
+      ...(byState[state] ?? {}),
+      ...(search
+        ? {
+            OR: [
+              { email: { contains: search } },
+              { name: { contains: search } },
+              { surname: { contains: search } },
+              { clubName: { contains: search } },
+            ],
+          }
+        : {}),
+    }
+
+    const [users, total, everyone] = await Promise.all([
+      db.user.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take,
+        select: {
+          id: true, name: true, surname: true, email: true, clubName: true,
+          createdAt: true, referralCode: true,
+          subscription: { select: { plan: { select: { name: true, slug: true } } } },
+          collaborator: { select: { status: true } },
+          _count: { select: { referralsMade: true } },
+        },
+      }),
+      db.user.count({ where }),
+      // The counts are over EVERYONE, not the page and not the search or the
+      // state filter. A header that changed when you typed in the search box
+      // would be answering a different question from the one it appears to
+      // answer — and a "not signed: 175" that became "not signed: 2" because
+      // you searched for a name is worse than no number at all.
+      db.user.findMany({ where: eligible, select: { id: true } }),
+    ])
+
+    const [onPage, all] = await Promise.all([
+      latestAcceptances(users.map((u) => u.id), 'referral'),
+      latestAcceptances(everyone.map((u) => u.id), 'referral'),
+    ])
+
+    const classify = (signed: { version: string } | undefined, collaboratorStatus?: string) => {
+      // Active collaborators are exempt from the referral terms — their own
+      // agreement covers referrals in far more detail and they signed that to
+      // become one. Showing them as "not signed" would put a permanent row on
+      // a list whose whole purpose is to get shorter.
+      if (collaboratorStatus === 'active') return 'exempt' as const
+      if (!signed) return 'none' as const
+      return signed.version === REFERRAL_AGREEMENT_VERSION ? 'current' : 'outdated' as const
+    }
+
+    const activeCollaborators = await collaboratorDb().findMany({
+      where: { userId: { in: everyone.map((u) => u.id) }, status: 'active' },
+      select: { userId: true },
+    })
+    const exempt = new Set(activeCollaborators.map((c) => c.userId))
+
+    const counts = { current: 0, outdated: 0, none: 0, exempt: 0 }
+    for (const u of everyone) {
+      counts[classify(all.get(u.id), exempt.has(u.id) ? 'active' : undefined)]++
+    }
+
+    const rows = users.map((u) => {
+      const signed = onPage.get(u.id)
+      // TEMPORARY cast — the checked-in Prisma client has no `collaborator`
+      // relation on User until `prisma generate` runs against migration 17.
+      // See ../collaborations/prisma-shim.ts.
+      const collaborator = (u as { collaborator?: { status: string } | null }).collaborator
+      const status = classify(signed, collaborator?.status)
+      return {
+        id: u.id,
+        name: [u.name, u.surname].filter(Boolean).join(' '),
+        email: u.email,
+        clubName: u.clubName,
+        plan: u.subscription?.plan.name ?? 'Free',
+        joinedAt: u.createdAt,
+        status,
+        version: signed?.version ?? null,
+        signerName: signed?.signerName ?? null,
+        signedAt: signed?.signedAt ?? null,
+        /** Only minted at acceptance, so this is the gate's own answer. */
+        hasCode: !!u.referralCode,
+        referralsMade: u._count.referralsMade,
+      }
+    })
+
+    return reply.send({
+      rows,
+      total,
+      page: Number(page) || 1,
+      limit: take,
+      counts,
+      currentVersion: REFERRAL_AGREEMENT_VERSION,
+    })
+  })
+
   // ---- Signed agreements ----------------------------------------------------
 
   // GET /admin/users/:id/agreements — what this account has signed.
   app.get('/users/:id/agreements', async (request, reply) => {
     const id = Number((request.params as { id: string }).id)
     const rows = await Promise.all(
-      (['referral', 'partner'] as const).map(async (kind) => {
+      (['referral', 'collaboration'] as const).map(async (kind) => {
         const rec = await getAcceptance(id, kind)
         return rec
           ? {
@@ -1113,7 +1263,7 @@ export async function adminRoutes(app: FastifyInstance) {
   // has, rather than a second implementation that might disagree.
   app.get('/users/:id/agreements/:kind/pdf', async (request, reply) => {
     const { id, kind } = request.params as { id: string; kind: string }
-    if (kind !== 'referral' && kind !== 'partner') {
+    if (kind !== 'referral' && kind !== 'collaboration') {
       return reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'Unknown agreement' })
     }
     const record = await getAcceptance(Number(id), kind)
@@ -1126,7 +1276,7 @@ export async function adminRoutes(app: FastifyInstance) {
       where: { id: Number(id) },
       select: { name: true, surname: true },
     })
-    const doc = kind === 'partner' ? PARTNER_AGREEMENT : REFERRAL_AGREEMENT
+    const doc = kind === 'collaboration' ? COLLABORATION_AGREEMENT : REFERRAL_AGREEMENT
     const pdf = await renderSignedAgreement(doc, record)
     const who = [user?.name, user?.surname].filter(Boolean).join('-') || id
     return reply
@@ -1135,13 +1285,14 @@ export async function adminRoutes(app: FastifyInstance) {
       .send(pdf)
   })
 
-  // ---- Partner programme ----------------------------------------------------
-  // Partners are invite-only by design (agreement §1), so there is no self-serve
-  // route to become one — it happens here, after an agreement is signed.
+  // ---- Collaboration programme -----------------------------------------------
+  // Two ways in: an application from the public /collaborate form (reviewed
+  // below), or a direct invitation from here. Both land the person in
+  // `invited`, and only signing the agreement makes them active.
 
-  // GET /admin/partners — the roster with what each is owed.
-  app.get('/partners', async (_request, reply) => {
-    const partners = await db.partner.findMany({
+  // GET /admin/collaborations — the roster with what each is owed.
+  app.get('/collaborations', async (_request, reply) => {
+    const collaborators = await collaboratorDb().findMany({
       orderBy: { createdAt: 'desc' },
       include: {
         user: { select: { id: true, name: true, surname: true, email: true, referralCode: true } },
@@ -1150,34 +1301,38 @@ export async function adminRoutes(app: FastifyInstance) {
     })
 
     return reply.send(
-      partners.map((p) => {
-        const live = p.commissions.filter((c) => !c.reversedAt)
+      collaborators.map((c) => {
+        const live = (c.commissions ?? []).filter((line) => !line.reversedAt)
         return {
-          id: p.id,
-          status: p.status,
-          commissionRate: Number(p.commissionRate),
-          companyName: p.companyName,
-          agreementSignedAt: p.agreementSignedAt,
-          agreementVersion: p.agreementVersion,
-          startedAt: p.startedAt,
-          endedAt: p.endedAt,
-          user: p.user,
-          owedPence: live.filter((c) => !c.paidOutAt).reduce((s, c) => s + c.commissionAmount, 0),
-          lifetimePence: live.reduce((s, c) => s + c.commissionAmount, 0),
+          id: c.id,
+          status: c.status,
+          coachRate: Number(c.coachRate),
+          clubRate: Number(c.clubRate),
+          companyName: c.companyName,
+          agreementSignedAt: c.agreementSignedAt,
+          agreementVersion: c.agreementVersion,
+          startedAt: c.startedAt,
+          endedAt: c.endedAt,
+          user: c.user,
+          owedPence: live
+            .filter((line) => !line.paidOutAt)
+            .reduce((sum, line) => sum + line.commissionAmount, 0),
+          lifetimePence: live.reduce((sum, line) => sum + line.commissionAmount, 0),
         }
       }),
     )
   })
 
-  // POST /admin/partners { email, commissionRate?, companyName?, notes? }
-  // Sends the invitation. They are NOT a partner until they accept in the app.
-  app.post('/partners', async (request, reply) => {
+  // POST /admin/collaborations { email, coachRate?, clubRate?, companyName?, notes? }
+  // Sends the invitation. They are NOT a collaborator until they accept in the app.
+  app.post('/collaborations', async (request, reply) => {
     const body = z
       .object({
         email: z.string().email(),
-        // Stored as a fraction: 0.2 is 20%. Capped at 100% so a typo of "20"
+        // Stored as fractions: 0.2 is 20%. Capped at 100% so a typo of "20"
         // meaning percent cannot commit us to twenty times the revenue.
-        commissionRate: z.number().min(0).max(1).optional(),
+        coachRate: z.number().min(0).max(1).optional(),
+        clubRate: z.number().min(0).max(1).optional(),
         companyName: z.string().max(150).optional(),
         notes: z.string().max(2000).optional(),
       })
@@ -1188,13 +1343,14 @@ export async function adminRoutes(app: FastifyInstance) {
       return reply.status(404).send({
         statusCode: 404,
         error: 'Not Found',
-        message: 'No account with that email — the partner needs to sign up first',
+        message: 'No account with that email — they need to sign up first, or approve their application instead',
       })
     }
 
-    const { code } = await invitePartner({
+    const { code } = await inviteCollaborator({
       userId: user.id,
-      commissionRate: body.commissionRate,
+      coachRate: body.coachRate,
+      clubRate: body.clubRate,
       companyName: body.companyName ?? null,
       notes: body.notes ?? null,
     })
@@ -1203,48 +1359,156 @@ export async function adminRoutes(app: FastifyInstance) {
       select: { name: true, email: true },
     })
     // Fire-and-forget: a mail outage must not make the invite look like it
-    // failed when the partner row was created perfectly well.
-    void sendPartnerInviteEmail(invitee, `${env.FRONTEND_URL}/profile#partner`)
+    // failed when the collaborator row was created perfectly well.
+    void sendCollaborationInviteEmail(invitee, `${env.FRONTEND_URL}/profile#collaborate`)
 
     return reply.send({ userId: user.id, code, status: 'invited' })
   })
 
-  // PATCH /admin/partners/:id { status?, commissionRate? }
-  app.patch('/partners/:id', async (request, reply) => {
+  // PATCH /admin/collaborations/:id { status?, coachRate?, clubRate? }
+  app.patch('/collaborations/:id', async (request, reply) => {
     const id = Number((request.params as { id: string }).id)
     const body = z
       .object({
         status: z.enum(['invited', 'active', 'suspended', 'ended']).optional(),
-        commissionRate: z.number().min(0).max(1).optional(),
+        coachRate: z.number().min(0).max(1).optional(),
+        clubRate: z.number().min(0).max(1).optional(),
       })
       .parse(request.body)
 
-    const partner = await db.partner.findUnique({ where: { id }, select: { userId: true } })
-    if (!partner) {
-      return reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'Partner not found' })
+    const collaborator = await collaboratorDb().findUnique({ where: { id }, select: { userId: true } })
+    if (!collaborator) {
+      return reply
+        .status(404)
+        .send({ statusCode: 404, error: 'Not Found', message: 'Collaborator not found' })
     }
 
     if (body.status === 'ended') {
-      await endPartner(partner.userId)
+      await endCollaborator(collaborator.userId)
     } else if (body.status) {
-      await db.partner.update({ where: { id }, data: { status: body.status, endedAt: null } })
+      await collaboratorDb().update({ where: { id }, data: { status: body.status, endedAt: null } })
     }
-    // A rate change applies to referrals made after it (agreement §7); past
-    // commission lines keep the rate copied onto them at the time.
-    if (body.commissionRate !== undefined) {
-      await db.partner.update({ where: { id }, data: { commissionRate: body.commissionRate } })
+    // A rate change applies forwards only; past commission lines keep the rate
+    // copied onto them at the time.
+    const rates: Record<string, number> = {}
+    if (body.coachRate !== undefined) rates.coachRate = body.coachRate
+    if (body.clubRate !== undefined) rates.clubRate = body.clubRate
+    if (Object.keys(rates).length > 0) {
+      await collaboratorDb().update({ where: { id }, data: rates })
     }
 
-    const updated = await db.partner.findUniqueOrThrow({ where: { id } })
-    return reply.send({ id: updated.id, status: updated.status, commissionRate: Number(updated.commissionRate) })
+    const updated = await collaboratorDb().findUniqueOrThrow({ where: { id } })
+    return reply.send({
+      id: updated.id,
+      status: updated.status,
+      coachRate: Number(updated.coachRate),
+      clubRate: Number(updated.clubRate),
+    })
   })
 
-  // POST /admin/partners/:id/mark-paid — stamp the open lines as settled after
-  // paying an invoice. Amounts are never edited, only marked.
-  app.post('/partners/:id/mark-paid', async (request, reply) => {
+  // ---- Applications from the public form -------------------------------------
+
+  // GET /admin/collaboration-applications?status=submitted
+  app.get('/collaboration-applications', async (request, reply) => {
+    const { status = 'submitted', page = '1' } = request.query as Record<string, string>
+    return reply.send(
+      await listApplications({
+        status: (status === 'all' ? 'all' : status) as ApplicationStatus | 'all',
+        page: Number(page) || 1,
+      }),
+    )
+  })
+
+  // POST /admin/collaboration-applications/:id/approve { note? }
+  //
+  // Two outcomes, and the caller has to know which: somebody with an account
+  // is invited outright, somebody without one gets a signup link. Returning
+  // the token here rather than emailing it silently means the admin can see
+  // what was sent and re-send it if the mail bounced.
+  app.post('/collaboration-applications/:id/approve', async (request, reply) => {
     const id = Number((request.params as { id: string }).id)
-    const result = await db.partnerCommission.updateMany({
-      where: { partnerId: id, paidOutAt: null, reversedAt: null },
+    const body = z.object({ note: z.string().max(1000).optional() }).parse(request.body ?? {})
+    const result = await approveApplication(id, body.note ?? null)
+    if (!result) {
+      return reply
+        .status(404)
+        .send({ statusCode: 404, error: 'Not Found', message: 'No such application' })
+    }
+
+    if (result.outcome === 'invited') {
+      void sendCollaborationInviteEmail(
+        { name: result.name, email: result.email },
+        `${env.FRONTEND_URL}/profile#collaborate`,
+      )
+    } else if (result.outcome === 'token' && result.inviteToken) {
+      void sendCollaborationInviteEmail(
+        { name: result.name, email: result.email },
+        `${env.FRONTEND_URL}/signup?collab=${encodeURIComponent(result.inviteToken)}`,
+      )
+    }
+    // 'already' sends nothing. Approving twice must not send a second link,
+    // because the second one would invalidate the first and strand anybody
+    // who had already clicked it.
+
+    return reply.send(result)
+  })
+
+  // POST /admin/collaboration-applications/:id/reject { note? }
+  app.post('/collaboration-applications/:id/reject', async (request, reply) => {
+    const id = Number((request.params as { id: string }).id)
+    const body = z.object({ note: z.string().max(1000).optional() }).parse(request.body ?? {})
+    const done = await rejectApplication(id, body.note ?? null)
+    // No email. A rejection that arrives unasked is worse than silence, and
+    // whoever wants to send one can write it themselves.
+    return reply.send({ rejected: done })
+  })
+
+  // ---- Directory moderation ---------------------------------------------------
+
+  // PATCH /admin/collaborations/:id/profile
+  //
+  // `profileApproved` is set HERE and nowhere else. The collaborator can edit
+  // their own profile, and doing so clears it — moderation must never approve
+  // one version and publish another.
+  app.patch('/collaborations/:id/profile', async (request, reply) => {
+    const id = Number((request.params as { id: string }).id)
+    const body = z
+      .object({
+        profileApproved: z.boolean().optional(),
+        listed: z.boolean().optional(),
+        displayName: z.string().trim().max(160).nullable().optional(),
+        roleTitle: z.string().trim().max(120).nullable().optional(),
+        organisation: z.string().trim().max(160).nullable().optional(),
+        location: z.string().trim().max(120).nullable().optional(),
+        bio: z.string().trim().max(600).nullable().optional(),
+        links: z.string().trim().max(1000).nullable().optional(),
+        slug: z
+          .string()
+          .trim()
+          .regex(/^[a-z0-9-]+$/, 'A slug is lowercase letters, numbers and hyphens')
+          .max(80)
+          .nullable()
+          .optional(),
+      })
+      .parse(request.body ?? {})
+
+    const existing = await collaboratorDb().findUnique({ where: { id }, select: { id: true } })
+    if (!existing) {
+      return reply
+        .status(404)
+        .send({ statusCode: 404, error: 'Not Found', message: 'Collaborator not found' })
+    }
+
+    await collaboratorDb().update({ where: { id }, data: body })
+    return reply.send({ id, ...body })
+  })
+
+  // POST /admin/collaborations/:id/mark-paid — stamp the open lines as settled
+  // after paying. Amounts are never edited, only marked.
+  app.post('/collaborations/:id/mark-paid', async (request, reply) => {
+    const id = Number((request.params as { id: string }).id)
+    const result = await commissionDb().updateMany({
+      where: { collaboratorId: id, paidOutAt: null, reversedAt: null },
       data: { paidOutAt: new Date() },
     })
     return reply.send({ marked: result.count })

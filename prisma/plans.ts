@@ -90,7 +90,13 @@ export const SEED_PLANS: SeedPlan[] = [
     slug: 'club-5',
     description: 'Up to 5 coaches. Everything, for every seat.',
     monthlyPrice: '24.99',
-    annualPrice: '249.00', // £5.00 per coach per month
+    // Exactly ten times the monthly, NOT the nine-times "3 months free" the
+    // coach plans get. That is deliberate and load-bearing: the referral
+    // programme pays one free month per club referred, and a free month has
+    // to come in under 10% of the referred club's first year. At £249 it was
+    // 10.04% — over by nine pence — and the reward had to halve to "1 per 2".
+    // The extra pound buys the better sentence. See lib/referral-ladder.
+    annualPrice: '250.00', // £4.17 per coach per month billed annually
     currency: 'GBP',
     features: [
       'Everything in Pro, for every coach',
@@ -109,7 +115,7 @@ export const SEED_PLANS: SeedPlan[] = [
     slug: 'club-10',
     description: 'Up to 10 coaches. Everything, for every seat.',
     monthlyPrice: '39.99',
-    annualPrice: '399.00', // £4.00 per coach per month
+    annualPrice: '400.00', // £3.33 per coach per month billed annually — ten times monthly, see Club 5
     currency: 'GBP',
     features: [
       'Everything in Pro, for every coach',
@@ -128,7 +134,7 @@ export const SEED_PLANS: SeedPlan[] = [
     slug: 'club-20',
     description: 'Up to 20 coaches. Everything, for every seat.',
     monthlyPrice: '69.99',
-    annualPrice: '699.00', // £3.50 per coach per month
+    annualPrice: '700.00', // £2.92 per coach per month billed annually — ten times monthly, see Club 5
     currency: 'GBP',
     features: [
       'Everything in Pro, for every coach',

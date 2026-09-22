@@ -5,7 +5,7 @@
 // after signing is not much of a contract — this one can be produced again in
 // two years, from the same row that proves it happened, and it will say the
 // same thing because the clause text lives in code and is never edited in
-// place (see partner-agreement.ts and referral-agreement.ts).
+// place (see collaboration-agreement.ts and referral-agreement.ts).
 //
 // pdfkit rather than headless Chrome: no browser to install on the server, no
 // page to screenshot, and text that stays selectable and searchable in the

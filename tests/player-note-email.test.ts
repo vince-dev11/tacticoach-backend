@@ -70,7 +70,7 @@ function mockSend(options: {
   dbMock.userSubscription.findUnique.mockResolvedValue(activeSubscription() as never)
   dbMock.clubMember.findUnique.mockResolvedValue(null)
   dbMock.club.findUnique.mockResolvedValue(null)
-  dbMock.partner.findUnique.mockResolvedValue(null)
+  dbMock.collaborator.findUnique.mockResolvedValue(null)
   mock.squadPlayer.findFirst.mockResolvedValue(null as never)
   dbMock.user.findUnique.mockResolvedValue(
     userRow({ name: 'Marco', surname: 'Rossi', clubName: 'FC Test' }) as never,

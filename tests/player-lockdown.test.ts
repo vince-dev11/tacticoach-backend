@@ -136,7 +136,7 @@ describe('coaches are unaffected', () => {
     dbMock.userSubscription.findUnique.mockResolvedValue(activeSubscription() as never)
     dbMock.clubMember.findUnique.mockResolvedValue(null)
     dbMock.club.findUnique.mockResolvedValue(null)
-    dbMock.partner.findUnique.mockResolvedValue(null)
+    dbMock.collaborator.findUnique.mockResolvedValue(null)
     mock.squadPlayer.findFirst.mockResolvedValue(null as never)
     mock.board.findMany.mockResolvedValue([] as never)
 
@@ -161,7 +161,7 @@ describe('entitlements refuse a player regardless of what they hold', () => {
     )
     dbMock.clubMember.findUnique.mockResolvedValue(null)
     dbMock.club.findUnique.mockResolvedValue(null)
-    dbMock.partner.findUnique.mockResolvedValue(null)
+    dbMock.collaborator.findUnique.mockResolvedValue(null)
     mock.squadPlayer.findFirst.mockResolvedValue(null as never)
 
     const ent = await getEntitlements(1)

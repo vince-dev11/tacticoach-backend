@@ -1,235 +1,302 @@
-// The referral ladders: how many customers you have to bring, and what you get.
+// What a referrer earns, DERIVED FROM PRICES rather than written down.
 //
-// FOUR ladders, from two independent questions:
+// One rule, and the whole programme falls out of it:
 //
-//   Who is referring?      A Pro coach, or a Club. A free month is worth £2.99
-//                          to one and £24.99 to the other, so a Club has to
-//                          bring roughly twice as many people for the same
-//                          reward. Otherwise the same programme costs eight
-//                          times more for the accounts most able to work it.
+//     A referral never pays out more than 10% of what that customer
+//     pays us in their first year.
 //
-//   Who did they bring?    A coach, or a club. A club is worth about eight
-//                          coaches, so it pays from the very first one.
+// Nothing here is a hand-chosen number. Give this file what a free month
+// costs us (the referrer's monthly price) and what the new customer brings in
+// (their annual price) and it returns the most generous reward that still
+// fits under the cap. That is the entire design.
 //
-//   Referrer   Brings coaches          Brings clubs
-//   Pro         3 → 1   8 → 3   12 → 12    1 → 3   2 → 6   3 → 12
-//   Club        6 → 1  16 → 3   24 → 12    2 → 3   3 → 6   6 → 12
+// ---- Why it is computed and not tabled ---------------------------------
 //
-// Those month figures are RUNNING TOTALS — "8 coaches → 3 months" means you now
-// hold 3, not 3 more. The rungs below are stored as the increment each one
-// adds, because that is what a ledger row has to be, and `cumulativeAt` turns
-// them back into the totals above. Getting that backwards silently pays 16
-// months where 12 was promised, so the tests assert the totals.
+// The previous version had a table: two referrer tiers × two referred kinds,
+// four numbers, edited by hand. Three things were wrong with it.
 //
-// Everything here is a PURE function of one number — the count of referrals of
-// one kind that have actually paid. That is what makes webhook retries,
-// simultaneous payments and a refund three months later stop being special
-// cases: "what is owed" can always be recomputed from scratch and compared
-// with what was already granted.
+//   * BASIC HAD NOWHERE TO GO. There were two referrer tiers, coach and club,
+//     so a Basic subscriber was silently put on the Pro rate. Nobody decided
+//     that; it fell out of `isClubPlan(slug) ? 'club' : 'coach'`.
+//   * THE COST GUARD WAS FICTION. It assumed every referred coach bought Pro
+//     at £79. Referred coaches buy Basic too, at £45, and against that a
+//     Club 20's free month cost 39% — worse than the 44% blow-out the table
+//     was written to fix.
+//   * A PRICE CHANGE COULD BREACH IT SILENTLY. The rates lived here and the
+//     prices lived in prisma/plans.ts, and nothing tied the two together.
+//
+// Computing from prices fixes all three at once. There is no tier to fall
+// onto, the denominator is the real price of the real plan, and a price edit
+// moves the rate with it instead of quietly invalidating it.
+//
+// ---- What it produces, at today's prices --------------------------------
+//
+//   you're on ↓   they buy →  Basic      Pro       Club 5    Club 10   Club 20
+//   Basic  £4.99/mo           1 per 2    1 mo      5 mo      8 mo      14 mo
+//   Pro    £8.99/mo           1 per 2    1 per 2   2 mo      4 mo      7 mo
+//   Club 5  £24.99/mo         1 per 6    1 per 4   1 mo      1 mo      2 mo
+//   Club 10 £39.99/mo         1 per 9    1 per 6   1 per 2   1 mo      1 mo
+//   Club 20 £69.99/mo         1 per 16   1 per 9   1 per 3   1 per 2   1 mo
+//
+// Two things in that grid are worth understanding before anybody edits a
+// price.
+//
+// MONTHS INVERT, AND THAT IS CORRECT. A Basic coach earns 14 months for
+// bringing a Club 20; a Club 20 earns half that for bringing one. Both
+// received about £60 of value. A Club 20 month is fourteen times a Basic
+// month, so the same money buys fourteen times fewer of them. Nobody is
+// short-changed — "months" is just a unit that stretches.
+//
+// THE DIAGONAL IS THE TIGHT ONE. Refer somebody onto your own plan and the
+// reward is one month against roughly ten months of revenue, which lands
+// within a hair of the cap either side of it. Club annual prices are exactly
+// ten times monthly (£250/£400/£700), so one free month is 9.99% and fits.
+// Basic and Pro annual are ~nine times monthly — the deeper "3 months free"
+// discount — so one free month is 11% there and does NOT fit, which is why
+// their diagonal reads "1 per 2". If anybody ever wonders why Pro can't earn
+// a month for one Pro referral, that is the reason, and it is arithmetic
+// rather than policy.
+//
+// ---- The property everything else depends on ----------------------------
+//
+// What is owed is a PURE function of one number: how many referrals of one
+// (referrer plan, referred plan) pair have actually paid. That is what stops
+// webhook retries, simultaneous payments and a refund three months later from
+// being special cases — "what is owed" can always be recomputed from scratch
+// and compared against what has already been granted.
 
-/** The plan the REFERRER is on. Decides which thresholds apply to them. */
-export type ReferrerTier = 'coach' | 'club'
+/**
+ * The ceiling, as a percentage of the referred customer's first-year revenue.
+ *
+ * This is the one business number in the file. Everything else is derived.
+ */
+export const REWARD_CAP_PERCENT = 10
 
-/** What the REFERRED customer bought. Decides which ladder they land on. */
-export type ReferralKind = 'coach' | 'club' | 'player'
+/**
+ * A plan's prices, in pence.
+ *
+ * Pence because money in a float is how a rate ends up at 9.999999% and a
+ * test that reads `<= 0.1` disagrees with one that reads `< 0.1`. Every
+ * comparison in this file is integer arithmetic.
+ */
+export interface PlanPrice {
+  slug: string
+  /** Product name, for display. Never used in the arithmetic. */
+  name?: string
+  monthlyPence: number
+  annualPence: number
+}
 
-/** A rung: reach `at` paid referrals in a cycle, get `months` more free. */
-export interface Tier {
-  at: number
+/** Bring `every` paying customers of one plan, get `months` free. Repeats. */
+export interface Rate {
+  every: number
   months: number
 }
 
 /**
- * Increments that reach the promised totals.
- *   coach ladder: 1, +2, +9  → 1 / 3 / 12
- *   club ladder:  3, +3, +6  → 3 / 6 / 12
- * Only the thresholds differ between a Pro and a Club referrer; the rewards
- * themselves are the same, which is why these two lists are shared.
+ * The most generous reward that still fits under the cap.
+ *
+ * Two shapes come out of this, and which one depends on whether a single
+ * referral can pay for a whole month:
+ *
+ *   MONTHS PER REFERRAL — the referrer's month is cheap relative to what the
+ *   new customer pays, so each referral earns one or more whole months.
+ *
+ *   REFERRALS PER MONTH — the referrer's month costs more than 10% of one
+ *   referral, so several are needed. The rate is divided rather than the
+ *   reward being cut into fractions: "a month for every four" is a sentence
+ *   a coach can repeat; "a quarter of a month" is not a sentence anyone
+ *   should have to read on a progress bar.
  */
-const COACH_STEPS = [1, 2, 9] as const
-const CLUB_STEPS = [3, 3, 6] as const
-/** Players reach the same totals, just over far more heads — see below. */
-const PLAYER_STEPS = [1, 2, 9] as const
+export function rateFor(referrer: PlanPrice, referred: PlanPrice): Rate {
+  // A free plan has no month to give away and no revenue to measure against.
+  // Callers are supposed to have filtered these out already (a referral only
+  // qualifies on payment); this is the backstop that keeps a zero out of a
+  // denominator rather than trusting every caller forever.
+  if (referrer.monthlyPence <= 0 || referred.annualPence <= 0) {
+    return { every: 1, months: 0 }
+  }
 
-const rungs = (ats: readonly number[], steps: readonly number[]): readonly Tier[] =>
-  ats.map((at, i) => ({ at, months: steps[i] }))
+  // How many whole months 10% of their first year will buy.
+  const months = Math.floor(
+    (referred.annualPence * REWARD_CAP_PERCENT) / (100 * referrer.monthlyPence),
+  )
+  if (months >= 1) return { every: 1, months }
+
+  // Not even one. How many referrals does it take to afford one month?
+  const every = Math.ceil(
+    (referrer.monthlyPence * 100) / (REWARD_CAP_PERCENT * referred.annualPence),
+  )
+  return { every, months: 1 }
+}
 
 /**
- * Every ladder scales by what a free month is WORTH against what was brought
- * in. A Club month is worth roughly eight Pro months, which is why a Club has
- * to bring about twice as many people for the same reward.
+ * What this rate actually costs, as a fraction of first-year revenue.
  *
- * A player subscription is a fraction of a coach's, so the player rungs are
- * correspondingly longer — 9 / 24 / 36 rather than 3 / 8 / 12. That looks
- * steep next to the coach ladder and is in fact the easier climb: a coach's
- * eighteen players stand in front of them every Tuesday, whereas three
- * *coaches* takes networking.
+ * Exported because it is what the guard tests assert on, and because a number
+ * that only exists inside a test is a number nobody can check against the
+ * admin screen later.
  */
-export const LADDERS: Record<ReferrerTier, Record<ReferralKind, readonly Tier[]>> = {
-  coach: {
-    coach: rungs([3, 8, 12], COACH_STEPS),
-    club: rungs([1, 2, 3], CLUB_STEPS),
-    player: rungs([9, 24, 36], PLAYER_STEPS),
-  },
-  club: {
-    coach: rungs([6, 16, 24], COACH_STEPS),
-    club: rungs([2, 3, 6], CLUB_STEPS),
-    player: rungs([18, 48, 72], PLAYER_STEPS),
-  },
-}
-
-export function tiersFor(referrer: ReferrerTier, kind: ReferralKind): readonly Tier[] {
-  return LADDERS[referrer][kind]
-}
-
-/** Reaching the top rung closes a cycle; the ladder then starts again at zero. */
-export function cycleLength(referrer: ReferrerTier, kind: ReferralKind): number {
-  const tiers = tiersFor(referrer, kind)
-  return tiers[tiers.length - 1].at
+export function costShare(referrer: PlanPrice, referred: PlanPrice, rate: Rate = rateFor(referrer, referred)): number {
+  if (referred.annualPence <= 0 || rate.every <= 0) return 0
+  return (rate.months * referrer.monthlyPence) / (rate.every * referred.annualPence)
 }
 
 export interface OwedReward {
-  referrerTier: ReferrerTier
-  kind: ReferralKind
-  /** 1-based pass through the ladder. */
+  /** The plan the referrer was on. Locked at qualification, never re-read. */
+  referrerPlan: string
+  /** The plan the new customer bought. Also locked at qualification. */
+  referredPlan: string
+  /**
+   * Which award this is on this pairing, 1-based.
+   *
+   * Stored in the ledger's `cycle` column. Together with the two plan slugs
+   * it is what makes the insert idempotent: recomputing after a webhook retry
+   * produces the same award numbers and the unique key rejects the duplicate.
+   */
   cycle: number
-  tier: number
+  /**
+   * The `every` in force when this was earned.
+   *
+   * Recorded on the row rather than looked up later, for the same reason the
+   * collaboration programme copies its commission rate onto each statement line:
+   * changing a price must never restate history. A coach who earned a month
+   * for every two referrals keeps having earned it, even after a price rise
+   * moves the live rate to one for every three.
+   */
+  every: number
   months: number
 }
 
 /**
- * Every reward earned for `qualified` paid referrals on one ladder, in the
- * order they were earned.
+ * Every award earned for `qualified` paid referrals on one pairing.
  *
- * A cycle completes at the top rung and the next referral starts the next one,
- * so a Pro coach who brings 3 clubs earns 12 months and 6 clubs earns 24.
+ * Returned as a list rather than a total because the ledger stores one row
+ * per award — that is what lets a specific reward be revoked when the
+ * referral behind it refunds, without recomputing everything around it.
  */
 export function owedRewards(
-  referrer: ReferrerTier,
-  kind: ReferralKind,
+  referrerPlan: string,
+  referredPlan: string,
+  rate: Rate,
   qualified: number,
 ): OwedReward[] {
-  if (qualified <= 0) return []
-
-  const tiers = tiersFor(referrer, kind)
-  const length = cycleLength(referrer, kind)
-  const out: OwedReward[] = []
-  const completeCycles = Math.floor(qualified / length)
-  const remainder = qualified % length
-
-  const push = (cycle: number, t: Tier) =>
-    out.push({ referrerTier: referrer, kind, cycle, tier: t.at, months: t.months })
-
-  for (let cycle = 1; cycle <= completeCycles; cycle++) {
-    for (const t of tiers) push(cycle, t)
-  }
-  for (const t of tiers) {
-    if (remainder >= t.at) push(completeCycles + 1, t)
-  }
-  return out
+  if (rate.months <= 0 || rate.every <= 0) return []
+  const awards = Math.floor(Math.max(0, qualified) / rate.every)
+  return Array.from({ length: awards }, (_, i) => ({
+    referrerPlan,
+    referredPlan,
+    cycle: i + 1,
+    every: rate.every,
+    months: rate.months,
+  }))
 }
 
-/** A referral count for each of the four ladders. */
-export type LadderCounts = Record<ReferrerTier, Record<ReferralKind, number>>
-
-/** Every referrer tier, and every kind that can be referred. */
-export const REFERRER_TIERS = ['coach', 'club'] as const
-export const REFERRAL_KINDS = ['coach', 'club', 'player'] as const
-
-export const emptyCounts = (): LadderCounts => ({
-  coach: { coach: 0, club: 0, player: 0 },
-  club: { coach: 0, club: 0, player: 0 },
-})
-
-/** Everything owed across every ladder. */
-export function allOwedRewards(counts: LadderCounts): OwedReward[] {
-  const out: OwedReward[] = []
-  for (const referrer of REFERRER_TIERS) {
-    for (const kind of REFERRAL_KINDS) {
-      out.push(...owedRewards(referrer, kind, counts[referrer][kind]))
-    }
-  }
-  return out
-}
-
-/** Total free months earned on one ladder. */
-export function monthsEarned(
-  referrer: ReferrerTier,
-  kind: ReferralKind,
-  qualified: number,
-): number {
-  return owedRewards(referrer, kind, qualified).reduce((sum, r) => sum + r.months, 0)
-}
-
-/** Total across all four. */
-export function totalMonthsEarned(counts: LadderCounts): number {
-  return allOwedRewards(counts).reduce((sum, r) => sum + r.months, 0)
-}
-
-/**
- * Running total a referrer has earned at a rung — "2 clubs = 6 months" — rather
- * than the increment the rung itself pays.
- *
- * This is the number the programme was specified in and the one the UI must
- * show: "2 clubs → 3 months" sitting under "1 club → 3 months" reads as though
- * the second club was worth nothing.
- */
-export function cumulativeAt(referrer: ReferrerTier, kind: ReferralKind, at: number): number {
-  return tiersFor(referrer, kind)
-    .filter((t) => t.at <= at)
-    .reduce((sum, t) => sum + t.months, 0)
+/** Total free months for `qualified` referrals at this rate. */
+export function monthsEarned(rate: Rate, qualified: number): number {
+  if (rate.every <= 0) return 0
+  return Math.floor(Math.max(0, qualified) / rate.every) * rate.months
 }
 
 export interface LadderProgress {
-  referrerTier: ReferrerTier
-  kind: ReferralKind
+  referrerPlan: string
+  referredPlan: string
   qualified: number
-  /** Where they are within the current pass: 0 … cycleLength - 1. */
-  inCycle: number
-  cycle: number
+  rate: Rate
   monthsEarned: number
-  /** The next rung, with the TOTAL it takes them to. Null when the pass is done. */
-  next: { at: number; months: number; remaining: number } | null
-  /** Rungs labelled with running totals, ready to render. */
-  tiers: { at: number; months: number; reached: boolean }[]
+  /**
+   * The next award: how many more are needed, and what it pays.
+   *
+   * Never null. The old three-rung ladder could run out of rungs mid-pass and
+   * had to render "nothing more to earn", which is a strange thing to tell
+   * somebody in the middle of a programme. A flat rate always has a next one.
+   */
+  next: { inMore: number; months: number }
 }
 
 /**
- * Everything the progress UI needs, with the months already converted to
- * totals. Kept here rather than in the route so the numbers a coach reads on
- * screen come from the same source as the numbers we pay out on — a progress
- * bar that disagrees with the ledger is a support ticket that takes an hour
- * to unpick.
+ * Everything the progress UI needs, from the same function the payouts come
+ * from. A progress bar that disagrees with the ledger is a support ticket
+ * that takes an hour to unpick.
  */
 export function ladderProgress(
-  referrer: ReferrerTier,
-  kind: ReferralKind,
+  referrer: PlanPrice,
+  referred: PlanPrice,
   qualified: number,
 ): LadderProgress {
   const safe = Math.max(0, qualified)
-  const length = cycleLength(referrer, kind)
-  const tiers = tiersFor(referrer, kind)
-  const inCycle = safe % length
-  const upcoming = tiers.find((t) => inCycle < t.at)
-
+  const rate = rateFor(referrer, referred)
   return {
-    referrerTier: referrer,
-    kind,
+    referrerPlan: referrer.slug,
+    referredPlan: referred.slug,
     qualified: safe,
-    inCycle,
-    cycle: Math.floor(safe / length) + 1,
-    monthsEarned: monthsEarned(referrer, kind, safe),
-    next: upcoming
-      ? {
-          at: upcoming.at,
-          months: cumulativeAt(referrer, kind, upcoming.at),
-          remaining: upcoming.at - inCycle,
-        }
-      : null,
-    tiers: tiers.map((t) => ({
-      at: t.at,
-      months: cumulativeAt(referrer, kind, t.at),
-      reached: inCycle >= t.at,
-    })),
+    rate,
+    monthsEarned: monthsEarned(rate, safe),
+    // Landing exactly on an award resets the countdown to a full `every`
+    // rather than reading zero — "0 more to go" sitting next to an award
+    // already paid is the kind of off-by-one a coach screenshots and sends
+    // you.
+    next: {
+      inMore: rate.every - (safe % rate.every),
+      months: rate.months,
+    },
   }
+}
+
+/**
+ * Qualified referral counts, keyed `referrerPlan|referredPlan`.
+ *
+ * A pipe, because plan slugs are `[a-z0-9-]` and cannot contain one. This was
+ * briefly a NUL byte, which worked and made the whole file read as BINARY to
+ * grep, git diff and every review tool — a separator nobody can see is not
+ * cleverness, it is a file nobody can search.
+ */
+export type PairCounts = Map<string, number>
+
+export const pairKey = (referrerPlan: string, referredPlan: string): string =>
+  `${referrerPlan}|${referredPlan}`
+
+export const splitPairKey = (key: string): [string, string] => {
+  const [referrer, referred] = key.split('|')
+  return [referrer ?? '', referred ?? '']
+}
+
+/**
+ * Everything owed across every pairing this referrer has.
+ *
+ * `prices` is looked up per slug rather than passed as a fixed table, because
+ * a referrer can hold rows on plans they have since left and those still have
+ * to price correctly. A slug with no price left in the book earns nothing
+ * rather than throwing — a retired plan must not be able to take down the
+ * webhook that pays everybody else.
+ */
+export function allOwedRewards(
+  counts: PairCounts,
+  prices: (slug: string) => PlanPrice | undefined,
+): OwedReward[] {
+  const out: OwedReward[] = []
+  for (const [key, qualified] of counts) {
+    const [referrerPlan, referredPlan] = splitPairKey(key)
+    const referrer = prices(referrerPlan)
+    const referred = prices(referredPlan)
+    if (!referrer || !referred) continue
+    out.push(...owedRewards(referrerPlan, referredPlan, rateFor(referrer, referred), qualified))
+  }
+  // Stable order so a recompute produces the same list twice — the ledger
+  // diff below it compares by key, but a deterministic order makes the
+  // failure messages readable when it doesn't.
+  return out.sort(
+    (a, b) =>
+      a.referrerPlan.localeCompare(b.referrerPlan) ||
+      a.referredPlan.localeCompare(b.referredPlan) ||
+      a.cycle - b.cycle,
+  )
+}
+
+/** Total free months across every pairing. */
+export function totalMonthsEarned(
+  counts: PairCounts,
+  prices: (slug: string) => PlanPrice | undefined,
+): number {
+  return allOwedRewards(counts, prices).reduce((sum, r) => sum + r.months, 0)
 }

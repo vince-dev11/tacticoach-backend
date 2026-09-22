@@ -4,6 +4,7 @@
 import { beforeEach, vi } from 'vitest'
 import { mockDeep, mockReset } from 'vitest-mock-extended'
 import type { PrismaClient } from '@prisma/client'
+import { SEED_PLANS } from '../prisma/plans.js'
 
 export const dbMock = mockDeep<PrismaClient>()
 
@@ -37,10 +38,36 @@ vi.mock('../src/config/mailer.js', () => ({
  */
 export const TEST_SQUAD = { id: 1, userId: 1, name: 'My squad', ageGroup: null, sortOrder: 0, archivedAt: null }
 
+/**
+ * The plans table, as the referral engine reads it.
+ *
+ * Same reasoning as TEST_SQUAD above. The referral programme computes its
+ * rates from real prices (lib/referral-ladder.ts), so `loadPriceBook()` sits
+ * under every qualify, sync and summary call. A bare deep mock returns
+ * `undefined` from `findMany`, and the failure surfaces as "plans is not
+ * iterable" from inside plan-prices.ts — which looks like a bug in the code
+ * under test rather than a missing fixture.
+ *
+ * Seeded from prisma/plans.ts rather than invented, so a test that asserts
+ * "three coaches earns three months" is asserting it against the prices we
+ * actually charge. A test that wants different prices overrides this.
+ */
+export const TEST_PLANS = SEED_PLANS.map((plan, index) => ({
+  id: index + 1,
+  slug: plan.slug,
+  name: plan.name,
+  monthlyPrice: plan.monthlyPrice,
+  annualPrice: plan.annualPrice,
+  currency: plan.currency,
+  isActive: plan.isActive,
+}))
+
 beforeEach(() => {
   mockReset(dbMock)
-  const squad = (dbMock as unknown as {
+  const mock = dbMock as unknown as {
     squad: { findFirst: { mockResolvedValue: (v: unknown) => void } }
-  }).squad
-  squad.findFirst.mockResolvedValue(TEST_SQUAD)
+    membershipPlan: { findMany: { mockResolvedValue: (v: unknown) => void } }
+  }
+  mock.squad.findFirst.mockResolvedValue(TEST_SQUAD)
+  mock.membershipPlan.findMany.mockResolvedValue(TEST_PLANS)
 })

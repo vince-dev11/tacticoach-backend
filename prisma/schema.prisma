@@ -13,7 +13,7 @@ model User {
   role             Role      @default(user)
   /// What the person SAID they are at signup. Segmentation and onboarding
   /// routing only — never authorisation. What an account can actually do is
-  /// always resolved by lib/entitlements (subscription + club seat + partner),
+  /// always resolved by lib/entitlements (subscription + club seat + collaboration),
   /// and whether someone is "really" a club is the Club row plus an active
   /// owner subscription. The two can legitimately disagree: a coach invited to
   /// a club later still says `coach`, and someone who picks `club` and never
@@ -87,8 +87,9 @@ model User {
   challengeSubmissions ChallengeSubmission[]
   challengeVotes       ChallengeVote[]
 
-  /// This coach's own invite code (also the partner discount code when they are
-  /// a partner). Minted lazily on first use, never reassigned.
+  /// This coach's own invite code — and the same code when they are a
+  /// collaborator, so a link already on their slides keeps working the day
+  /// they sign. Minted lazily on first use, never reassigned.
   referralCode String? @unique @map("referral_code") @db.VarChar(24)
 
   seasonPlans      SeasonPlan[]
@@ -98,8 +99,9 @@ model User {
   referralsMade    Referral[]       @relation("Referrer")
   referralReceived Referral?        @relation("Referred")
   referralRewards  ReferralReward[]
-  partner          Partner?
-  partnerEarnings  PartnerCommission[]
+  collaborator     Collaborator?
+  collaborationEarnings CollaboratorCommission[]
+  collaborationApplications CollaborationApplication[]
   agreements       AgreementAcceptance[]
   ebooks           Ebook[]
   ebookNotes       EbookNote[]
@@ -111,7 +113,7 @@ model User {
 
 /// One coach introducing another. At most one row per referred user — being
 /// referred is a property of an account, decided once at signup and never
-/// reassigned, which is what stops two partners claiming the same customer.
+/// reassigned, which is what stops two collaborators claiming the same customer.
 ///
 /// `pending` until the referred coach's first payment actually clears. That is
 /// the whole anti-fraud design: creating accounts costs nothing, so nothing is
@@ -124,16 +126,25 @@ model Referral {
   /// so a statement can always show how the credit was attributed.
   code           String         @db.VarChar(24)
   status         ReferralStatus @default(pending)
-  /// Which ladder this counts on. Decided at the customer's FIRST PAYMENT from
-  /// the plan they bought, and not revisited: a coach who upgrades to Club
-  /// later already earned their referrer the coach reward, and moving it would
+  /// The plan the new customer BOUGHT. Decided at their FIRST PAYMENT and not
+  /// revisited: a coach who upgrades to Club later already earned their
+  /// referrer the reward for what they actually bought, and moving it would
   /// mean retracting one payout to make another.
-  kind           ReferralKind   @default(coach)
+  referredPlan   String         @default("pro") @map("referred_plan") @db.VarChar(32)
   /// The plan the REFERRER was on when this qualified. Locked in here rather
-  /// than read live, because a coach who upgrades to Club would otherwise have
-  /// their thresholds jump mid-ladder and rewards they already hold would stop
-  /// being "owed" — the recompute would try to take them back.
-  referrerTier   ReferrerTier   @default(coach) @map("referrer_tier")
+  /// than read live, because a coach who upgrades would otherwise have their
+  /// rate jump mid-programme and rewards they already hold would stop being
+  /// "owed" — the recompute would try to take them back.
+  referrerPlan   String         @default("pro") @map("referrer_plan") @db.VarChar(32)
+  /// The referred customer's first cleared payment, and the invoice that was.
+  /// The invoice id is kept so a retried webhook cannot be mistaken for a
+  /// second payment — see the monthly bar in referrals.service.ts.
+  firstPaymentAt  DateTime?     @map("first_payment_at")
+  firstInvoiceId  String?       @map("first_invoice_id") @db.VarChar(191)
+  /// Their second cleared payment. A MONTHLY customer has only handed over one
+  /// instalment when the reward would otherwise be earned, so monthly waits
+  /// for this one. Annual banks the whole year up front and never needs it.
+  secondPaymentAt DateTime?     @map("second_payment_at")
   qualifiedAt    DateTime?      @map("qualified_at")
   reversedAt     DateTime?      @map("reversed_at")
   createdAt      DateTime       @default(now()) @map("created_at")
@@ -141,7 +152,7 @@ model Referral {
   referrer User @relation("Referrer", fields: [referrerId], references: [id], onDelete: Cascade)
   referred User @relation("Referred", fields: [referredUserId], references: [id], onDelete: Cascade)
 
-  @@index([referrerId, status, kind, referrerTier])
+  @@index([referrerId, status, referrerPlan, referredPlan])
   @@map("referrals")
 }
 
@@ -154,19 +165,8 @@ enum ReferralStatus {
 /// A club is worth roughly eight coaches, so the two earn on separate ladders.
 /// A player subscription is worth a fraction of a coach's, so its rungs are
 /// correspondingly longer — see lib/referral-ladder.ts.
-enum ReferralKind {
-  coach
-  club
-  player
-}
-
 /// The plan the referrer holds. A free month is worth £2.99 to a Pro coach and
 /// £24.99 to a Club, so a Club has to bring about twice as many people for it.
-enum ReferrerTier {
-  coach
-  club
-}
-
 /// A rung of the referral ladder that has been reached and paid out.
 ///
 /// The unique key is the idempotency guard: the ladder is recomputed from
@@ -175,17 +175,18 @@ enum ReferrerTier {
 model ReferralReward {
   id        Int          @id @default(autoincrement())
   userId    Int          @map("user_id")
-  /// Which ladder paid this out: the referrer's plan and what they brought.
-  referrerTier ReferrerTier @default(coach) @map("referrer_tier")
-  kind      ReferralKind @default(coach)
-  /// Which pass through the ladder this belongs to (1-based). The ladder is
-  /// re-earnable: reaching 12 closes a cycle and the next referral opens
-  /// the next one.
+  /// Which pairing paid this out: the referrer's plan and what they brought.
+  referrerPlan String    @default("pro") @map("referrer_plan") @db.VarChar(32)
+  referredPlan String    @default("pro") @map("referred_plan") @db.VarChar(32)
+  /// Which award this is on that pairing (1-based). With the two plan slugs
+  /// it is the idempotency key: a recompute after a webhook retry produces
+  /// the same award numbers and the unique index rejects the duplicate.
   cycle     Int
-  /// The referral count that unlocked it — see LADDERS in referral-ladder.ts.
-  tier      Int
-  /// Free months this rung ADDS. Not the running total the referrer is shown:
-  /// the second club rung stores 3 and displays as "6 months".
+  /// How many referrals this award took — the rate in force when it was
+  /// earned. Recorded rather than looked up later, so a price change never
+  /// restates history. See referral-ladder.ts.
+  every     Int
+  /// Free months this award adds.
   months    Int
   grantedAt DateTime  @default(now()) @map("granted_at")
   /// When the months were actually put on the account. Unapplied rewards can
@@ -196,24 +197,32 @@ model ReferralReward {
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  @@unique([userId, referrerTier, kind, cycle, tier])
+  @@unique([userId, referrerPlan, referredPlan, cycle])
   @@index([userId])
   @@map("referral_rewards")
 }
 
-/// An invited coach on the commercial Partner Programme: paid commission
+/// An invited coach on the commercial Collaboration Programme: paid commission
 /// instead of credit, and a comped account so they can demo what they sell.
-model Partner {
+model Collaborator {
   id             Int           @id @default(autoincrement())
   userId         Int           @unique @map("user_id")
-  status         PartnerStatus @default(invited)
-  /// Share of the net subscription fee, e.g. 0.2000 for 20%.
-  /// A FRACTION: 0.1500 is 15%. Default for new partners only — existing
-  /// partners keep the rate their agreement states (see migration 25).
-  commissionRate Decimal       @default(0.1500) @map("commission_rate") @db.Decimal(6, 4)
+  status         CollaboratorStatus @default(invited)
+  /// Share of the net subscription fee, as FRACTIONS: 0.1500 is 15%.
+  ///
+  /// Two rates, because a club is a harder sale than a coach — a committee
+  /// decision over months rather than one person deciding in minutes. Which
+  /// applies is resolved PER INVOICE, from the plan that invoice is for, so a
+  /// coach who upgrades to a club plan moves their collaborator up from that
+  /// invoice onward. See rateForPlan in collaborations.service.ts.
+  ///
+  /// Defaults for new collaborators only — anyone already invited keeps the
+  /// rates their signed agreement states.
+  coachRate      Decimal       @default(0.1500) @map("coach_rate") @db.Decimal(6, 4)
+  clubRate       Decimal       @default(0.2000) @map("club_rate") @db.Decimal(6, 4)
   /// Trading name on the agreement, if they signed as a business.
   companyName    String?       @map("company_name") @db.VarChar(150)
-  /// Set when the partner accepted in the app. Until then `status` is `invited`
+  /// Set when the collaborator accepted in the app. Until then `status` is `invited`
   /// and nothing is comped — a comped account handed out before anyone agreed to
   /// anything is the whole reason this state exists.
   agreementSignedAt DateTime?  @map("agreement_signed_at")
@@ -225,16 +234,102 @@ model Partner {
   startedAt      DateTime      @default(now()) @map("started_at")
   endedAt        DateTime?     @map("ended_at")
   notes          String?       @db.Text
+
+  // ---- Public directory ----------------------------------------------------
+  // THREE conditions to appear, all required: `status = active`, `listed`, and
+  // `profileApproved`. Two booleans rather than one because they answer
+  // different questions — the collaborator's consent, and our moderation —
+  // and collapsing them would let either one publish somebody on its own.
+  /// Their choice. Default false: nobody is published by accident.
+  listed          Boolean      @default(false)
+  /// An admin has read the words and opened every link. Reset to false
+  /// whenever the profile is edited, so moderation cannot approve one version
+  /// and publish another.
+  profileApproved Boolean      @default(false) @map("profile_approved")
+  displayName     String?      @map("display_name") @db.VarChar(160)
+  roleTitle       String?      @map("role_title") @db.VarChar(120)
+  organisation    String?      @db.VarChar(160)
+  location        String?      @db.VarChar(120)
+  photoKey        String?      @map("photo_key") @db.VarChar(255)
+  bio             String?      @db.VarChar(600)
+  links           String?      @db.VarChar(1000)
+  /// Set at first publish and never changed — a directory URL that moves is a
+  /// link somebody already shared that now 404s.
+  slug            String?      @unique @db.VarChar(80)
   createdAt      DateTime      @default(now()) @map("created_at")
   updatedAt      DateTime      @updatedAt @map("updated_at")
 
   user        User                @relation(fields: [userId], references: [id], onDelete: Cascade)
-  commissions PartnerCommission[]
+  commissions CollaboratorCommission[]
 
-  @@map("partners")
+  @@index([status, listed, profileApproved])
+  @@map("collaborators")
 }
 
-enum PartnerStatus {
+/// An application to the Collaboration Programme, from the public form.
+///
+/// A SEPARATE TABLE from `Collaborator`, not a status on it. An application is
+/// a request from somebody who may not even have an account, and most will
+/// never become a collaborator; folding it in would mean every "who are my
+/// collaborators" query first had to remember to exclude the people who merely
+/// asked.
+///
+/// A rejected application is KEPT. It is the answer to "did we already say no
+/// to this club in March", and it is what stops the same person being approved
+/// twice by two different people.
+model CollaborationApplication {
+  id             Int      @id @default(autoincrement())
+  /// Nullable: the form is public and most applicants have no account yet.
+  userId         Int?     @map("user_id")
+  name           String   @db.VarChar(160)
+  email          String   @db.VarChar(255)
+  /// What they are applying AS — not the same as their account type. A coach
+  /// at a club may apply on the club's behalf.
+  applicantKind  ApplicantKind @default(coach) @map("applicant_kind")
+  organisation   String?  @db.VarChar(160)
+  location       String?  @db.VarChar(120)
+  links          String?  @db.VarChar(1000)
+  /// Self-reported and unverified, in their own words: "about 400 across two
+  /// newsletters" tells a reviewer more than 400 with no provenance.
+  audience       String?  @db.VarChar(200)
+  why            String?  @db.Text
+  /// TWO consents, deliberately separate. Agreeing to be contacted is not
+  /// agreeing to be published on our website.
+  consentContact Boolean  @default(false) @map("consent_contact")
+  consentListing Boolean  @default(false) @map("consent_listing")
+  status         ApplicationStatus @default(submitted)
+  /// Ours, not theirs — kept apart from `why` so an applicant's own words can
+  /// never be confused with something we wrote about them.
+  reviewNote     String?  @map("review_note") @db.VarChar(1000)
+  reviewedAt     DateTime? @map("reviewed_at")
+  /// Single-use and time-limited. Emailed on approval to an applicant with no
+  /// account, so they can create one and land straight on the agreement.
+  inviteToken    String?  @unique @map("invite_token") @db.VarChar(64)
+  inviteExpiresAt DateTime? @map("invite_expires_at")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  /// Not unique on email: somebody refused in March may reasonably apply again
+  /// in September, and a unique index would make the second attempt a 500.
+  @@index([email])
+  @@index([status, createdAt])
+  @@map("collaboration_applications")
+}
+
+enum ApplicantKind {
+  coach
+  club
+}
+
+enum ApplicationStatus {
+  submitted
+  approved
+  rejected
+}
+
+enum CollaboratorStatus {
   /// Invited, agreement not yet accepted. No commission, no comped account.
   invited
   active
@@ -242,14 +337,14 @@ enum PartnerStatus {
   ended
 }
 
-/// One line on a partner's statement: commission owed on one cleared payment.
+/// One line on a collaborator's statement: commission owed on one cleared payment.
 ///
 /// Amounts are stored in minor units (pence) as integers. Money in a Decimal
 /// read back through a JS number is a rounding bug waiting to be discovered at
 /// the worst possible moment — when someone disputes their invoice.
-model PartnerCommission {
+model CollaboratorCommission {
   id                Int       @id @default(autoincrement())
-  partnerId         Int       @map("partner_id")
+  collaboratorId    Int       @map("collaborator_id")
   /// The referred customer this line is for.
   customerId        Int       @map("customer_id")
   /// Stripe invoice that produced it — the dedupe key for webhook retries.
@@ -266,11 +361,11 @@ model PartnerCommission {
   paidOutAt         DateTime? @map("paid_out_at")
   createdAt         DateTime  @default(now()) @map("created_at")
 
-  partner  Partner @relation(fields: [partnerId], references: [id], onDelete: Cascade)
+  collaborator Collaborator @relation(fields: [collaboratorId], references: [id], onDelete: Cascade)
   customer User    @relation(fields: [customerId], references: [id], onDelete: Cascade)
 
-  @@index([partnerId, createdAt])
-  @@map("partner_commissions")
+  @@index([collaboratorId, createdAt])
+  @@map("collaborator_commissions")
 }
 
 /// One row per successful AI generation — the plan's monthly allowance is
@@ -1105,9 +1200,10 @@ model ClubPhoto {
 /// accepts 1.1, the record that they accepted 1.0 must survive — that record
 /// is the evidence of what applied while it applied.
 ///
-/// The PARTNER agreement still records onto `Partner` (latest only). Not
-/// changed here; live commercial records are not something to move as part of
-/// a feature. See migration 26.
+/// The COLLABORATION agreement also records its latest acceptance onto
+/// `Collaborator` itself. Kept in both places deliberately: that row drives
+/// the comped account and the commission, and this table is the evidence of
+/// what was agreed and when. See migration 26.
 model AgreementAcceptance {
   id       Int           @id @default(autoincrement())
   userId   Int           @map("user_id")
@@ -1139,7 +1235,7 @@ model AgreementAcceptance {
 
 enum AgreementKind {
   referral
-  partner
+  collaboration
 }
 
 /// A book: an ordered list of blocks, never a file. See migration 28 for why

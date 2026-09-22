@@ -218,7 +218,7 @@ const NOTHING: PlanLimits = {
  * Can this person do this?
  *
  * Takes the whole Entitlements rather than a slug so that access granted by a
- * CLUB SEAT or a partner comp resolves the same way as an own subscription —
+ * CLUB SEAT or a collaboration comp resolves the same way as an own subscription —
  * the caller should never have to remember which of the three it is.
  */
 export function can(ent: Entitlements, capability: Capability): boolean {
