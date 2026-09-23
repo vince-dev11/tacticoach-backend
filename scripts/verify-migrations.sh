@@ -93,9 +93,17 @@ count_rows() {
   fi
 }
 
+# Old name first, new name as fallback, so the script is also valid on a copy
+# that has already been migrated (a second run after fixing something else).
+count_rows_either() {
+  local n; n=$(count_rows "$1")
+  [[ "${n}" == "-" ]] && n=$(count_rows "$2")
+  echo "${n}"
+}
+
 if [[ "${MODE}" == copy ]]; then
-  B_PARTNERS=$(count_rows partners)
-  B_COMMISSIONS=$(count_rows partner_commissions)
+  B_PARTNERS=$(count_rows_either partners collaborators)
+  B_COMMISSIONS=$(count_rows_either partner_commissions collaborator_commissions)
   B_REFERRALS=$(count_rows referrals)
   B_REWARDS=$(count_rows referral_rewards)
   B_CODES=$(check_sql -N -e "SELECT COUNT(*) FROM users WHERE referral_code IS NOT NULL" 2>/dev/null || echo "-")
@@ -143,9 +151,12 @@ fi
 
 # ---- The real test ----------------------------------------------------------
 echo "──── prisma migrate diff: ${CHECK_DB} vs prisma/schema.prisma ─────────"
+# --from-config-datasource, not --from-url: Prisma 7 removed the latter. The
+# config file reads DATABASE_URL from the environment, and DATABASE_URL here
+# is the rehearsal copy, so this diffs the copy — never the live database.
 set +e
 DATABASE_URL="${CHECK_URL}" npx prisma migrate diff \
-  --from-url "${CHECK_URL}" \
+  --from-config-datasource \
   --to-schema prisma/schema.prisma \
   --script --exit-code > /tmp/migration-drift.sql 2>/tmp/migration-drift.err
 RC=$?
