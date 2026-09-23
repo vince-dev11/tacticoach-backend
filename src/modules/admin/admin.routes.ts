@@ -42,8 +42,6 @@ import {
   rejectApplication,
   type ApplicationStatus,
 } from '../collaborations/applications.service.js'
-// TEMPORARY — see ../collaborations/prisma-shim.ts.
-import { collaboratorDb, commissionDb } from '../collaborations/prisma-shim.js'
 import { sendCollaborationInviteEmail } from '../../lib/emails.js'
 
 // ---- TEMPORARY: remove once `prisma generate` has run against migration 23 --
@@ -1185,7 +1183,7 @@ export async function adminRoutes(app: FastifyInstance) {
       return signed.version === REFERRAL_AGREEMENT_VERSION ? 'current' : 'outdated' as const
     }
 
-    const activeCollaborators = await collaboratorDb().findMany({
+    const activeCollaborators = await db.collaborator.findMany({
       where: { userId: { in: everyone.map((u) => u.id) }, status: 'active' },
       select: { userId: true },
     })
@@ -1198,11 +1196,7 @@ export async function adminRoutes(app: FastifyInstance) {
 
     const rows = users.map((u) => {
       const signed = onPage.get(u.id)
-      // TEMPORARY cast — the checked-in Prisma client has no `collaborator`
-      // relation on User until `prisma generate` runs against migration 17.
-      // See ../collaborations/prisma-shim.ts.
-      const collaborator = (u as { collaborator?: { status: string } | null }).collaborator
-      const status = classify(signed, collaborator?.status)
+      const status = classify(signed, u.collaborator?.status)
       return {
         id: u.id,
         name: [u.name, u.surname].filter(Boolean).join(' '),
@@ -1292,7 +1286,7 @@ export async function adminRoutes(app: FastifyInstance) {
 
   // GET /admin/collaborations — the roster with what each is owed.
   app.get('/collaborations', async (_request, reply) => {
-    const collaborators = await collaboratorDb().findMany({
+    const collaborators = await db.collaborator.findMany({
       orderBy: { createdAt: 'desc' },
       include: {
         user: { select: { id: true, name: true, surname: true, email: true, referralCode: true } },
@@ -1376,7 +1370,7 @@ export async function adminRoutes(app: FastifyInstance) {
       })
       .parse(request.body)
 
-    const collaborator = await collaboratorDb().findUnique({ where: { id }, select: { userId: true } })
+    const collaborator = await db.collaborator.findUnique({ where: { id }, select: { userId: true } })
     if (!collaborator) {
       return reply
         .status(404)
@@ -1386,7 +1380,7 @@ export async function adminRoutes(app: FastifyInstance) {
     if (body.status === 'ended') {
       await endCollaborator(collaborator.userId)
     } else if (body.status) {
-      await collaboratorDb().update({ where: { id }, data: { status: body.status, endedAt: null } })
+      await db.collaborator.update({ where: { id }, data: { status: body.status, endedAt: null } })
     }
     // A rate change applies forwards only; past commission lines keep the rate
     // copied onto them at the time.
@@ -1394,10 +1388,10 @@ export async function adminRoutes(app: FastifyInstance) {
     if (body.coachRate !== undefined) rates.coachRate = body.coachRate
     if (body.clubRate !== undefined) rates.clubRate = body.clubRate
     if (Object.keys(rates).length > 0) {
-      await collaboratorDb().update({ where: { id }, data: rates })
+      await db.collaborator.update({ where: { id }, data: rates })
     }
 
-    const updated = await collaboratorDb().findUniqueOrThrow({ where: { id } })
+    const updated = await db.collaborator.findUniqueOrThrow({ where: { id } })
     return reply.send({
       id: updated.id,
       status: updated.status,
@@ -1492,14 +1486,14 @@ export async function adminRoutes(app: FastifyInstance) {
       })
       .parse(request.body ?? {})
 
-    const existing = await collaboratorDb().findUnique({ where: { id }, select: { id: true } })
+    const existing = await db.collaborator.findUnique({ where: { id }, select: { id: true } })
     if (!existing) {
       return reply
         .status(404)
         .send({ statusCode: 404, error: 'Not Found', message: 'Collaborator not found' })
     }
 
-    await collaboratorDb().update({ where: { id }, data: body })
+    await db.collaborator.update({ where: { id }, data: body })
     return reply.send({ id, ...body })
   })
 
@@ -1507,7 +1501,7 @@ export async function adminRoutes(app: FastifyInstance) {
   // after paying. Amounts are never edited, only marked.
   app.post('/collaborations/:id/mark-paid', async (request, reply) => {
     const id = Number((request.params as { id: string }).id)
-    const result = await commissionDb().updateMany({
+    const result = await db.collaboratorCommission.updateMany({
       where: { collaboratorId: id, paidOutAt: null, reversedAt: null },
       data: { paidOutAt: new Date() },
     })

@@ -15,9 +15,6 @@ import {
 } from '../../lib/referral-ladder.js'
 import { loadPriceBook, lookup, type PriceBook } from '../../lib/plan-prices.js'
 import { applyPendingCredit } from './referral-credit.service.js'
-// TEMPORARY — see prisma-shim.ts. Swap back to db.referral / db.referralReward
-// once `prisma generate` has run against migration 17.
-import { referralDb, referralRewardDb } from './prisma-shim.js'
 
 // Ambiguous glyphs are gone: a code gets read off a phone screen and typed by
 // someone else, and 0/O and 1/I/L are where that goes wrong.
@@ -82,7 +79,7 @@ export async function attachReferral(newUserId: number, rawCode: string | null |
   if (!referrer || referrer.id === newUserId) return
 
   try {
-    await referralDb().create({ data: { referrerId: referrer.id, referredUserId: newUserId, code } })
+    await db.referral.create({ data: { referrerId: referrer.id, referredUserId: newUserId, code } })
   } catch {
     // Already referred (unique on referred_user_id). First claim wins.
   }
@@ -100,7 +97,7 @@ export async function attachReferral(newUserId: number, rawCode: string | null |
  * replayed twice would clear the monthly bar below on its own.
  */
 export async function qualifyReferral(referredUserId: number, invoiceId?: string): Promise<void> {
-  const referral = await referralDb().findUnique({
+  const referral = await db.referral.findUnique({
     where: { referredUserId },
     select: {
       id: true,
@@ -119,7 +116,7 @@ export async function qualifyReferral(referredUserId: number, invoiceId?: string
   // `qualifyPendingFor` settles them then. Counting only once the referrer
   // pays would lose the history and make the sweep pay for a signup.
   const payments = advancePayments(referral, invoiceId)
-  if (payments) await referralDb().update({ where: { id: referral.id }, data: payments })
+  if (payments) await db.referral.update({ where: { id: referral.id }, data: payments })
 
   const first = payments?.firstPaymentAt ?? referral.firstPaymentAt
   const second = payments?.secondPaymentAt ?? referral.secondPaymentAt
@@ -157,7 +154,7 @@ export async function qualifyReferral(referredUserId: number, invoiceId?: string
   const referrerPlan = await planSlugOf(referral.referrerId)
   if (!isPaidPlan(referrerPlan)) return
 
-  await referralDb().update({
+  await db.referral.update({
     where: { id: referral.id },
     data: {
       status: 'qualified',
@@ -203,7 +200,7 @@ function advancePayments(
 export async function qualifyPendingFor(referrerId: number): Promise<void> {
   if (!isPaidPlan(await planSlugOf(referrerId))) return
 
-  const pending = await referralDb().findMany({
+  const pending = await db.referral.findMany({
     where: { referrerId, status: 'pending' },
     select: { referredUserId: true },
   })
@@ -251,13 +248,13 @@ async function planSlugOf(userId: number): Promise<string | null> {
  * A refund is different: that money went back.
  */
 export async function reverseReferral(referredUserId: number): Promise<void> {
-  const referral = await referralDb().findUnique({
+  const referral = await db.referral.findUnique({
     where: { referredUserId },
     select: { id: true, referrerId: true, status: true },
   })
   if (!referral || referral.status === 'reversed') return
 
-  await referralDb().update({
+  await db.referral.update({
     where: { id: referral.id },
     data: { status: 'reversed', reversedAt: new Date() },
   })
@@ -279,13 +276,13 @@ export async function syncRewards(userId: number): Promise<void> {
     `${r.referrerPlan}:${r.referredPlan}:${r.cycle}`
   const owedKeys = new Set(owed.map(key))
 
-  const existing = await referralRewardDb().findMany({ where: { userId } })
+  const existing = await db.referralReward.findMany({ where: { userId } })
   const existingKeys = new Set(existing.map(key))
 
   for (const reward of owed) {
     if (existingKeys.has(key(reward))) continue
     try {
-      await referralRewardDb().create({
+      await db.referralReward.create({
         data: {
           userId,
           referrerPlan: reward.referrerPlan,
@@ -307,10 +304,10 @@ export async function syncRewards(userId: number): Promise<void> {
   for (const reward of existing) {
     const stillOwed = owedKeys.has(key(reward))
     if (!stillOwed && !reward.appliedAt && !reward.revokedAt) {
-      await referralRewardDb().update({ where: { id: reward.id }, data: { revokedAt: new Date() } })
+      await db.referralReward.update({ where: { id: reward.id }, data: { revokedAt: new Date() } })
     } else if (stillOwed && reward.revokedAt) {
       // They earned it back.
-      await referralRewardDb().update({ where: { id: reward.id }, data: { revokedAt: null } })
+      await db.referralReward.update({ where: { id: reward.id }, data: { revokedAt: null } })
     }
   }
 
@@ -322,7 +319,7 @@ export async function syncRewards(userId: number): Promise<void> {
 
 /** Free months earned and not yet spent. */
 export async function creditBalanceMonths(userId: number): Promise<number> {
-  const rows = await referralRewardDb().findMany({
+  const rows = await db.referralReward.findMany({
     where: { userId, appliedAt: null, revokedAt: null },
     select: { months: true },
   })
@@ -337,7 +334,7 @@ export async function creditBalanceMonths(userId: number): Promise<number> {
  * means remembering to add another query.
  */
 export async function qualifiedCounts(userId: number): Promise<PairCounts> {
-  const rows = await referralDb().groupBy({
+  const rows = await db.referral.groupBy({
     by: ['referrerPlan', 'referredPlan'],
     where: { referrerId: userId, status: 'qualified' },
     _count: { _all: true },
@@ -410,7 +407,7 @@ export interface ReferralSummary {
 export async function getReferralSummary(userId: number): Promise<ReferralSummary> {
   const code = await ensureReferralCode(userId)
   const [referrals, rewards, counts, currentPlan, book] = await Promise.all([
-    referralDb().findMany({
+    db.referral.findMany({
       where: { referrerId: userId },
       orderBy: { createdAt: 'desc' },
       select: {
@@ -422,7 +419,7 @@ export async function getReferralSummary(userId: number): Promise<ReferralSummar
         referred: { select: { name: true } },
       },
     }),
-    referralRewardDb().findMany({
+    db.referralReward.findMany({
       where: { userId, revokedAt: null },
       orderBy: { grantedAt: 'asc' },
       select: {

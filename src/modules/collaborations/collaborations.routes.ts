@@ -13,7 +13,7 @@ import { z } from 'zod'
 import { presignUrl } from '../../config/s3.js'
 import { COLLABORATION_AGREEMENT } from './collaboration-agreement.js'
 import { submitApplication } from './applications.service.js'
-import { collaboratorDb } from './prisma-shim.js'
+import { db } from '../../config/database.js'
 
 /**
  * What the public form sends.
@@ -80,7 +80,7 @@ export async function collaborationsRoutes(app: FastifyInstance) {
   // bug that leaks one row leaks it to the whole internet, so the database is
   // asked the question we actually mean.
   app.get('/directory', async (_request, reply) => {
-    const rows = await collaboratorDb().findMany({
+    const rows = await db.collaborator.findMany({
       where: { status: 'active', listed: true, profileApproved: true },
       orderBy: { displayName: 'asc' },
       select: {
@@ -135,7 +135,7 @@ export async function collaborationsRoutes(app: FastifyInstance) {
   // GET /api/collaborations/directory/:slug — one entry.
   app.get('/directory/:slug', async (request, reply) => {
     const { slug } = request.params as { slug: string }
-    const found = (await collaboratorDb().findMany({
+    const found = (await db.collaborator.findMany({
       where: { slug, status: 'active', listed: true, profileApproved: true },
       select: {
         slug: true,

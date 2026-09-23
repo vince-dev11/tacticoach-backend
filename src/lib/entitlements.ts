@@ -1,7 +1,5 @@
 import { db } from '../config/database.js'
 import { isClubPlan, FREE_PLAN } from './capabilities.js'
-// TEMPORARY — see modules/collaborations/prisma-shim.ts.
-import { collaboratorDb } from '../modules/collaborations/prisma-shim.js'
 
 /**
  * The plan a Collaborator is comped on. Declared here rather than in the
@@ -142,7 +140,7 @@ export async function getEntitlements(userId: number): Promise<Entitlements> {
       },
     }),
     db.club.findUnique({ where: { ownerId: userId }, select: { id: true } }),
-    collaboratorDb().findUnique({ where: { userId }, select: { status: true } }),
+    db.collaborator.findUnique({ where: { userId }, select: { status: true } }),
   ])
 
   // Linked to at least one coach's squad. This is the WHOLE of playerAccess:

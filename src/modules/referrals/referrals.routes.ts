@@ -23,8 +23,6 @@ import {
   type AgreementKind,
 } from '../../lib/agreements.js'
 import { renderSignedAgreement } from '../../lib/agreement-pdf.js'
-// TEMPORARY — see ../collaborations/prisma-shim.ts.
-import { collaboratorDb } from '../collaborations/prisma-shim.js'
 
 /** The signed-in user's id, as every other route reads it off the JWT payload. */
 function userId(request: { user: unknown }): number {
@@ -89,7 +87,7 @@ export async function referralsRoutes(app: FastifyInstance) {
     // confusing at best and arguably contradictory.
     scoped.get('/me', async (request) => {
       const id = userId(request)
-      const collaborator = await collaboratorDb().findUnique({
+      const collaborator = await db.collaborator.findUnique({
         where: { userId: id },
         select: { status: true },
       })

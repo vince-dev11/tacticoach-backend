@@ -14,48 +14,8 @@ import crypto from 'node:crypto'
 import { db } from '../../config/database.js'
 import { inviteCollaborator } from './collaborations.service.js'
 
-// ---- TEMPORARY: remove once `prisma generate` has run against migration 32 --
-// The generated client has no `collaborationApplication` delegate until then.
-// See prisma-shim.ts for the same treatment of the collaborator tables.
 export type ApplicantKind = 'coach' | 'club'
 export type ApplicationStatus = 'submitted' | 'approved' | 'rejected'
-
-export interface ApplicationRow {
-  id: number
-  userId: number | null
-  name: string
-  email: string
-  applicantKind: ApplicantKind
-  organisation: string | null
-  location: string | null
-  links: string | null
-  audience: string | null
-  why: string | null
-  consentContact: boolean
-  consentListing: boolean
-  status: ApplicationStatus
-  reviewNote: string | null
-  reviewedAt: Date | null
-  inviteToken: string | null
-  inviteExpiresAt: Date | null
-  createdAt: Date
-  updatedAt: Date
-}
-
-type Args = Record<string, unknown>
-
-interface ApplicationDelegate {
-  findUnique(args: Args): Promise<ApplicationRow | null>
-  findFirst(args: Args): Promise<ApplicationRow | null>
-  findMany(args?: Args): Promise<ApplicationRow[]>
-  count(args?: Args): Promise<number>
-  create(args: Args): Promise<ApplicationRow>
-  update(args: Args): Promise<ApplicationRow>
-  groupBy(args: Args): Promise<{ status: ApplicationStatus; _count: { _all: number } }[]>
-}
-
-const applicationDb = (): ApplicationDelegate =>
-  (db as unknown as Record<string, unknown>).collaborationApplication as ApplicationDelegate
 
 /**
  * How long an approval link lasts.
@@ -98,7 +58,7 @@ export async function submitApplication(input: ApplicationInput): Promise<{ id: 
     select: { id: true },
   })
 
-  const row = await applicationDb().create({
+  const row = await db.collaborationApplication.create({
     data: {
       userId: existing?.id ?? null,
       name: input.name.trim(),
@@ -137,7 +97,7 @@ export async function approveApplication(
   id: number,
   note?: string | null,
 ): Promise<ApprovalResult | null> {
-  const application = await applicationDb().findUnique({ where: { id } })
+  const application = await db.collaborationApplication.findUnique({ where: { id } })
   if (!application) return null
   if (application.status === 'approved') {
     return { outcome: 'already', email: application.email, name: application.name }
@@ -158,7 +118,7 @@ export async function approveApplication(
       companyName: application.organisation,
       notes: application.why,
     })
-    await applicationDb().update({
+    await db.collaborationApplication.update({
       where: { id },
       data: {
         status: 'approved',
@@ -177,7 +137,7 @@ export async function approveApplication(
 
   const inviteToken = crypto.randomBytes(32).toString('base64url')
   const inviteExpiresAt = new Date(Date.now() + INVITE_TTL_DAYS * 86_400_000)
-  await applicationDb().update({
+  await db.collaborationApplication.update({
     where: { id },
     data: {
       status: 'approved',
@@ -192,9 +152,9 @@ export async function approveApplication(
 
 /** Refuse it. Kept, not deleted — see the model's own comment for why. */
 export async function rejectApplication(id: number, note?: string | null): Promise<boolean> {
-  const application = await applicationDb().findUnique({ where: { id } })
+  const application = await db.collaborationApplication.findUnique({ where: { id } })
   if (!application || application.status === 'rejected') return false
-  await applicationDb().update({
+  await db.collaborationApplication.update({
     where: { id },
     data: { status: 'rejected', reviewedAt: new Date(), reviewNote: note ?? null },
   })
@@ -210,7 +170,7 @@ export async function rejectApplication(id: number, note?: string | null): Promi
  * from the link, because the link is the untrusted part.
  */
 export async function redeemInvite(token: string, userId: number): Promise<boolean> {
-  const application = await applicationDb().findFirst({
+  const application = await db.collaborationApplication.findFirst({
     where: { inviteToken: token, status: 'approved' },
   })
   if (!application) return false
@@ -221,7 +181,7 @@ export async function redeemInvite(token: string, userId: number): Promise<boole
     companyName: application.organisation,
     notes: application.why,
   })
-  await applicationDb().update({
+  await db.collaborationApplication.update({
     where: { id: application.id },
     data: { userId, inviteToken: null, inviteExpiresAt: null },
   })
@@ -263,17 +223,17 @@ export async function listApplications(params: {
   const where = params.status && params.status !== 'all' ? { status: params.status } : {}
 
   const [rows, total, grouped] = await Promise.all([
-    applicationDb().findMany({
+    db.collaborationApplication.findMany({
       where,
       orderBy: { createdAt: 'desc' },
       skip: (page - 1) * limit,
       take: limit,
     }),
-    applicationDb().count({ where }),
+    db.collaborationApplication.count({ where }),
     // Counts over EVERYTHING, never narrowed by the filter — a "submitted: 12"
     // that became "submitted: 0" because you filtered to approved would be
     // answering a different question from the one it appears to.
-    applicationDb().groupBy({ by: ['status'], _count: { _all: true } }),
+    db.collaborationApplication.groupBy({ by: ['status'], _count: { _all: true } }),
   ])
 
   const counts: Record<ApplicationStatus, number> = { submitted: 0, approved: 0, rejected: 0 }
@@ -282,7 +242,7 @@ export async function listApplications(params: {
   // One query for the whole page rather than one per row.
   const emails = rows.map((r) => r.email)
   const siblings = emails.length
-    ? await applicationDb().findMany({ where: { email: { in: emails } }, select: { id: true, email: true } })
+    ? await db.collaborationApplication.findMany({ where: { email: { in: emails } }, select: { id: true, email: true } })
     : []
   const priorByEmail = new Map<string, number>()
   for (const s of siblings) priorByEmail.set(s.email, (priorByEmail.get(s.email) ?? 0) + 1)

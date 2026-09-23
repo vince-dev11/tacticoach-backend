@@ -81,8 +81,10 @@ ALTER TABLE `collaborators`
   ADD COLUMN `slug` VARCHAR(80) NULL;
 
 CREATE UNIQUE INDEX `collaborators_slug_key` ON `collaborators`(`slug`);
--- The directory's own query, in one index.
-CREATE INDEX `collaborators_listed_idx` ON `collaborators`(`status`, `listed`, `profile_approved`);
+-- The directory's own query, in one index. Named the way Prisma would name
+-- it, so `migrate diff` against the schema stays silent.
+CREATE INDEX `collaborators_status_listed_profile_approved_idx`
+  ON `collaborators`(`status`, `listed`, `profile_approved`);
 
 ALTER TABLE `collaboration_applications` ADD CONSTRAINT `collaboration_applications_user_id_fkey`
   FOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON DELETE SET NULL ON UPDATE CASCADE;

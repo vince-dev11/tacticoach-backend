@@ -43,9 +43,6 @@ export {
   CONTENT_VIDEO_MINIMUM,
   nextPayoutDate,
 } from './collaboration-terms.js'
-// TEMPORARY — see prisma-shim.ts. Swap back to db.collaborator /
-// db.collaboratorCommission once `prisma generate` has run against migration 17.
-import { collaboratorDb, commissionDb } from './prisma-shim.js'
 
 /** Comped plan a collaborator is given — defined with the rules it drives. */
 export { COLLABORATION_PLAN_SLUG } from '../../lib/entitlements.js'
@@ -78,7 +75,7 @@ export async function inviteCollaborator(params: {
   } = params
   const code = await ensureReferralCode(userId)
 
-  await collaboratorDb().upsert({
+  await db.collaborator.upsert({
     where: { userId },
     // Re-inviting somebody who already accepted must not silently reset them
     // to `invited` and pull their account out from under them, so status is
@@ -99,7 +96,7 @@ export async function inviteCollaborator(params: {
  * contents of a file in our repo" is not an answer.
  */
 export async function acceptAgreement(userId: number, ip: string | null): Promise<boolean> {
-  const collaborator = await collaboratorDb().findUnique({
+  const collaborator = await db.collaborator.findUnique({
     where: { userId },
     select: { status: true },
   })
@@ -108,7 +105,7 @@ export async function acceptAgreement(userId: number, ip: string | null): Promis
   // who was suspended or whose collaboration has ended.
   if (collaborator.status !== 'invited') return collaborator.status === 'active'
 
-  await collaboratorDb().update({
+  await db.collaborator.update({
     where: { userId },
     data: {
       status: 'active',
@@ -128,7 +125,7 @@ export async function acceptAgreement(userId: number, ip: string | null): Promis
  * lines is the fastest way to a dispute.
  */
 export async function endCollaborator(userId: number): Promise<void> {
-  await collaboratorDb().updateMany({
+  await db.collaborator.updateMany({
     where: { userId },
     data: { status: 'ended', endedAt: new Date() },
   })
@@ -179,7 +176,7 @@ export async function recordCommission(params: {
   })
   if (!referral || referral.status === 'reversed') return
 
-  const collaborator = await collaboratorDb().findUnique({
+  const collaborator = await db.collaborator.findUnique({
     where: { userId: referral.referrerId },
     select: { id: true, status: true, coachRate: true, clubRate: true },
   })
@@ -209,7 +206,7 @@ export async function recordCommission(params: {
   const commissionAmount = Math.round(netAmount * rate)
 
   try {
-    await commissionDb().create({
+    await db.collaboratorCommission.create({
       data: {
         collaboratorId: collaborator.id,
         customerId,
@@ -227,7 +224,7 @@ export async function recordCommission(params: {
 
 /** Reverse a statement line after a refund or chargeback. */
 export async function reverseCommission(providerInvoiceId: string): Promise<void> {
-  await commissionDb().updateMany({
+  await db.collaboratorCommission.updateMany({
     where: { providerInvoiceId, reversedAt: null },
     data: { reversedAt: new Date() },
   })
@@ -271,7 +268,7 @@ export interface CollaborationStatement {
 export async function getCollaborationStatement(
   userId: number,
 ): Promise<CollaborationStatement | null> {
-  const collaborator = await collaboratorDb().findUnique({
+  const collaborator = await db.collaborator.findUnique({
     where: { userId },
     select: {
       id: true,
@@ -289,7 +286,7 @@ export async function getCollaborationStatement(
 
   const [code, lines, referrals] = await Promise.all([
     ensureReferralCode(userId),
-    commissionDb().findMany({
+    db.collaboratorCommission.findMany({
       where: { collaboratorId: collaborator.id },
       orderBy: { createdAt: 'desc' },
       select: {
