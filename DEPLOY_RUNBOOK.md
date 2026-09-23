@@ -56,6 +56,10 @@ So this release now ships:
   `collaborators`, so the rename has to land first, and the 25 slot was
   empty everywhere.
 - `26`–`32` — unchanged (32's index name corrected to Prisma's convention).
+- `33_align_with_schema` — **new**: the exact SQL `prisma migrate diff`
+  emitted against the rehearsal copy — nine index renames and five dropped
+  `updated_at` defaults left by hand-written migrations 22/26/28/30. No row
+  changes. It exists so the drift check reads zero.
 
 The three drop-and-retry scripts from the first attempt
 (`reset-migration-17.sql`, `recover-migration-17.sh`,
@@ -101,7 +105,7 @@ npx prisma migrate status
 | **3. Failed migrations** | `0` | `npx prisma migrate resolve --rolled-back NAME` first |
 | **5. Club prices** | `RE-SEED NEEDED` | expected; step 5 |
 
-`migrate status` should list **25, 26, 27, 28, 29, 30, 31, 32** as not yet
+`migrate status` should list **25 through 33** as not yet
 applied and nothing under "not found locally". If it still mentions
 `17_referrals_collaborations`, that record was not rolled back — section 3
 above says how.
@@ -175,8 +179,8 @@ npx prisma generate
 npx prisma migrate deploy
 ```
 
-**Read the output before going on.** Eight migrations should apply: 25
-through 32. If anything fails, the site is still up on the old code — stop
+**Read the output before going on.** Nine migrations should apply: 25
+through 33. If anything fails, the site is still up on the old code — stop
 here, do not restart, paste the error.
 
 Then the same carry-across check the rehearsal did, on the live database:
