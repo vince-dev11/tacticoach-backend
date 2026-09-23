@@ -192,10 +192,16 @@ bash -c 'source scripts/db-env.sh && run_sql --table -e "SELECT (SELECT COUNT(*)
 Those must equal preflight section 2. Only then:
 
 ```bash
-npm run build
-pm2 restart tacticoach-api
+npm run build && pm2 restart tacticoach-api
 pm2 logs tacticoach-api --lines 40
 ```
+
+**The `&&` is load-bearing.** On 23 September `npm run build` failed on two
+type errors (`@types/pdfkit` was a devDependency and `--omit=dev` had skipped
+it) and the restart ran anyway. It worked only because `tsc` still emits on
+type errors — the JS was fine, the declarations were missing. With `&&` a
+failed build never restarts anything, and the old build keeps serving until
+you have looked. Type packages the build needs are now in `dependencies`.
 
 ---
 
