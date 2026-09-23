@@ -22,8 +22,8 @@
 #                           Restore the copy first, as root, the way the
 #                           17 September deploy did:
 #
-#       mysql -u root -p -e "CREATE DATABASE tacticoach_rehearsal"
-#       gunzip < ~/tacticoach-2026-09-22-pre-collab.sql.gz | mysql -u root -p tacticoach_rehearsal
+#       sudo mysql -e "CREATE DATABASE tacticoach_rehearsal"
+#       gunzip < ~/tacticoach-2026-09-22-pre-collab.sql.gz | sudo mysql tacticoach_rehearsal
 #
 # It never touches DB_NAME itself. The connection comes from .env; only the
 # database name is swapped, so no password is typed or passed anywhere.
@@ -58,7 +58,7 @@ if ! check_sql -e 'SELECT 1' >/dev/null 2>&1; then
   cat >&2 <<EOF
 Cannot open ${CHECK_DB} as ${DB_USER}. Create it and grant access, as root:
 
-  mysql -u root -p -e "CREATE DATABASE IF NOT EXISTS ${CHECK_DB}; GRANT ALL ON ${CHECK_DB}.* TO '${DB_USER}'@'${DB_HOST}'; FLUSH PRIVILEGES;"
+  sudo mysql -e "CREATE DATABASE IF NOT EXISTS ${CHECK_DB}; GRANT ALL ON ${CHECK_DB}.* TO '${DB_USER}'@'${DB_HOST}'; FLUSH PRIVILEGES;"
 
 (If the grant fails on the host part, try '${DB_USER}'@'%'.) Then rerun this.
 EOF
@@ -175,5 +175,5 @@ cat <<EOF
 PASSED on ${CHECK_DB}.
 
 When you are done with it:
-  mysql -u root -p -e "DROP DATABASE ${CHECK_DB}"
+  sudo mysql -e "DROP DATABASE ${CHECK_DB}"
 EOF

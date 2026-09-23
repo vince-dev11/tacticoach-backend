@@ -16,7 +16,7 @@ two previous production deploys.
 | Host | `ubuntu@13.53.60.120` |
 | API | `/var/www/html/tacticoach-backend`, run by **pm2** as `tacticoach-api` |
 | Frontend | `/var/www/html/tacticoach-frontend` — **nginx serves `dist/`**, no process |
-| Database | MySQL/MariaDB **on the box**, database `tacticoach`, root via `mysql -u root -p` |
+| Database | MySQL 8.0 **on the box**, database `tacticoach`; the app user comes from `.env`; root is `sudo mysql` (socket auth, no password) |
 | Docker | **not installed** |
 
 pm2 is running `node dist/index.js` against the build already on disk.
@@ -132,14 +132,16 @@ reshape rewrites rows rather than just adding columns. Five minutes, and the
 only way to see it work on real data before it counts.
 
 ```bash
-mysql -u root -p -e "CREATE DATABASE tacticoach_rehearsal; GRANT ALL ON tacticoach_rehearsal.* TO 'tacticoach'@'localhost'; FLUSH PRIVILEGES;"
-gunzip < ~/tacticoach-backup-*.sql.gz | mysql -u root -p tacticoach_rehearsal
 cd "$API_DIR"
+bash scripts/make-rehearsal-db.sh      # copies the newest backup into tacticoach_rehearsal
 bash scripts/verify-migrations.sh
 ```
 
-(If the `.env` user is not `tacticoach`, the script tells you the exact GRANT
-line to use.)
+`make-rehearsal-db.sh` uses `sudo mysql` — root authenticates over the socket
+on this box, so there is no root password to know — creates the database,
+grants the `.env` user on it at every host that user exists for, and restores
+the newest `~/tacticoach-backup-*.sql.gz`. It refuses to overwrite an
+existing rehearsal.
 
 The script runs the pending migrations **against the copy**, then:
 
@@ -159,7 +161,7 @@ Drop the copy when you are happy (or keep it until after step 4 — it is a
 second safety net):
 
 ```bash
-mysql -u root -p -e "DROP DATABASE tacticoach_rehearsal"
+sudo mysql -e "DROP DATABASE tacticoach_rehearsal"
 ```
 
 ---

@@ -56,7 +56,11 @@ run_sql() {
 }
 
 dump_db() {
-  MYSQL_PWD="${DB_PASS}" mysqldump -h "${DB_HOST}" -P "${DB_PORT}" -u "${DB_USER}" "${DB_NAME}" "$@"
+  # --no-tablespaces: MySQL 8 makes mysqldump ask for the PROCESS privilege
+  # to list NDB tablespaces, which the app user does not have and InnoDB does
+  # not use. Without the flag it prints an "Access denied" that looks like the
+  # dump failed. It did not — but the flag removes the doubt.
+  MYSQL_PWD="${DB_PASS}" mysqldump --no-tablespaces -h "${DB_HOST}" -P "${DB_PORT}" -u "${DB_USER}" "${DB_NAME}" "$@"
 }
 
 db_banner() {
