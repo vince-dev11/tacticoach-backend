@@ -66,10 +66,16 @@ UPDATE `referrals`
   SET `first_payment_at` = `qualified_at`
   WHERE `qualified_at` IS NOT NULL AND `first_payment_at` IS NULL;
 
-ALTER TABLE `referrals` DROP INDEX `referrals_referrer_id_status_kind_idx`;
-ALTER TABLE `referrals` DROP COLUMN `kind`, DROP COLUMN `referrer_tier`;
+-- NEW INDEX FIRST, THEN DROP THE OLD. `referrals_referrer_id_fkey` needs an
+-- index whose first column is `referrer_id`, and the old index was the only
+-- one — dropping it first fails with error 1553, "needed in a foreign key
+-- constraint" (found by rehearsing on a copy, not in production). Creating
+-- the replacement first, which also leads with `referrer_id`, lets InnoDB
+-- move the constraint across.
 CREATE INDEX `referrals_referrer_id_status_referrer_plan_referred_plan_idx`
   ON `referrals`(`referrer_id`, `status`, `referrer_plan`, `referred_plan`);
+ALTER TABLE `referrals` DROP INDEX `referrals_referrer_id_status_kind_idx`;
+ALTER TABLE `referrals` DROP COLUMN `kind`, DROP COLUMN `referrer_tier`;
 
 -- =============================================================================
 -- 2. referral_rewards: the idempotency key changes shape.
@@ -109,11 +115,15 @@ CREATE TEMPORARY TABLE `_rr_renumber` AS
 UPDATE `referral_rewards` rr JOIN `_rr_renumber` x ON x.`id` = rr.`id` SET rr.`cycle` = x.`rn`;
 DROP TEMPORARY TABLE `_rr_renumber`;
 
+-- Same ordering rule as `referrals` above: the old unique key leads with
+-- `user_id` and may be the index InnoDB chose to back
+-- `referral_rewards_user_id_fkey`. The new one is created first so the
+-- constraint always has somewhere to go.
+CREATE UNIQUE INDEX `referral_rewards_user_id_referrer_plan_referred_plan_cycle_key`
+  ON `referral_rewards`(`user_id`, `referrer_plan`, `referred_plan`, `cycle`);
 ALTER TABLE `referral_rewards` DROP INDEX `referral_rewards_user_id_referrer_tier_kind_cycle_tier_key`;
 ALTER TABLE `referral_rewards` DROP COLUMN `tier`, DROP COLUMN `kind`, DROP COLUMN `referrer_tier`;
 ALTER TABLE `referral_rewards` MODIFY COLUMN `every` INTEGER NOT NULL;
-CREATE UNIQUE INDEX `referral_rewards_user_id_referrer_plan_referred_plan_cycle_key`
-  ON `referral_rewards`(`user_id`, `referrer_plan`, `referred_plan`, `cycle`);
 
 -- =============================================================================
 -- 3. partners → collaborators, one rate → two.
