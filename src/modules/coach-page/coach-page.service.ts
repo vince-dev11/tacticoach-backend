@@ -17,6 +17,9 @@ import { presignUrl } from '../../config/s3.js'
 import { getEntitlements } from '../../lib/entitlements.js'
 import { can } from '../../lib/capabilities.js'
 import { env } from '../../config/env.js'
+// Circular with ebooks.service (which imports authorProfileFor from here).
+// Safe: both sides only CALL the other's functions, never at module load.
+import { booksByAuthor } from '../ebooks/ebooks.service.js'
 
 export const COACH_SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
 export const COACH_SLUG_RESERVED = new Set([
@@ -42,6 +45,11 @@ const BRAND_SELECT = {
   coachBio: true,
   coachTitle: true,
   coachPageEnabled: true,
+  coachingSince: true,
+  coachQualifications: true,
+  coachPhilosophy: true,
+  coachLocation: true,
+  coachContactEnabled: true,
   emailVerifiedAt: true,
 } as const
 
@@ -63,6 +71,11 @@ interface BrandRow {
   coachBio: string | null
   coachTitle: string | null
   coachPageEnabled: boolean
+  coachingSince: number | null
+  coachQualifications: string | null
+  coachPhilosophy: string | null
+  coachLocation: string | null
+  coachContactEnabled: boolean
   emailVerifiedAt: Date | null
 }
 
@@ -121,6 +134,11 @@ export async function getBrandKit(userId: number) {
     bio: user.coachBio,
     title: user.coachTitle,
     enabled: user.coachPageEnabled,
+    coachingSince: user.coachingSince,
+    qualifications: user.coachQualifications,
+    philosophy: user.coachPhilosophy,
+    location: user.coachLocation,
+    contactEnabled: user.coachContactEnabled,
     status,
   }
 }
@@ -233,6 +251,11 @@ export async function getCoachPage(slug: string) {
     color: user.coachColor,
     level: user.coachLevel,
     ageGroup: user.coachAgeGroup,
+    coachingSince: user.coachingSince,
+    qualifications: user.coachQualifications,
+    philosophy: user.coachPhilosophy,
+    location: user.coachLocation,
+    contactEnabled: user.coachContactEnabled,
     photoUrl: user.coachPhotoKey ? await presignUrl(user.coachPhotoKey) : null,
     clubName: user.clubName,
     clubLogoUrl: user.clubLogoKey ? await presignUrl(user.clubLogoKey) : null,
@@ -251,6 +274,8 @@ export async function getCoachPage(slug: string) {
     },
     stats: { boards: boards.length, sheets: sheets.length, likes, wins: featured.length },
     featured,
+    // The coach's published books — the Books tab. An extra: never fails the page.
+    books: await booksByAuthor(user.id).catch(() => []),
     boards: await Promise.all(
       boards.map(async (b) => ({
         id: b.id,
@@ -275,3 +300,56 @@ export async function getCoachPage(slug: string) {
     ),
   }
 }
+
+/**
+ * The author box on a book page: who wrote this, and why listen to them.
+ *
+ * Reads the same public-page fields the coach fills in under Profile → My
+ * page, so there is one place to keep them up to date.
+ *
+ * Privacy follows the coach's own switch. `coachPageEnabled` is them saying
+ * "show my photo and bio in public"; with it off, a book still names its
+ * author (it always has) and nothing more. The link to /coach/:slug appears
+ * only while that page is actually live — never a link to a 404. No email,
+ * ever: messaging goes through the relay on the coach page.
+ */
+export async function authorProfileFor(userId: number) {
+  const user: BrandRow | null = await db.user.findUnique({ where: { id: userId }, select: BRAND_SELECT })
+  if (!user || !user.name) return null
+  const name = `${user.name} ${user.surname ?? ''}`.trim()
+  const clubName = user.clubName ?? null
+  if (!user.coachPageEnabled) {
+    return { name, clubName, detailed: false as const }
+  }
+  const status = await coachPageStatus(user)
+  const [boards, sheets] = await Promise.all([
+    db.canvasBoard.count({ where: { userId, published: true } }),
+    db.drillSheet.count({ where: { userId, published: true } }),
+  ])
+  return {
+    name,
+    clubName,
+    detailed: true as const,
+    photoUrl: user.coachPhotoKey ? await presignUrl(user.coachPhotoKey).catch(() => null) : null,
+    color: user.coachColor,
+    title: user.coachTitle,
+    bio: user.coachBio,
+    philosophy: user.coachPhilosophy,
+    qualifications: user.coachQualifications,
+    coachingSince: user.coachingSince,
+    location: user.coachLocation,
+    level: user.coachLevel,
+    ageGroup: user.coachAgeGroup,
+    socials: {
+      instagram: user.instagramUrl,
+      youtube: user.youtubeUrl,
+      twitter: user.twitterUrl,
+      facebook: user.facebookUrl,
+    },
+    stats: { boards, sheets },
+    /** Only while /coach/:slug would actually render. */
+    pageSlug: status.live ? user.coachSlug : null,
+    contactEnabled: status.live && user.coachContactEnabled,
+  }
+}
+

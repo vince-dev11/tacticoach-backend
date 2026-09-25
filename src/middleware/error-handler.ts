@@ -1,5 +1,6 @@
 import type { FastifyError, FastifyReply, FastifyRequest } from 'fastify'
 import { ZodError } from 'zod'
+import { captureError } from '../lib/observability.js'
 
 /**
  * Detect Zod validation errors structurally rather than with `instanceof`
@@ -14,7 +15,7 @@ function isZodError(error: unknown): error is ZodError {
   return !!e && e.name === 'ZodError' && Array.isArray(e.issues)
 }
 
-export function errorHandler(error: FastifyError, _req: FastifyRequest, reply: FastifyReply) {
+export function errorHandler(error: FastifyError, request: FastifyRequest, reply: FastifyReply) {
   if (isZodError(error)) {
     const fieldErrors: Record<string, string[]> = {}
     for (const issue of error.issues) {
@@ -37,7 +38,12 @@ export function errorHandler(error: FastifyError, _req: FastifyRequest, reply: F
 
   const status = error.statusCode ?? 500
   if (status >= 500) {
-    console.error(error)
+    // Logged through Fastify so the line carries `reqId`, then reported to
+    // Sentry with the request ID, route and user attached. 4xx are the
+    // client's mistake (bad input, no permission) and are deliberately not
+    // reported: they would drown the real failures.
+    request.log.error({ err: error, statusCode: status }, 'request failed')
+    captureError(error, { request, tags: { status: String(status) } })
   }
 
   // Unexpected 500s must not leak internals (Prisma/driver messages can name
@@ -50,5 +56,8 @@ export function errorHandler(error: FastifyError, _req: FastifyRequest, reply: F
     statusCode: status,
     error: status === 500 ? 'Internal Server Error' : (error.name ?? 'Error'),
     message,
+    // The reference a coach can quote to support ("error ref 7f3a…"). Only on
+    // server errors — a 404 or 403 has nothing to look up.
+    ...(status >= 500 ? { requestId: String(request.id) } : {}),
   })
 }

@@ -4,7 +4,7 @@ import { CreateSquadSchema, MovePlayerSchema } from './users.schema.js'
 import {
   listSquads, defaultSquad, createSquad, renameSquad, archiveSquad, movePlayer,
 } from './squads.service.js'
-import { UpdateProfileSchema, TourDoneSchema, SaveSquadSchema, ALLOWED_LOGO_TYPES, EXT_FOR_LOGO_TYPE, MAX_LOGO_SIZE } from './users.schema.js'
+import { type TourId, UpdateProfileSchema, TourDoneSchema, SaveSquadSchema, ALLOWED_LOGO_TYPES, EXT_FOR_LOGO_TYPE, MAX_LOGO_SIZE } from './users.schema.js'
 import { getUserProfile, updateUserProfile, uploadClubLogo, deleteClubLogo, markTourDone, getSquad, saveSquad } from './users.service.js'
 
 export async function usersRoutes(app: FastifyInstance) {
@@ -32,7 +32,7 @@ export async function usersRoutes(app: FastifyInstance) {
   app.post('/me/tours', async (request, reply) => {
     const userId = (request.user as any).sub as number
     const { tour } = TourDoneSchema.parse(request.body)
-    const toursDone = await markTourDone(userId, tour)
+    const toursDone = await markTourDone(userId, tour as TourId)
     return reply.send({ toursDone })
   })
 

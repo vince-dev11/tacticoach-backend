@@ -271,6 +271,8 @@ export async function clubsRoutes(app: FastifyInstance) {
     bio: z.string().max(1000).optional().nullable(),
     location: z.string().max(150).optional().nullable(),
     foundedYear: z.number().int().min(1800).max(2100).optional().nullable(),
+    websiteUrl: z.string().trim().url().max(300).or(z.literal('')).optional().nullable(),
+    ageGroups: z.string().trim().max(120).optional().nullable(),
   })
 
   // Reserved slugs that would collide with app routes or look official.
@@ -322,6 +324,8 @@ export async function clubsRoutes(app: FastifyInstance) {
       bio: club.bio,
       location: club.location,
       foundedYear: club.foundedYear,
+      websiteUrl: club.websiteUrl,
+      ageGroups: club.ageGroups,
       photos: await Promise.all(
         photos.map(async (ph) => ({ id: ph.id, caption: ph.caption, imageUrl: await presignUrl(ph.imageKey) })),
       ),
@@ -358,6 +362,8 @@ export async function clubsRoutes(app: FastifyInstance) {
         ...(input.bio !== undefined && { bio: input.bio }),
         ...(input.location !== undefined && { location: input.location }),
         ...(input.foundedYear !== undefined && { foundedYear: input.foundedYear }),
+        ...(input.websiteUrl !== undefined && { websiteUrl: input.websiteUrl || null }),
+        ...(input.ageGroups !== undefined && { ageGroups: input.ageGroups || null }),
       },
     })
     return reply.send({ slug: updated.slug, primaryColor: updated.primaryColor, secondaryColor: updated.secondaryColor, bio: updated.bio })

@@ -87,6 +87,35 @@ const schema = z.object({
   AI_BASE_URL: z.string().optional(),
   AI_API_KEY: z.string().optional(),
   AI_MODEL: z.string().optional(),
+
+  // Error tracking (Sentry) — optional; read directly by src/instrument.ts,
+  // declared here so they are documented and type-checked in one place.
+  // Nothing is reported unless SENTRY_DSN is set.
+  SENTRY_DSN: z.string().optional(),
+  SENTRY_ENVIRONMENT: z.string().optional(),
+  SENTRY_RELEASE: z.string().optional(),
+  SENTRY_TRACES_SAMPLE_RATE: z.string().optional(),
+  SENTRY_SERVER_NAME: z.string().optional(),
+
+  // Admin → Analytics: read-only access to the analytics tools, so the owner
+  // sees countries, feature usage, funnels and health inside the admin panel.
+  // Each source is optional; the page says "not connected" for any that is
+  // missing. See TACTICAL_COACH/Admin_Analytics_Setup.md.
+  GA4_PROPERTY_ID: z.string().optional(),
+  // The service-account key: the JSON itself, or a path to the .json file.
+  GA4_SERVICE_ACCOUNT_JSON: z.string().optional(),
+  POSTHOG_HOST: z.string().optional(),
+  POSTHOG_PROJECT_ID: z.string().optional(),
+  POSTHOG_PERSONAL_API_KEY: z.string().optional(),
+  SENTRY_API_URL: z.string().optional(),
+  SENTRY_API_TOKEN: z.string().optional(),
+  SENTRY_ORG: z.string().optional(),
+  SENTRY_PROJECT_API: z.string().optional(),
+  SENTRY_PROJECT_WEB: z.string().optional(),
+  // PageSpeed Insights (Admin → Analytics → Health). Works without a key at
+  // low volume; a key raises the quota. URL defaults to FRONTEND_URL.
+  PAGESPEED_API_KEY: z.string().optional(),
+  PAGESPEED_URL: z.string().optional(),
 })
 
 const parsed = schema.safeParse(process.env)

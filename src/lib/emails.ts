@@ -10,10 +10,10 @@ import { env } from '../config/env.js'
 import { isMailConfigured, sendMail } from '../config/mailer.js'
 import { tagLabel } from './feedback-tag-labels.js'
 import {
-  COMMISSION_WINDOW_MONTHS,
   DEFAULT_COACH_RATE,
   DEFAULT_CLUB_RATE,
 } from '../modules/collaborations/collaboration-terms.js'
+import { captureError } from './observability.js'
 
 const BRAND = '#00A76F'
 
@@ -126,6 +126,7 @@ export type EmailKind =
   | 'account_setup'
   | 'player_note'
   | 'password_reset'
+  | 'coach_contact'
 
 /**
  * Send an email without ever throwing — logs and swallows failures.
@@ -144,6 +145,9 @@ async function sendSafely(
     await sendMail({ ...opts, kind, ...meta })
   } catch (err) {
     console.error(`[emails] Failed to send ${kind} to ${opts.to}`, err)
+    // The recipient's address stays in the local log only; Sentry gets the
+    // email kind and the account ID, which is enough to find it.
+    captureError(err, { source: 'email', tags: { email_kind: kind }, extra: { userId: meta.userId } })
   }
 }
 
@@ -373,7 +377,7 @@ export async function sendCollaborationInviteEmail(
       text:
         `Hi ${invitee.name},\n\n` +
         `We'd like to invite you onto the TactiCoach Collaboration Programme.\n\n` +
-        `Collaborators earn ${coachPct}% of what every coach they introduce pays and ${clubPct}% of what every club pays, for ${COMMISSION_WINDOW_MONTHS} months from that customer's first payment — plus a TactiCoach Pro account free for as long as the collaboration runs.\n\n` +
+        `Collaborators earn ${coachPct}% of what every coach they introduce pays and ${clubPct}% of what every club pays, on that customer's first payment — plus a TactiCoach Pro account free for as long as the collaboration runs.\n\n` +
         `The agreement is waiting in your account. Have a read, and if you're happy with it, accept it there:\n${acceptUrl}\n\n` +
         `Nothing starts until you accept, and there's no obligation to.\n\n` +
         `The TactiCoach team`,
@@ -381,7 +385,7 @@ export async function sendCollaborationInviteEmail(
         'An invitation to the TactiCoach Collaboration Programme.',
         `${kicker('COLLABORATION INVITATION')}
          <h1 style="margin:0 0 12px;font-size:21px">We'd like you as a TactiCoach Collaborator</h1>
-         <p style="margin:0 0 10px">Hi ${invitee.name}, collaborators earn <strong>${coachPct}%</strong> of what every coach they introduce pays and <strong>${clubPct}%</strong> of what every club pays, for ${COMMISSION_WINDOW_MONTHS} months from that customer's first payment — plus a TactiCoach Pro account free for as long as the collaboration runs.</p>
+         <p style="margin:0 0 10px">Hi ${invitee.name}, collaborators earn <strong>${coachPct}%</strong> of what every coach they introduce pays and <strong>${clubPct}%</strong> of what every club pays, on that customer's first payment — plus a TactiCoach Pro account free for as long as the collaboration runs.</p>
          <p style="margin:0 0 4px">The agreement is waiting in your account:</p>
          ${button(acceptUrl, 'Read and accept the agreement')}
          <p style="margin:0;color:#6b7280;font-size:13px">Nothing starts until you accept, and there's no obligation to.</p>`,
@@ -443,6 +447,35 @@ export function buildContactEmail(input: {
       `<h1 style="margin:0 0 12px;font-size:18px">New contact form submission</h1>
        <p style="margin:0 0 12px"><strong>From:</strong> ${esc(input.firstName)} ${esc(input.lastName)} &lt;${esc(input.email)}&gt;</p>
        <p style="margin:0;white-space:pre-wrap">${esc(input.message)}</p>`,
+    ),
+  }
+}
+
+/**
+ * A visitor's message relayed from a coach's public page. Reply-To is the
+ * visitor, so the coach answers with one click and we are out of the loop;
+ * the coach's own address is never shown on the page.
+ */
+export function buildCoachContactEmail(input: {
+  to: string
+  coachName: string
+  name: string
+  email: string
+  message: string
+}): { to: string; replyTo: string; subject: string; html: string; text: string } {
+  return {
+    to: input.to,
+    replyTo: input.email,
+    subject: `New message from ${input.name} via your TactiCoach page`,
+    text:
+      `Hi ${input.coachName},\n\n${input.name} <${input.email}> sent you a message from your coach page:\n\n` +
+      `${input.message}\n\nReply to this email to answer them.`,
+    html: layout(
+      `New message from ${input.name}.`,
+      `<h1 style="margin:0 0 12px;font-size:18px">New message from your coach page</h1>
+       <p style="margin:0 0 12px"><strong>From:</strong> ${esc(input.name)} &lt;${esc(input.email)}&gt;</p>
+       <p style="margin:0 0 16px;white-space:pre-wrap">${esc(input.message)}</p>
+       <p style="margin:0;color:#64748b;font-size:13px">Reply to this email to answer them.</p>`,
     ),
   }
 }

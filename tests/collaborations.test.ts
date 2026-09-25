@@ -54,12 +54,15 @@ function onPlan(slug: string | null) {
   )
 }
 
-function referredBy(collaboratorUserId: number, qualifiedAt: Date, status = 'qualified') {
+// `firstInvoiceId` is what qualifyReferral() stamped when the customer's first
+// payment cleared — the webhook runs that before recordCommission(). Tests
+// name the invoice they are about to record so it reads as the first one; the
+// first-payment-only tests below deliberately record a DIFFERENT one.
+function referredBy(collaboratorUserId: number, _qualifiedAt: Date, status = 'qualified', firstInvoiceId = 'in_first') {
   mock.referral.findUnique.mockResolvedValue({
     referrerId: collaboratorUserId,
     status,
-    qualifiedAt,
-    createdAt: qualifiedAt,
+    firstInvoiceId,
   } as never)
 }
 
@@ -117,7 +120,7 @@ describe('recordCommission', () => {
     collaboratorRow()
     onPlan('pro')
 
-    await recordCommission({ customerId: 99, providerInvoiceId: 'in_1', netAmount: 7900, currency: 'gbp' })
+    await recordCommission({ customerId: 99, providerInvoiceId: 'in_first', netAmount: 7900, currency: 'gbp' })
 
     expect(writtenLine()).toMatchObject({
       collaboratorId: 3,
@@ -134,7 +137,7 @@ describe('recordCommission', () => {
     collaboratorRow()
     onPlan('club-10')
 
-    await recordCommission({ customerId: 99, providerInvoiceId: 'in_2', netAmount: 40000, currency: 'gbp' })
+    await recordCommission({ customerId: 99, providerInvoiceId: 'in_first', netAmount: 40000, currency: 'gbp' })
 
     expect(writtenLine()).toMatchObject({
       rate: DEFAULT_CLUB_RATE,
@@ -142,25 +145,21 @@ describe('recordCommission', () => {
     })
   })
 
-  it('moves to the club rate when a coach upgrades, from that payment onward', async () => {
-    // The behaviour the split exists to produce: the collaborator has a reason
-    // to help a coach grow into a club, which is the most valuable thing they
-    // could do for us. Locking the rate at the first payment would pay them
-    // LESS for the better outcome.
-    referredBy(7, monthsAgo(6))
+  it('pays on the FIRST payment only — an upgrade later earns nothing more', async () => {
+    // Commission is for the introduction. The customer's later invoices —
+    // renewals, instalments, an upgrade to a club plan — carry a different
+    // invoice id from the one qualifyReferral() stamped, and earn nothing.
+    referredBy(7, monthsAgo(6), 'qualified', 'in_first')
     collaboratorRow()
 
     onPlan('pro')
-    await recordCommission({ customerId: 99, providerInvoiceId: 'in_early', netAmount: 899, currency: 'gbp' })
-    const early = writtenLine()
+    await recordCommission({ customerId: 99, providerInvoiceId: 'in_first', netAmount: 899, currency: 'gbp' })
+    expect(writtenLine().rate).toBe(DEFAULT_COACH_RATE)
 
     mock.collaboratorCommission.create.mockClear()
     onPlan('club-20')
     await recordCommission({ customerId: 99, providerInvoiceId: 'in_later', netAmount: 6999, currency: 'gbp' })
-    const later = writtenLine()
-
-    expect(early.rate).toBe(DEFAULT_COACH_RATE)
-    expect(later.rate).toBe(DEFAULT_CLUB_RATE)
+    expect(mock.collaboratorCommission.create).not.toHaveBeenCalled()
   })
 
   it('copies the rate onto the line so a later rate change cannot restate history', async () => {
@@ -168,7 +167,7 @@ describe('recordCommission', () => {
     collaboratorRow({ coachRate: 0.35, clubRate: 0.4 })
     onPlan('pro')
 
-    await recordCommission({ customerId: 99, providerInvoiceId: 'in_3', netAmount: 1000, currency: 'gbp' })
+    await recordCommission({ customerId: 99, providerInvoiceId: 'in_first', netAmount: 1000, currency: 'gbp' })
 
     expect(writtenLine().rate).toBe(0.35)
     expect(writtenLine().commissionAmount).toBe(350)
@@ -176,64 +175,81 @@ describe('recordCommission', () => {
 
   it('pays nothing when the customer was not referred by anyone', async () => {
     mock.referral.findUnique.mockResolvedValue(null as never)
-    await recordCommission({ customerId: 99, providerInvoiceId: 'in_4', netAmount: 1000, currency: 'gbp' })
+    await recordCommission({ customerId: 99, providerInvoiceId: 'in_first', netAmount: 1000, currency: 'gbp' })
     expect(mock.collaboratorCommission.create).not.toHaveBeenCalled()
   })
 
   it('pays nothing when the referrer is on the credit programme, not this one', async () => {
     referredBy(7, monthsAgo(1))
     mock.collaborator.findUnique.mockResolvedValue(null as never)
-    await recordCommission({ customerId: 99, providerInvoiceId: 'in_5', netAmount: 1000, currency: 'gbp' })
+    await recordCommission({ customerId: 99, providerInvoiceId: 'in_first', netAmount: 1000, currency: 'gbp' })
     expect(mock.collaboratorCommission.create).not.toHaveBeenCalled()
   })
 
-  it('keeps paying an ENDED collaborator — trailing commission is promised', async () => {
+  it('keeps paying an ENDED collaborator on the first payment', async () => {
     referredBy(7, monthsAgo(1))
     collaboratorRow({ status: 'ended' })
-    await recordCommission({ customerId: 99, providerInvoiceId: 'in_6', netAmount: 1000, currency: 'gbp' })
+    await recordCommission({ customerId: 99, providerInvoiceId: 'in_first', netAmount: 1000, currency: 'gbp' })
     expect(mock.collaboratorCommission.create).toHaveBeenCalled()
   })
 
   it('pays nothing to somebody who has not accepted the agreement yet', async () => {
     referredBy(7, monthsAgo(1))
     collaboratorRow({ status: 'invited' })
-    await recordCommission({ customerId: 99, providerInvoiceId: 'in_7', netAmount: 1000, currency: 'gbp' })
+    await recordCommission({ customerId: 99, providerInvoiceId: 'in_first', netAmount: 1000, currency: 'gbp' })
     expect(mock.collaboratorCommission.create).not.toHaveBeenCalled()
   })
 
   it('stops paying a SUSPENDED collaborator', async () => {
     referredBy(7, monthsAgo(1))
     collaboratorRow({ status: 'suspended' })
-    await recordCommission({ customerId: 99, providerInvoiceId: 'in_8', netAmount: 1000, currency: 'gbp' })
+    await recordCommission({ customerId: 99, providerInvoiceId: 'in_first', netAmount: 1000, currency: 'gbp' })
     expect(mock.collaboratorCommission.create).not.toHaveBeenCalled()
   })
 
-  it('stops after the 12-month window, counted from the first payment', async () => {
-    referredBy(7, monthsAgo(13))
+  it('pays nothing on a renewal, however soon it comes', async () => {
+    referredBy(7, monthsAgo(1), 'qualified', 'in_first')
     collaboratorRow()
-    await recordCommission({ customerId: 99, providerInvoiceId: 'in_9', netAmount: 1000, currency: 'gbp' })
+    await recordCommission({ customerId: 99, providerInvoiceId: 'in_renewal', netAmount: 7900, currency: 'gbp' })
     expect(mock.collaboratorCommission.create).not.toHaveBeenCalled()
   })
 
-  it('still pays inside the window', async () => {
-    referredBy(7, monthsAgo(11))
+  it('pays nothing on a second monthly instalment', async () => {
+    referredBy(7, monthsAgo(1), 'qualified', 'in_first')
     collaboratorRow()
-    await recordCommission({ customerId: 99, providerInvoiceId: 'in_10', netAmount: 1000, currency: 'gbp' })
+    await recordCommission({ customerId: 99, providerInvoiceId: 'in_month2', netAmount: 899, currency: 'gbp' })
+    expect(mock.collaboratorCommission.create).not.toHaveBeenCalled()
+  })
+
+  it('pays nothing when no first invoice was ever recorded (legacy referral)', async () => {
+    // Referrals qualified before first_invoice_id existed have no invoice on
+    // record. Their first payment is in the past, so nothing is owed now —
+    // and guessing that "this one" is the first would pay on a renewal.
+    referredBy(7, monthsAgo(11), 'qualified', null as unknown as string)
+    collaboratorRow()
+    await recordCommission({ customerId: 99, providerInvoiceId: 'in_now', netAmount: 1000, currency: 'gbp' })
+    expect(mock.collaboratorCommission.create).not.toHaveBeenCalled()
+  })
+
+  it('an ENDED collaborator is still paid for a first payment that lands after the end', async () => {
+    referredBy(7, monthsAgo(1), 'qualified', 'in_first')
+    collaboratorRow({ status: 'ended' })
+    await recordCommission({ customerId: 99, providerInvoiceId: 'in_first', netAmount: 1000, currency: 'gbp' })
     expect(mock.collaboratorCommission.create).toHaveBeenCalled()
   })
 
   it('pays nothing on a reversed referral', async () => {
     referredBy(7, monthsAgo(1), 'reversed')
     collaboratorRow()
-    await recordCommission({ customerId: 99, providerInvoiceId: 'in_11', netAmount: 1000, currency: 'gbp' })
+    await recordCommission({ customerId: 99, providerInvoiceId: 'in_first', netAmount: 1000, currency: 'gbp' })
     expect(mock.collaboratorCommission.create).not.toHaveBeenCalled()
   })
 
   it('ignores a zero or negative invoice', async () => {
     referredBy(7, monthsAgo(1))
     collaboratorRow()
-    await recordCommission({ customerId: 99, providerInvoiceId: 'in_12', netAmount: 0, currency: 'gbp' })
-    await recordCommission({ customerId: 99, providerInvoiceId: 'in_13', netAmount: -500, currency: 'gbp' })
+    await recordCommission({ customerId: 99, providerInvoiceId: 'in_first', netAmount: 0, currency: 'gbp' })
+    await recordCommission({ customerId: 99, providerInvoiceId: 'in_first', netAmount: -500, currency: 'gbp' })
     expect(mock.collaboratorCommission.create).not.toHaveBeenCalled()
   })
 
@@ -242,7 +258,7 @@ describe('recordCommission', () => {
     collaboratorRow()
     mock.collaboratorCommission.create.mockRejectedValue(new Error('Unique constraint failed'))
     await expect(
-      recordCommission({ customerId: 99, providerInvoiceId: 'in_14', netAmount: 1000, currency: 'gbp' }),
+      recordCommission({ customerId: 99, providerInvoiceId: 'in_first', netAmount: 1000, currency: 'gbp' }),
     ).resolves.toBeUndefined()
   })
 
@@ -252,7 +268,7 @@ describe('recordCommission', () => {
     referredBy(7, monthsAgo(1))
     collaboratorRow()
     onPlan(null)
-    await recordCommission({ customerId: 99, providerInvoiceId: 'in_15', netAmount: 1000, currency: 'gbp' })
+    await recordCommission({ customerId: 99, providerInvoiceId: 'in_first', netAmount: 1000, currency: 'gbp' })
     expect(writtenLine().rate).toBe(DEFAULT_COACH_RATE)
   })
 })

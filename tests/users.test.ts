@@ -109,6 +109,53 @@ describe('POST /api/users/me/tours', () => {
     )
   })
 
+  it('records the book editor tour', async () => {
+    const app = await getApp()
+    dbMock.user.findUniqueOrThrow.mockResolvedValue({ toursDone: ['editor'] } as never)
+    dbMock.user.update.mockResolvedValue(userRow() as never)
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/users/me/tours',
+      headers: authHeaders(await accessToken()),
+      payload: { tour: 'book' },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json().toursDone).toEqual(['editor', 'book'])
+  })
+
+  it('records a "what\'s new" release as seen, and refuses junk', async () => {
+    const app = await getApp()
+    dbMock.user.findUniqueOrThrow.mockResolvedValue({ toursDone: ['editor'] } as never)
+    dbMock.user.update.mockResolvedValue(userRow() as never)
+    const ok = await app.inject({
+      method: 'POST', url: '/api/users/me/tours', headers: authHeaders(await accessToken()),
+      payload: { tour: 'release:2026-09-25' },
+    })
+    expect(ok.statusCode).toBe(200)
+    expect(ok.json().toursDone).toEqual(['editor', 'release:2026-09-25'])
+    const bad = await app.inject({
+      method: 'POST', url: '/api/users/me/tours', headers: authHeaders(await accessToken()),
+      payload: { tour: 'release:whatever' },
+    })
+    expect(bad.statusCode).toBeGreaterThanOrEqual(400)
+  })
+
+  it('keeps only the last 24 release markers, never dropping a tour', async () => {
+    const app = await getApp()
+    const old = Array.from({ length: 24 }, (_, i) => `release:2024-01-${String(i + 1).padStart(2, '0')}`)
+    dbMock.user.findUniqueOrThrow.mockResolvedValue({ toursDone: ['editor', ...old] } as never)
+    dbMock.user.update.mockResolvedValue(userRow() as never)
+    const res = await app.inject({
+      method: 'POST', url: '/api/users/me/tours', headers: authHeaders(await accessToken()),
+      payload: { tour: 'release:2026-09-25' },
+    })
+    const done = res.json().toursDone as string[]
+    expect(done[0]).toBe('editor')
+    expect(done.filter((x) => x.startsWith('release:'))).toHaveLength(24)
+    expect(done).not.toContain('release:2024-01-01')
+    expect(done).toContain('release:2026-09-25')
+  })
+
   it('is idempotent — completing the same tour twice never duplicates it', async () => {
     const app = await getApp()
     dbMock.user.findUniqueOrThrow.mockResolvedValue({ toursDone: ['editor'] } as never)

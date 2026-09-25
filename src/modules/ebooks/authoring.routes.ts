@@ -34,6 +34,7 @@ import {
   CATEGORIES, AGE_BANDS, BLOCK_KINDS, ebookDelegate, type ChapterInput,
 } from './ebooks.service.js'
 import { transition, isFrozenToAuthor, type EbookStatus } from './ebook-review.js'
+import { authorDashboard, replyToReview, ReviewError } from './engagement.service.js'
 
 const userId = (r: { user: unknown }) => (r.user as { sub: number }).sub
 
@@ -85,6 +86,24 @@ export async function authoringRoutes(app: FastifyInstance) {
   app.addHook('preHandler', requireCapability('draft_ebooks'))
 
   app.get('/', async (request, reply) => reply.send(await adminList(userId(request))))
+
+  // The author's numbers. Registered before '/:id' so "dashboard" is never
+  // read as a book id; scoped to the caller inside authorDashboard.
+  app.get('/dashboard', async (request, reply) => reply.send(await authorDashboard(userId(request))))
+
+  // One public answer per review, on the author's own books only.
+  app.put('/reviews/:reviewId/reply', async (request, reply) => {
+    const reviewId = Number((request.params as { reviewId: string }).reviewId)
+    const { reply: text } = z.object({ reply: z.string().max(1000).nullable() }).parse(request.body)
+    try {
+      return reply.send(await replyToReview(userId(request), reviewId, text))
+    } catch (err) {
+      if (err instanceof ReviewError) {
+        return reply.status(err.statusCode).send({ statusCode: err.statusCode, error: 'Not Found', message: err.message })
+      }
+      throw err
+    }
+  })
 
   app.get('/:id', async (request, reply) => {
     const id = Number((request.params as { id: string }).id)

@@ -18,6 +18,7 @@ import { activateSubscription, syncSubscriptionFromStripe } from '../membership/
 import { db } from '../../config/database.js'
 import { qualifyPendingFor, qualifyReferral, reverseReferral } from '../referrals/referrals.service.js'
 import { recordCommission, reverseCommission } from '../collaborations/collaborations.service.js'
+import { captureError } from '../../lib/observability.js'
 
 function periodEnd(sub: Stripe.Subscription): Date | null {
   const end = sub.items.data[0]?.current_period_end
@@ -44,6 +45,7 @@ async function invoiceIdForCharge(charge: Stripe.Charge): Promise<string | null>
     }
   } catch (err) {
     console.error('Could not resolve the invoice for a refunded charge.', err)
+    captureError(err, { source: 'webhook:stripe', tags: { step: 'resolve-refund-invoice' } })
   }
   return null
 }

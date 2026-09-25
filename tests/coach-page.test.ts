@@ -142,3 +142,97 @@ describe('brand kit (auth)', () => {
     )
   })
 })
+
+// ---- Public-page details + contact relay (migration 34) ---------------------
+
+import { vi, afterEach } from 'vitest'
+import { isMailConfigured, sendMail } from '../src/config/mailer.js'
+
+const mailConfigured = vi.mocked(isMailConfigured)
+const sendMailMock = vi.mocked(sendMail)
+afterEach(() => mailConfigured.mockReturnValue(false))
+
+describe('public-page details', () => {
+  it('saves coaching since / qualifications / philosophy / location / contact opt-in', async () => {
+    const app = await getApp()
+    mockLive()
+    dbMock.user.findFirst.mockResolvedValue(null)
+    dbMock.user.update.mockResolvedValue(coachRow() as never)
+    const res = await app.inject({
+      method: 'PATCH',
+      url: '/api/coach/me/branding',
+      headers: authHeaders(await accessToken()),
+      payload: { coachingSince: 2014, qualifications: 'UEFA B', philosophy: 'Brave on the ball', location: 'Leeds', contactEnabled: true },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(dbMock.user.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          coachingSince: 2014, coachQualifications: 'UEFA B', coachPhilosophy: 'Brave on the ball', coachLocation: 'Leeds', coachContactEnabled: true,
+        }),
+      }),
+    )
+  })
+
+  it('rejects a coaching-since year in the future and an over-long philosophy', async () => {
+    const app = await getApp()
+    mockLive()
+    const headers = authHeaders(await accessToken())
+    const a = await app.inject({ method: 'PATCH', url: '/api/coach/me/branding', headers, payload: { coachingSince: new Date().getFullYear() + 1 } })
+    expect(a.statusCode).toBe(422)
+    const b = await app.inject({ method: 'PATCH', url: '/api/coach/me/branding', headers, payload: { philosophy: 'x'.repeat(201) } })
+    expect(b.statusCode).toBe(422)
+  })
+
+  it('exposes the details on the public page but never the email', async () => {
+    const app = await getApp()
+    mockLive({ coachingSince: 2014, coachQualifications: 'UEFA B', coachPhilosophy: 'Brave', coachLocation: 'Leeds', coachContactEnabled: true })
+    const res = await app.inject({ method: 'GET', url: '/api/coach/vince' })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toMatchObject({ coachingSince: 2014, qualifications: 'UEFA B', philosophy: 'Brave', location: 'Leeds', contactEnabled: true })
+    expect(res.body).not.toContain('@')
+  })
+})
+
+describe('POST /api/coach/:slug/contact', () => {
+  const payload = { name: 'Priya Parent', email: 'priya@example.com', message: 'Do you run U9 sessions on Saturdays?' }
+
+  // Order matters in this block: the limiter allows three an hour, and the
+  // last test deliberately spends the budget. Validation runs before the
+  // handler, so a rejected body still counts.
+  it('rejects a filled honeypot', async () => {
+    const app = await getApp()
+    mockLive({ coachContactEnabled: true })
+    const res = await app.inject({ method: 'POST', url: '/api/coach/vince/contact', payload: { ...payload, website: 'http://spam' } })
+    expect(res.statusCode).toBe(422)
+  })
+
+  it('relays the message to the coach with the visitor as reply-to', async () => {
+    const app = await getApp()
+    mailConfigured.mockReturnValue(true)
+    mockLive({ coachContactEnabled: true })
+    const res = await app.inject({ method: 'POST', url: '/api/coach/vince/contact', payload })
+    expect(res.statusCode).toBe(200)
+    expect(sendMailMock).toHaveBeenCalledWith(
+      expect.objectContaining({ to: 'coach@test.dev', replyTo: 'priya@example.com', kind: 'coach_contact' }),
+    )
+    expect(res.body).not.toContain('coach@test.dev')
+  })
+
+  it('403s when the coach has not opted in', async () => {
+    const app = await getApp()
+    mailConfigured.mockReturnValue(true)
+    sendMailMock.mockClear()
+    mockLive({ coachContactEnabled: false })
+    const res = await app.inject({ method: 'POST', url: '/api/coach/vince/contact', payload })
+    expect(res.statusCode).toBe(403)
+    expect(sendMailMock).not.toHaveBeenCalled()
+  })
+
+  it('rate-limits the fourth attempt in an hour', async () => {
+    const app = await getApp()
+    mailConfigured.mockReturnValue(true)
+    mockLive({ coachContactEnabled: true })
+    expect((await app.inject({ method: 'POST', url: '/api/coach/vince/contact', payload })).statusCode).toBe(429)
+  })
+})

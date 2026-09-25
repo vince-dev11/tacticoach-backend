@@ -79,8 +79,16 @@ export async function markTourDone(userId: number, tour: TourId) {
   const user = await db.user.findUniqueOrThrow({ where: { id: userId }, select: { toursDone: true } })
   const done = Array.isArray(user.toursDone) ? (user.toursDone as string[]) : []
   if (!done.includes(tour)) {
-    await db.user.update({ where: { id: userId }, data: { toursDone: [...done, tour] } })
-    return [...done, tour]
+    // Release markers accumulate one per release; keep the list bounded so an
+    // account that has seen every release for years still carries a short
+    // array. Tours are never dropped — only the oldest release markers.
+    const next = [...done, tour]
+    const releases = next.filter((x) => x.startsWith('release:'))
+    const trimmed = releases.length > 24
+      ? next.filter((x) => !x.startsWith('release:') || releases.slice(-24).includes(x))
+      : next
+    await db.user.update({ where: { id: userId }, data: { toursDone: trimmed } })
+    return trimmed
   }
   return done
 }

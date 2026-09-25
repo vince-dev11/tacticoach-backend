@@ -17,8 +17,20 @@
 // them rather than repeating them, which is how the old partner agreement came
 // to promise 20% while the system paid 15%.
 
-/** Commission is earned for this long after each customer's first payment. */
-export const COMMISSION_WINDOW_MONTHS = 12
+/**
+ * Commission is earned on each introduced customer's FIRST cleared payment
+ * only — never on a renewal or a later instalment.
+ *
+ * This replaced a 12-month window. One payment per customer keeps the cost of
+ * an introduction bounded and known the moment it happens, and it means a
+ * collaborator is paid for the introduction, which is what they did — the
+ * renewals are earned by the product. It also steers collaborators toward
+ * annual plans, where the first payment is a whole year.
+ *
+ * Exported as a named constant so the agreement, the emails and the tests
+ * all state the same rule from one place.
+ */
+export const COMMISSION_FIRST_PAYMENT_ONLY = true as const
 
 /**
  * What a new collaborator earns, as FRACTIONS. 0.15 is 15%.

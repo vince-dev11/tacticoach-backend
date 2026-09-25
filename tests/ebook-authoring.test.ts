@@ -431,3 +431,33 @@ describe('the owner\'s own book edits', () => {
     expect(Object.keys(mock.ebook.update.mock.calls[0][0]!.data)).toEqual(['blurb'])
   })
 })
+
+// ---------------------------------------------------------------------------
+// The interactive blocks (migration 36)
+// ---------------------------------------------------------------------------
+
+describe('interactive block kinds', () => {
+  it('accepts animation, decision and chart blocks in a chapter', async () => {
+    mock.ebook.findFirst.mockResolvedValue(bookRow({ status: 'draft' }) as never)
+    const res = await call('PUT', '/api/my-books/5/chapters', {
+      chapters: [{
+        title: 'Pressing', isSample: true,
+        blocks: [
+          { kind: 'animation', data: { caption: 'The trap' } },
+          { kind: 'decision', data: { question: 'Where?', options: [{ text: 'A' }, { text: 'B' }], correct: 1, explain: 'Because' } },
+          { kind: 'chart', data: { type: 'radar', labels: ['Pace', 'Pass', 'Press'], series: [{ name: '', values: [7, 8, 9] }] } },
+        ],
+      }],
+    })
+    expect(res.statusCode).not.toBe(400)
+    expect(res.statusCode).not.toBe(422)
+  })
+
+  it('still refuses a kind that does not exist', async () => {
+    mock.ebook.findFirst.mockResolvedValue(bookRow({ status: 'draft' }) as never)
+    const res = await call('PUT', '/api/my-books/5/chapters', {
+      chapters: [{ title: 'X', isSample: false, blocks: [{ kind: 'video_embed', data: {} }] }],
+    })
+    expect([400, 422]).toContain(res.statusCode)
+  })
+})

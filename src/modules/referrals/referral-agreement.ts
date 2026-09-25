@@ -39,7 +39,7 @@ import { REWARD_CAP_PERCENT } from '../../lib/referral-ladder.js'
  * and that cancelling does not claw a reward back. Anyone on 1.0 is asked to
  * accept 2.0 before referring again — which is what the version column is for.
  */
-export const REFERRAL_AGREEMENT_VERSION = '2.0'
+export const REFERRAL_AGREEMENT_VERSION = '2.1'
 
 export interface AgreementSection {
   heading: string
@@ -89,7 +89,8 @@ export const REFERRAL_AGREEMENT: Agreement = {
       body: [
         'A referral counts when the person you introduced actually pays — not when they sign up, and not when they start a trial. Creating accounts costs nothing, so nothing is earned for creating them.',
         'If they bought an annual subscription, their first payment is the one that counts: the year is paid up front. If they pay monthly, it is their second payment that counts, because one monthly instalment can be less than the reward itself. That is the only reason for the wait, and your Referrals page says when someone is between the two.',
-        'Each person can be referred once. Whoever their account is attributed to at signup is the referrer, and that is decided then and not reassigned.',
+        'Each person can be referred once, and earns you one reward. Their renewals and later payments do not earn again.',
+        'Whoever their account is attributed to at signup is the referrer, and that is decided then and not reassigned.',
       ],
       points: [
         'Both plans are recorded when the referral counts, and neither is revisited. If you change plan afterwards, everything already earned stays as it was earned, and the new rate applies from then on.',

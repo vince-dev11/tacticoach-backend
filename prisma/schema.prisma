@@ -54,6 +54,17 @@ model User {
   /// Role / qualification line under the name ("UEFA B · Head coach U13").
   coachTitle       String?   @map("coach_title") @db.VarChar(80)
   coachPageEnabled Boolean   @default(true) @map("coach_page_enabled")
+  /// Public-page facts a parent or club reads before they trust a coach.
+  /// All optional; the page simply omits what is blank.
+  coachingSince        Int?     @map("coaching_since")
+  coachQualifications  String?  @map("coach_qualifications") @db.VarChar(160)
+  /// One line of philosophy ("Brave on the ball, ruthless in the press").
+  /// Doubles as the page's meta description, so it's capped hard.
+  coachPhilosophy      String?  @map("coach_philosophy") @db.VarChar(200)
+  coachLocation        String?  @map("coach_location") @db.VarChar(120)
+  /// Opt-in: shows a "Message coach" form that relays to the account email
+  /// without ever exposing the address.
+  coachContactEnabled  Boolean  @default(false) @map("coach_contact_enabled")
   /// Guided tours this account has completed (["editor","sheet"]). Account-level
   /// (not localStorage) so a coach sees each tour exactly once across devices.
   toursDone        Json      @default("[]") @map("tours_done")
@@ -107,6 +118,8 @@ model User {
   ebookNotes       EbookNote[]
   ebookProgress    EbookProgress[]
   videoExports     VideoExport[]
+
+  ebookReviews EbookReview[]
 
   @@map("users")
 }
@@ -651,6 +664,9 @@ model Club {
   bio            String?    @db.Text
   location       String?    @db.VarChar(150)
   foundedYear    Int?       @map("founded_year")
+  websiteUrl     String?    @map("website_url") @db.VarChar(300)
+  /// Age groups the club runs, free text ("U7–U16, adults").
+  ageGroups      String?    @map("age_groups") @db.VarChar(120)
   // Public page lifecycle: content gate + owner submission + CRM approval.
   pageStatus      PageStatus @default(none) @map("page_status")
   pageSubmittedAt DateTime?  @map("page_submitted_at")
@@ -1280,6 +1296,8 @@ model Ebook {
   chapters EbookChapter[]
   notes    EbookNote[]
   progress EbookProgress[]
+  reviews  EbookReview[]
+  stats    EbookDailyStat[]
 
   @@index([status, category, ageBand])
   @@index([authorId])
@@ -1367,6 +1385,12 @@ enum EbookBlockKind {
   quiz
   image
   quote
+  /// A board that PLAYS on the page: its moves, looping, with a scrubber.
+  animation
+  /// "What would you do?" — a frozen moment, options, then the answer plays.
+  decision
+  /// A bar / line / pie / radar chart from a small table, in the cover's colours.
+  chart
 }
 
 /// A reader's own highlight or note.
@@ -1434,4 +1458,43 @@ model EbookProgress {
 
   @@id([userId, ebookId])
   @@map("ebook_progress")
+}
+
+/// A reader's rating of a book. One per reader per book (they edit, not add).
+/// Only readers who got at least REVIEW_MIN_PERCENT through may write one —
+/// a review of the blurb is not a review. `hidden` is the moderation switch:
+/// kept, never deleted, so "why did my rating change" has an answer.
+model EbookReview {
+  id          Int      @id @default(autoincrement())
+  ebookId     Int      @map("ebook_id")
+  userId      Int      @map("user_id")
+  rating      Int      @db.TinyInt
+  body        String?  @db.VarChar(1000)
+  hidden      Boolean  @default(false)
+  /// The author's public answer. One, editable.
+  authorReply String?  @map("author_reply") @db.VarChar(1000)
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  ebook Ebook @relation(fields: [ebookId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([ebookId, userId])
+  @@index([ebookId, hidden, createdAt])
+  @@map("ebook_reviews")
+}
+
+/// Per-book, per-day counters for the author dashboard. Aggregates only —
+/// no row says who looked, so there is nothing personal to leak or delete.
+model EbookDailyStat {
+  ebookId     Int      @map("ebook_id")
+  day         DateTime @db.Date
+  pageViews   Int      @default(0) @map("page_views")
+  sampleReads Int      @default(0) @map("sample_reads")
+  chapterReads Int     @default(0) @map("chapter_reads")
+
+  ebook Ebook @relation(fields: [ebookId], references: [id], onDelete: Cascade)
+
+  @@id([ebookId, day])
+  @@map("ebook_daily_stats")
 }

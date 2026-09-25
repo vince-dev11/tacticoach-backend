@@ -36,6 +36,8 @@ export interface SendMailOptions {
   subject: string
   html: string
   text?: string
+  /** Set when the coach should answer somebody other than us (page contact relay). */
+  replyTo?: string
   /**
    * Which template this is — 'account_setup', 'password_reset', … Recorded so
    * the admin's history reads as "set-password link" rather than a subject
@@ -106,6 +108,7 @@ export async function sendMail(opts: SendMailOptions): Promise<void> {
       subject: opts.subject,
       html: opts.html,
       text: opts.text,
+      ...(opts.replyTo && { replyTo: opts.replyTo }),
     })
   } catch (error) {
     await record(opts, 'failed', error)

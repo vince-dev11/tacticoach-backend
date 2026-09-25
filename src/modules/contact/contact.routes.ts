@@ -7,6 +7,7 @@ import { z } from 'zod'
 import { isMailConfigured, sendMail } from '../../config/mailer.js'
 import { buildContactEmail } from '../../lib/emails.js'
 import { db } from '../../config/database.js'
+import { captureError } from '../../lib/observability.js'
 
 const ContactSchema = z.object({
   first_name: z.string().min(1).max(100),
@@ -38,6 +39,7 @@ export async function contactRoutes(app: FastifyInstance) {
         })
       } catch (err) {
         request.log.error({ err }, 'Failed to store contact lead')
+        captureError(err, { request, tags: { step: 'store-contact-lead' } })
       }
 
       if (!isMailConfigured()) {
@@ -59,6 +61,7 @@ export async function contactRoutes(app: FastifyInstance) {
         )
       } catch (err) {
         request.log.error({ err }, 'Failed to deliver contact form email')
+        captureError(err, { request, tags: { step: 'deliver-contact-email' } })
         return reply.status(502).send({
           statusCode: 502,
           error: 'Bad Gateway',

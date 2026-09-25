@@ -34,6 +34,7 @@ import {
 // One state machine for both callers — the author's PATCH and this review
 // action. See ebook-review.ts for why they must not each have their own.
 import { sentOnly } from '../../lib/sent-only.js'
+import { analyticsRoutes } from './analytics/analytics.routes.js'
 import { transition as transitionEbook, type EbookStatus as EbookStatusValue } from '../ebooks/ebook-review.js'
 import { inviteCollaborator, endCollaborator } from '../collaborations/collaborations.service.js'
 import {
@@ -150,6 +151,19 @@ async function withCover<T extends { coverImageKey: string | null }>(post: T) {
 export async function adminRoutes(app: FastifyInstance) {
   app.addHook('preHandler', authGuard)
   app.addHook('preHandler', requireOwner)
+
+  // ===== Analytics (countries, features, funnels, health) ======================
+  await app.register(analyticsRoutes)
+
+  // ===== Error tracking check ===================================================
+  //
+  // POST /admin/monitoring/test — throws on purpose, so the owner can prove the
+  // whole chain works after a deploy: the 500 should appear in Sentry within a
+  // minute, tagged with this request's ID, route and the owner's account ID.
+  // Owner-only (hooks above), and a POST so no crawler or prefetch can fire it.
+  app.post('/monitoring/test', async () => {
+    throw new Error('Sentry test error — thrown on purpose from /api/admin/monitoring/test')
+  })
 
   // ===== Blog CMS ===============================================================
 

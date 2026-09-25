@@ -1,8 +1,11 @@
+// MUST stay the first import: starts error tracking before anything else loads.
+import './instrument.js'
 import { env } from './config/env.js'
 import { db } from './config/database.js'
 import { describeStorage } from './config/s3.js'
 import { buildApp } from './app.js'
 import { startTrialReminderScheduler } from './jobs/trial-reminders.js'
+import { captureError, flushMonitoring, isMonitoringEnabled } from './lib/observability.js'
 
 const start = async () => {
   const app = await buildApp()
@@ -26,8 +29,13 @@ const start = async () => {
     console.log(`🚀  TactiCoach API running on port ${env.PORT}`)
     console.log(`📦  Uploads: ${storage.backend === 's3' ? 'S3' : 'local disk'} → ${storage.location}`)
     if (storage.warning) console.warn(`⚠️   ${storage.warning}`)
+    console.log(`🛰️   Error tracking: ${isMonitoringEnabled() ? 'Sentry on' : 'off (set SENTRY_DSN to enable)'}`)
   } catch (err) {
     app.log.error(err)
+    // A server that fails to boot is the most important error there is — and
+    // exiting straight away would drop the report before it was sent.
+    captureError(err, { source: 'boot', level: 'fatal' })
+    await flushMonitoring()
     process.exit(1)
   }
 }

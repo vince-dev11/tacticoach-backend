@@ -349,3 +349,91 @@ describe('players can actually reach the shop', () => {
     expect(playerMayCall('/api/admin/ebooks')).toBe(false)
   })
 })
+
+// ---- About the author -------------------------------------------------------
+//
+// The book page shows who wrote it. The rule: the coach's own "public page"
+// switch decides how much. Off → name and club only (what a book always
+// showed). On → photo, bio, qualifications, stats. Never an email.
+
+describe('the author box', () => {
+  const BOOK = {
+    id: 1, slug: 'playing-out', title: 'Playing Out', subtitle: null, blurb: 'A book.',
+    category: 'tactics', ageBand: 'u12_14', cover: COVER, pricePence: 0, language: 'en',
+    authorId: 7,
+    author: { name: 'Marco', surname: 'Rossi', clubName: 'Riverside' },
+    chapters: [{ id: 5, title: 'Angles', sortOrder: 0, isSample: true }],
+  }
+  const AUTHOR = {
+    id: 7, name: 'Marco', surname: 'Rossi', email: 'marco@private.test', clubName: 'Riverside', clubLogoKey: null,
+    instagramUrl: 'https://instagram.com/marco', youtubeUrl: null, twitterUrl: null, facebookUrl: null,
+    coachLevel: 'academy', coachAgeGroup: 'u13', coachSlug: 'marco', coachPhotoKey: 'coaches/7/p.jpg',
+    coachColor: '#fbbf24', coachBio: 'Twenty years in academies.', coachTitle: 'Academy coach',
+    coachPageEnabled: true, coachingSince: 2006, coachQualifications: 'UEFA A',
+    coachPhilosophy: 'Play through, not around', coachLocation: 'Turin', coachContactEnabled: true,
+    emailVerifiedAt: new Date(),
+  }
+
+  function authorIs(row: Record<string, unknown>) {
+    dbMock.user.findUnique.mockImplementation((args?: unknown) => {
+      const a = args as { where?: { id?: number }; select?: Record<string, unknown> }
+      const keys = a?.select ? Object.keys(a.select) : []
+      if (keys.length > 0 && keys.every((k) => k === 'role' || k === 'accountType')) {
+        return Promise.resolve({ role: 'user', accountType: 'coach' } as never)
+      }
+      if (a?.where?.id === 7) return Promise.resolve(row as never)
+      return Promise.resolve({ id: 1, role: 'user', accountType: 'coach' } as never)
+    })
+  }
+
+  beforeEach(() => {
+    mock.ebook.findFirst.mockResolvedValue(BOOK as never)
+    mock.ebook.findMany.mockResolvedValue([] as never)
+    mock.ebookProgress.findUnique.mockResolvedValue(null as never)
+    dbMock.canvasBoard.count.mockResolvedValue(12 as never)
+    dbMock.drillSheet.count.mockResolvedValue(3 as never)
+  })
+
+  it('shows the full profile when the coach has their public page on — and never the email', async () => {
+    authorIs(AUTHOR)
+    const body = (await get('/api/ebooks/playing-out')).json()
+    expect(body.authorProfile).toMatchObject({
+      name: 'Marco Rossi', detailed: true, title: 'Academy coach', qualifications: 'UEFA A',
+      coachingSince: 2006, location: 'Turin', philosophy: 'Play through, not around',
+      bio: 'Twenty years in academies.', stats: { boards: 12, sheets: 3 },
+    })
+    expect(body.authorProfile.photoUrl).toBeTruthy()
+    expect(JSON.stringify(body)).not.toContain('marco@private.test')
+    expect(body).not.toHaveProperty('authorId')
+  })
+
+  it('shows only name and club when the coach switched their public page off', async () => {
+    authorIs({ ...AUTHOR, coachPageEnabled: false })
+    const body = (await get('/api/ebooks/playing-out')).json()
+    expect(body.authorProfile).toMatchObject({ name: 'Marco Rossi', clubName: 'Riverside', detailed: false })
+    expect(body.authorProfile).not.toHaveProperty('photoUrl')
+    expect(body.authorProfile).not.toHaveProperty('bio')
+  })
+
+  it('lists other published books by the same author, excluding this one', async () => {
+    authorIs(AUTHOR)
+    mock.ebook.findMany.mockResolvedValue([
+      { id: 2, slug: 'pressing', title: 'Pressing', subtitle: null, category: 'tactics', ageBand: 'all', cover: COVER, pricePence: 0 },
+    ] as never)
+    const body = (await get('/api/ebooks/playing-out')).json()
+    expect(body.moreByAuthor).toHaveLength(1)
+    const where = mock.ebook.findMany.mock.calls[0][0]!.where
+    expect(where).toMatchObject({ authorId: 7, status: 'published', id: { not: 1 } })
+  })
+
+  it('still serves the book if the author lookup fails', async () => {
+    dbMock.user.findUnique.mockImplementation((args?: unknown) => {
+      const a = args as { where?: { id?: number }; select?: Record<string, unknown> }
+      if (a?.where?.id === 7) return Promise.reject(new Error('boom'))
+      return Promise.resolve({ id: 1, role: 'user', accountType: 'coach' } as never)
+    })
+    const res = await get('/api/ebooks/playing-out')
+    expect(res.statusCode).toBe(200)
+    expect(res.json().authorProfile).toBeNull()
+  })
+})

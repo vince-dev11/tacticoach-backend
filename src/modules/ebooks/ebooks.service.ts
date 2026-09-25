@@ -9,6 +9,8 @@
 
 import { db } from '../../config/database.js'
 import { presignUrl } from '../../config/s3.js'
+import { authorProfileFor } from '../coach-page/coach-page.service.js'
+import { ratingsFor, authorRating } from './engagement.service.js'
 
 // ---- TEMPORARY: remove once `prisma generate` has run against migration 28 --
 // The generated client has no ebook delegates until then. Narrow on purpose.
@@ -58,7 +60,15 @@ interface EbookRow {
   language: string
   createdAt: Date
   updatedAt: Date
-  author?: { name: string; surname: string | null; clubName?: string | null; clubLogoKey?: string | null }
+  author?: {
+    name: string
+    surname: string | null
+    clubName?: string | null
+    clubLogoKey?: string | null
+    coachPhotoKey?: string | null
+    coachPageEnabled?: boolean
+    coachTitle?: string | null
+  }
   chapters?: {
     id: number
     title: string
@@ -112,6 +122,7 @@ export const AGE_BANDS = ['u9_11', 'u12_14', 'u15_18', 'adult', 'all'] as const
 export const BLOCK_KINDS = [
   'text', 'board', 'board_compare', 'board_sequence', 'drill',
   'character', 'your_turn', 'quiz', 'image', 'quote',
+  'animation', 'decision', 'chart',
 ] as const
 
 const authorName = (a?: { name: string; surname: string | null }) =>
@@ -136,6 +147,15 @@ async function logosFor(
   rows: { author?: { clubLogoKey?: string | null } }[],
 ): Promise<Map<string, string | null>> {
   const keys = [...new Set(rows.map((r) => r.author?.clubLogoKey).filter((k): k is string => !!k))]
+  const urls = await Promise.all(keys.map((k) => presignUrl(k).catch(() => null)))
+  return new Map(keys.map((k, i) => [k, urls[i]]))
+}
+
+/** Same dedupe for author headshots. */
+async function photosFor(
+  rows: { author?: { coachPhotoKey?: string | null; coachPageEnabled?: boolean } }[],
+): Promise<Map<string, string | null>> {
+  const keys = [...new Set(rows.filter((r) => r.author?.coachPageEnabled).map((r) => r.author?.coachPhotoKey).filter((k): k is string => !!k))]
   const urls = await Promise.all(keys.map((k) => presignUrl(k).catch(() => null)))
   return new Map(keys.map((k, i) => [k, urls[i]]))
 }
@@ -173,12 +193,19 @@ export async function listBooks(filters: ShopFilters) {
     select: {
       id: true, title: true, subtitle: true, slug: true, category: true, ageBand: true,
       cover: true, pricePence: true, publishedAt: true,
-      author: { select: { name: true, surname: true, clubName: true, clubLogoKey: true } },
+      author: {
+        select: {
+          name: true, surname: true, clubName: true, clubLogoKey: true,
+          coachPhotoKey: true, coachPageEnabled: true, coachTitle: true,
+        },
+      },
       _count: { select: { chapters: true } },
     },
   })
 
   const logos = await logosFor(books)
+  const photos = await photosFor(books)
+  const ratings = await ratingsFor(books.map((b) => b.id))
 
   return books.map((b) => ({
     id: b.id,
@@ -192,12 +219,28 @@ export async function listBooks(filters: ShopFilters) {
     chapters: b._count?.chapters ?? 0,
     author: authorName(b.author),
     authorLogoUrl: b.author?.clubLogoKey ? logos.get(b.author.clubLogoKey) ?? null : null,
+    // Avatar and role line under the title — only for coaches whose public
+    // page is switched on (same rule as the author box on the book page).
+    authorPhotoUrl: b.author?.coachPageEnabled && b.author.coachPhotoKey ? photos.get(b.author.coachPhotoKey) ?? null : null,
+    authorTitle: b.author?.coachPageEnabled ? b.author.coachTitle ?? null : null,
     // Ratings and sales do not exist yet, so this is honestly false for
     // everything rather than randomly decorated. When sales land it becomes
     // top 10% by copies in 30 days, past a minimum floor — computed, never
     // set by an author.
     bestSeller: false,
-  }))
+    rating: ratings.get(b.id) ?? { average: null, count: 0 },
+  })).sort((a, b) =>
+    // "Top rated": needs at least 3 reviews to rank, so one five-star review
+    // from the author's friend cannot top the shop. Ties keep newest-first.
+    filters.sort === 'rated'
+      ? rankScore(b.rating) - rankScore(a.rating)
+      : 0,
+  )
+}
+
+const RANK_MIN_REVIEWS = 3
+function rankScore(r: { average: number | null; count: number }): number {
+  return r.count >= RANK_MIN_REVIEWS && r.average != null ? r.average : 0
 }
 
 /**
@@ -212,6 +255,7 @@ export async function getBook(slug: string) {
     select: {
       id: true, title: true, subtitle: true, slug: true, blurb: true, category: true,
       ageBand: true, cover: true, pricePence: true, language: true, publishedAt: true,
+      authorId: true,
       author: { select: { name: true, surname: true, clubName: true, clubLogoKey: true } },
       chapters: {
         orderBy: { sortOrder: 'asc' },
@@ -220,12 +264,45 @@ export async function getBook(slug: string) {
     },
   })
   if (!book) return null
+  const authorId = (book as { authorId?: number }).authorId
+  // The author box and "more by" are extras: a failure in either must never
+  // take the book page down with it.
+  const [authorProfile, moreByAuthor, ratings, authorRated] = await Promise.all([
+    authorId ? authorProfileFor(authorId).catch(() => null) : Promise.resolve(null),
+    authorId ? moreBy(authorId, book.id).catch(() => []) : Promise.resolve([]),
+    ratingsFor([book.id]),
+    authorId ? authorRating(authorId) : Promise.resolve({ average: null, count: 0 }),
+  ])
+  const { authorId: _omit, ...rest } = book as typeof book & { authorId?: number }
+  void _omit
   return {
-    ...book,
+    ...rest,
     author: authorName(book.author),
     authorLogoUrl: await authorLogo(book.author),
     club: book.author?.clubName ?? null,
+    authorProfile: authorProfile ? { ...authorProfile, rating: authorRated } : null,
+    moreByAuthor,
+    rating: ratings.get(book.id) ?? { average: null, count: 0 },
+    /** Internal: lets the route skip counting the author's own visits. Stripped before sending. */
+    _authorId: authorId ?? null,
   }
+}
+
+/** Up to four other PUBLISHED books by the same author, newest first. */
+async function moreBy(authorId: number, excludeId: number) {
+  const rows = await ebookDb().findMany({
+    where: { authorId, status: 'published', id: { not: excludeId } },
+    orderBy: { publishedAt: 'desc' },
+    take: 4,
+    select: {
+      id: true, slug: true, title: true, subtitle: true, category: true, ageBand: true,
+      cover: true, pricePence: true,
+    },
+  })
+  return (rows ?? []).map((b) => ({
+    id: b.id, slug: b.slug, title: b.title, subtitle: b.subtitle,
+    category: b.category, ageBand: b.ageBand, cover: b.cover, pricePence: b.pricePence,
+  }))
 }
 
 /**
@@ -236,7 +313,7 @@ export async function getBook(slug: string) {
  * conservative: it is much easier to open a door later than to explain why a
  * paid book was readable for a fortnight.
  */
-export async function getChapter(slug: string, chapterId: number) {
+export async function getChapter(slug: string, chapterId: number, opts: { signedIn?: boolean } = { signedIn: true }) {
   const chapter = await chapterDb().findFirst({
     where: { id: chapterId, ebook: { slug, status: 'published' } },
     select: {
@@ -250,10 +327,60 @@ export async function getChapter(slug: string, chapterId: number) {
     where: { id: chapter.ebookId },
     select: { pricePence: true, title: true, slug: true },
   })
-  const readable = (book?.pricePence ?? 0) === 0 || chapter.isSample
-  if (!readable) return { locked: true as const, title: chapter.title }
+  const sample = await isSampleChapter(chapter)
 
-  return { locked: false as const, ...chapter }
+  // Signed out: the sample only. It is the shop window — enough to judge the
+  // book by, and a reason to make an account for the rest.
+  if (opts.signedIn === false) {
+    if (!sample) return { locked: true as const, reason: 'signin' as const, title: chapter.title, ebookId: chapter.ebookId, sample }
+    return { locked: false as const, ...chapter, sample }
+  }
+
+  const readable = (book?.pricePence ?? 0) === 0 || chapter.isSample
+  if (!readable) return { locked: true as const, reason: 'purchase' as const, title: chapter.title, ebookId: chapter.ebookId, sample }
+
+  return { locked: false as const, ...chapter, sample }
+}
+
+/**
+ * The chapter a stranger may read. The author's `isSample` flag when they set
+ * one; otherwise the first chapter — a book with no sample would show a
+ * signed-out visitor nothing at all, and nobody buys a book they cannot open.
+ */
+async function isSampleChapter(chapter: { id: number; ebookId: number; isSample: boolean }): Promise<boolean> {
+  if (chapter.isSample) return true
+  const chapters = await chapterDb().findMany({
+    where: { ebookId: chapter.ebookId },
+    orderBy: { sortOrder: 'asc' },
+    select: { id: true, isSample: true },
+  })
+  if ((chapters ?? []).some((c) => c.isSample)) return false
+  return chapters?.[0]?.id === chapter.id
+}
+
+/** Published books, for the sitemap. Slugs and dates only. */
+export async function sitemapBooks() {
+  return ebookDb().findMany({
+    where: { status: 'published' },
+    orderBy: { publishedAt: 'desc' },
+    select: { slug: true, updatedAt: true },
+  }) as Promise<{ slug: string; updatedAt: Date }[]>
+}
+
+/** A coach's published books for the Books tab on /coach/:slug. */
+export async function booksByAuthor(authorId: number) {
+  const rows = await ebookDb().findMany({
+    where: { authorId, status: 'published' },
+    orderBy: { publishedAt: 'desc' },
+    take: 24,
+    select: { id: true, slug: true, title: true, subtitle: true, category: true, ageBand: true, cover: true, pricePence: true },
+  })
+  const ratings = await ratingsFor(rows.map((b) => b.id))
+  return rows.map((b) => ({
+    id: b.id, slug: b.slug, title: b.title, subtitle: b.subtitle, category: b.category,
+    ageBand: b.ageBand, cover: b.cover, pricePence: b.pricePence,
+    rating: ratings.get(b.id) ?? { average: null, count: 0 },
+  }))
 }
 
 /** Every chapter of a book, titles only — the reader's own contents list. */

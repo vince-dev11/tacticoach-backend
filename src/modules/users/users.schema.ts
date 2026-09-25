@@ -61,9 +61,17 @@ export type UpdateProfileInput = z.infer<typeof UpdateProfileSchema>
  * Guided tours a user can complete. An enum (not a free string) so a client
  * bug can never grow the account's tours array with junk.
  */
-export const TOUR_IDS = ['editor', 'sheet', 'session'] as const
-export const TourDoneSchema = z.object({ tour: z.enum(TOUR_IDS) })
-export type TourId = (typeof TOUR_IDS)[number]
+export const TOUR_IDS = ['editor', 'sheet', 'session', 'book'] as const
+/**
+ * "What's new" pop-ups are recorded the same way, as `release:YYYY-MM-DD` —
+ * one entry per release the account has seen, so a coach sees each release
+ * once across every device. The date shape is the only free part.
+ */
+export const RELEASE_MARK = /^release:\d{4}-\d{2}-\d{2}$/
+export const TourDoneSchema = z.object({
+  tour: z.union([z.enum(TOUR_IDS), z.string().regex(RELEASE_MARK)]),
+})
+export type TourId = (typeof TOUR_IDS)[number] | `release:${string}`
 
 /**
  * Club logo uploads. Raster only, deliberately: an SVG is a script-bearing

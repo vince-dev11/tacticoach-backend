@@ -14,6 +14,7 @@ import { presignUrl } from '../../config/s3.js'
 import { COLLABORATION_AGREEMENT } from './collaboration-agreement.js'
 import { submitApplication } from './applications.service.js'
 import { db } from '../../config/database.js'
+import { captureError } from '../../lib/observability.js'
 
 /**
  * What the public form sends.
@@ -62,6 +63,7 @@ export async function collaborationsRoutes(app: FastifyInstance) {
         await submitApplication(input)
       } catch (err) {
         request.log.error({ err }, 'Failed to store a collaboration application')
+        captureError(err, { request, tags: { step: 'store-collaboration' } })
         return reply.status(503).send({
           statusCode: 503,
           error: 'Service Unavailable',

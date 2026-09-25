@@ -51,6 +51,7 @@ import { requireOwner } from '../../middleware/owner-guard.js'
 import {
   CorrectionRequestSchema, correctionAggregates, isWorthKeeping,
 } from './ai.corrections.js'
+import { captureError } from '../../lib/observability.js'
 
 /**
  * Loose handle for the ai_corrections model, until `prisma generate` runs on a
@@ -188,6 +189,7 @@ export async function aiRoutes(app: FastifyInstance) {
       }
     } catch (err) {
       app.log.error({ err, userId, kind }, 'credit accounting failed after a successful generation')
+      captureError(err, { source: 'ai:credits', tags: { ai_kind: String(kind) }, extra: { userId } })
       // null = "we don't know your balance right now", which the editor already
       // renders as no number rather than as zero.
       return { free: false, creditsRemaining: null }
@@ -283,6 +285,7 @@ export async function aiRoutes(app: FastifyInstance) {
       )
     } catch (err) {
       request.log.error({ err }, 'AI layout generation failed')
+      captureError(err, { request, tags: { ai_kind: 'layout' } })
       return reply.status(502).send({ statusCode: 502, error: 'Bad Gateway', message: 'AI generation failed. Please try again.' })
     }
     if (!result) {
@@ -403,6 +406,7 @@ export async function aiRoutes(app: FastifyInstance) {
         )
       } catch (err) {
         request.log.error({ err }, 'AI animation generation failed')
+        captureError(err, { request, tags: { ai_kind: 'animation' } })
         return reply.status(502).send({ statusCode: 502, error: 'Bad Gateway', message: 'AI generation failed. Please try again.' })
       }
     }
@@ -490,6 +494,7 @@ export async function aiRoutes(app: FastifyInstance) {
       )
     } catch (err) {
       request.log.error({ err }, 'AI reel copy generation failed')
+      captureError(err, { request, tags: { ai_kind: 'reel-copy' } })
       return reply.status(502).send({ statusCode: 502, error: 'Bad Gateway', message: 'AI generation failed. Please try again.' })
     }
     if (!copy) {

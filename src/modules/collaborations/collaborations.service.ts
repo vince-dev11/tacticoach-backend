@@ -24,7 +24,6 @@ import { COLLABORATION_AGREEMENT_VERSION } from './collaboration-agreement.js'
 // and creating a cycle. Re-exported here because callers expect them from the
 // service, and one import path is kinder than two.
 import {
-  COMMISSION_WINDOW_MONTHS,
   DEFAULT_COACH_RATE,
   DEFAULT_CLUB_RATE,
   PAYOUT_THRESHOLD_PENCE,
@@ -34,7 +33,7 @@ import {
 } from './collaboration-terms.js'
 
 export {
-  COMMISSION_WINDOW_MONTHS,
+  COMMISSION_FIRST_PAYMENT_ONLY,
   DEFAULT_COACH_RATE,
   DEFAULT_CLUB_RATE,
   PAYOUT_THRESHOLD_PENCE,
@@ -132,20 +131,12 @@ export async function endCollaborator(userId: number): Promise<void> {
 }
 
 /**
- * Which rate applies to a payment, from the plan that payment is FOR.
+ * Which rate applies to the payment, from the plan that payment is FOR.
  *
- * Resolved per invoice rather than locked at the customer's first payment, and
- * that is a deliberate choice with two arguments behind it:
- *
- *   SIMPLER. Commission is already computed per invoice and the rate is
- *   already copied onto the line. Locking it would need a column to lock it
- *   in.
- *
- *   ALIGNED. A coach introduced at the coach rate who upgrades to a club plan
- *   moves their collaborator to the club rate from that invoice onward. That
- *   gives the collaborator a reason to help a coach grow into a club, which is
- *   the single most valuable thing they could do for us. Locking would pay
- *   them LESS for the better outcome.
+ * Only one payment per customer ever earns commission (the first), so this is
+ * simply: the plan they bought. A coach plan pays the coach rate, a club plan
+ * the club rate. Kept as a function so the admin per-collaborator overrides
+ * flow through one place.
  */
 export function rateForPlan(
   planSlug: string | null | undefined,
@@ -172,26 +163,28 @@ export async function recordCommission(params: {
 
   const referral = await db.referral.findUnique({
     where: { referredUserId: customerId },
-    select: { referrerId: true, status: true, qualifiedAt: true, createdAt: true },
+    select: { referrerId: true, status: true, firstInvoiceId: true },
   })
   if (!referral || referral.status === 'reversed') return
+
+  // FIRST PAYMENT ONLY. qualifyReferral() runs before this in the webhook and
+  // stamps the customer's first cleared invoice onto the referral; commission
+  // is owed on that invoice and no other. A renewal, a second monthly
+  // instalment, a retried webhook for a later invoice — all carry a different
+  // id and earn nothing. (A replay of the first invoice is caught further down
+  // by the unique index on provider_invoice_id.)
+  if (!referral.firstInvoiceId || referral.firstInvoiceId !== providerInvoiceId) return
 
   const collaborator = await db.collaborator.findUnique({
     where: { userId: referral.referrerId },
     select: { id: true, status: true, coachRate: true, clubRate: true },
   })
-  // Ended collaborators keep earning on customers they already introduced;
-  // suspended ones do not. Only `ended` is in the trailing-commission promise
-  // — and `invited` has not agreed to anything yet, so nothing is owed.
+  // An ended collaborator is still paid for a customer they introduced whose
+  // first payment lands after the end date; a suspended one is not. `invited`
+  // has not agreed to anything yet, so nothing is owed.
   if (!collaborator || collaborator.status === 'suspended' || collaborator.status === 'invited') {
     return
   }
-
-  // The 12-month window runs from the customer's first payment, not from today.
-  const start = referral.qualifiedAt ?? referral.createdAt
-  const windowEnds = new Date(start)
-  windowEnds.setMonth(windowEnds.getMonth() + COMMISSION_WINDOW_MONTHS)
-  if (new Date() > windowEnds) return
 
   // What the CUSTOMER is on right now — which is what this invoice is for.
   const customerPlan = await db.userSubscription.findUnique({

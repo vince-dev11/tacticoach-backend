@@ -8,6 +8,7 @@
 
 import { db } from '../config/database.js'
 import { sendTrialReminderEmail } from '../lib/emails.js'
+import { captureError } from '../lib/observability.js'
 
 export const TRIAL_REMINDER_WINDOW_MS = 2 * 24 * 60 * 60 * 1000 // 2 days
 const SWEEP_INTERVAL_MS = 60 * 60 * 1000 // hourly
@@ -47,7 +48,12 @@ export async function sweepTrialReminders(now: Date = new Date()): Promise<numbe
 /** Start the hourly sweep. Returns a stop function. */
 export function startTrialReminderScheduler(): () => void {
   const run = () =>
-    sweepTrialReminders().catch((err) => console.error('[trial-reminders] sweep failed', err))
+    sweepTrialReminders().catch((err) => {
+      console.error('[trial-reminders] sweep failed', err)
+      // No request, no user watching: without this a broken sweep fails
+      // silently every hour and trials simply stop getting reminders.
+      captureError(err, { source: 'job:trial-reminders' })
+    })
 
   // First sweep shortly after boot (give the DB connection a moment), then hourly.
   const kickoff = setTimeout(run, 10_000)

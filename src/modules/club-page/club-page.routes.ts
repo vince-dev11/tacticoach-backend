@@ -58,6 +58,8 @@ export async function clubPageRoutes(app: FastifyInstance) {
       bio: club.bio,
       location: club.location,
       foundedYear: club.foundedYear,
+      websiteUrl: club.websiteUrl,
+      ageGroups: club.ageGroups,
       gallery: await Promise.all(
         club.photos.map(async (ph) => ({ id: ph.id, caption: ph.caption, imageUrl: await presignUrl(ph.imageKey) })),
       ),

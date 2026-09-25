@@ -37,13 +37,12 @@
 import {
   DEFAULT_COACH_RATE,
   DEFAULT_CLUB_RATE,
-  COMMISSION_WINDOW_MONTHS,
   PAYOUT_THRESHOLD_PENCE,
   CONTENT_PER_CYCLE,
   CONTENT_VIDEO_MINIMUM,
 } from './collaboration-terms.js'
 
-export const COLLABORATION_AGREEMENT_VERSION = '1.0'
+export const COLLABORATION_AGREEMENT_VERSION = '1.1'
 
 const pct = (fraction: number) => `${Math.round(fraction * 100)}%`
 const pounds = (pence: number) => `£${(pence / 100).toFixed(0)}`
@@ -89,12 +88,14 @@ export const COLLABORATION_AGREEMENT: CollaborationAgreement = {
     {
       heading: '2. What you earn',
       body: [
-        `You earn ${pct(DEFAULT_COACH_RATE)} of what an individual coach pays, and ${pct(DEFAULT_CLUB_RATE)} of what a club pays, excluding VAT, for ${COMMISSION_WINDOW_MONTHS} months from that customer's first payment.`,
+        `You earn ${pct(DEFAULT_COACH_RATE)} of what an individual coach pays, and ${pct(DEFAULT_CLUB_RATE)} of what a club pays, excluding VAT, on that customer's FIRST payment only.`,
+        // The rule the constant states, spelled out so nobody has to infer it.
+        'One payment per customer. Renewals, later monthly instalments and upgrades do not earn again: you are paid for the introduction, and the product earns the renewals. A customer who buys a year up front therefore earns you a year’s worth in one line; one who pays monthly earns you their first month.',
         'A club is worth more because it is a harder sale, not simply a bigger one: it goes through a committee and takes months rather than minutes. A percentage already pays you more for a larger customer; the extra is for the work.',
       ],
       points: [
-        'Which rate applies is decided by the plan each payment is FOR, at the time of that payment. If somebody you introduced on a coach plan upgrades to a club plan, you move to the club rate from that payment onward.',
-        'It is a share of what they ACTUALLY pay, after any discount they used. If they pay nothing in a month, you earn nothing for that month.',
+        'Which rate applies is decided by the plan that first payment is FOR: a coach plan pays the coach rate, a club plan the club rate.',
+        'It is a share of what they ACTUALLY pay, after any discount they used. A free trial that never converts earns nothing.',
         'The rate in force is recorded on every line of your statement when it is written. If we ever change your rates, past lines are never restated.',
         'We will give you notice in writing before changing your rates, and a change applies only to payments made after it takes effect.',
       ],
@@ -169,7 +170,7 @@ export const COLLABORATION_AGREEMENT: CollaborationAgreement = {
       heading: '9. Ending it',
       body: [
         'Either of us can end this with 30 days’ notice in writing, for any reason or none.',
-        'If you end it, or we end it for anything other than a breach of section 8, you keep earning on every customer you introduced before it ended, for the rest of their 12-month window. Your free account stops.',
+        'If you end it, or we end it for anything other than a breach of section 8, you are still paid for anyone you introduced before it ended whose first payment lands afterwards. Your free account stops.',
         'If we suspend you for a breach of section 8, commission stops accruing immediately while we look into it. If the breach is made out we may end the agreement and withhold commission not yet paid.',
       ],
     },

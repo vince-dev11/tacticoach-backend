@@ -11,6 +11,8 @@ import fastifyHelmet from '@fastify/helmet'
 import { env, corsOrigins } from './config/env.js'
 import { registerLocalUploads } from './config/s3.js'
 import { errorHandler } from './middleware/error-handler.js'
+import { genRequestId } from './lib/observability.js'
+import { recordRequest, startEventLoopMonitor } from './lib/request-stats.js'
 import { authRoutes } from './modules/auth/auth.routes.js'
 import { usersRoutes } from './modules/users/users.routes.js'
 import { membershipRoutes } from './modules/membership/membership.routes.js'
@@ -54,6 +56,30 @@ export async function buildApp(): Promise<FastifyInstance> {
     // Fastify 5 and goes away in 6 — it still works today, but silently, which
     // is the worst way for a security-adjacent limit to change.
     routerOptions: { maxParamLength: 1024 },
+    // One ID per request, reused from the browser's X-Request-Id when it sent
+    // a sane one. It is on every log line (`reqId`), in the X-Request-Id
+    // response header, in every 5xx body and on the Sentry event — the single
+    // key for tracing one failure across browser, logs and Sentry.
+    genReqId: genRequestId,
+  })
+
+  // Echo the request ID on EVERY response, success or failure, so the browser
+  // can attach it to whatever it reports.
+  app.addHook('onSend', async (request, reply) => {
+    reply.header('x-request-id', request.id)
+  })
+
+  // Timing per route, kept in memory for Admin → Analytics → Health. The
+  // route PATTERN (/api/clubs/:id), so one endpoint is one row.
+  startEventLoopMonitor()
+  app.addHook('onResponse', async (request, reply) => {
+    recordRequest({
+      at: Date.now(),
+      route: request.routeOptions?.url ?? request.url.split('?')[0],
+      method: request.method,
+      status: reply.statusCode,
+      ms: reply.elapsedTime,
+    })
   })
 
   // ---- Error handler ----------------------------------------------------------
@@ -75,6 +101,16 @@ export async function buildApp(): Promise<FastifyInstance> {
     // silently blocks PATCH/DELETE preflights (pre-launch QA: every profile
     // save failed with "Method PATCH is not allowed"). List everything we use.
     methods: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    // Cross-origin JavaScript can only read response headers listed here.
+    // Without it the frontend never sees X-Request-Id on API responses.
+    exposedHeaders: ['x-request-id'],
+    // Cache the CORS preflight. The app (app.tacticoach.co.uk) calls the API
+    // (api.tacticoach.co.uk) with an Authorization header, so every request
+    // needs an OPTIONS preflight first — and without max-age Chrome only
+    // remembers the answer for 5 seconds. Measured on the live site: every
+    // signed-in call cost two round trips (~450 ms from India instead of
+    // ~225). Two hours is the most Chrome will honour.
+    maxAge: 7200,
   })
 
   await app.register(fastifyJwt, {

@@ -16,7 +16,11 @@ source scripts/db-env.sh
 # Gzipped, for two reasons: it matches the dumps already in ~ on the production
 # box (tacticoach-2026-09-17-pre22.sql.gz), and that box was last seen at 82%
 # disk. A backup that fills the disk it is protecting is not a backup.
-OUT=~/tacticoach-backup-$(date +%F-%H%M).sql.gz
+# BACKUP_DIR lets the nightly job keep its dumps in one folder; run by hand
+# it defaults to the home directory, as it always has.
+BACKUP_DIR="${BACKUP_DIR:-$HOME}"
+mkdir -p "${BACKUP_DIR}"
+OUT="${BACKUP_DIR}/tacticoach-backup-$(date +%F-%H%M).sql.gz"
 db_banner
 echo "Dumping to ${OUT} …"
 # pipefail (set above) matters here: without it, gzip succeeding would mask
