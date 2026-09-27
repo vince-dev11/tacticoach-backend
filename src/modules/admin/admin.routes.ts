@@ -446,9 +446,12 @@ export async function adminRoutes(app: FastifyInstance) {
         clubName: input.clubName ?? null,
         // Unguessable and never transmitted: the only way in is the setup link.
         passwordHash: await bcrypt.hash(crypto.randomBytes(32).toString('hex'), 12),
-        // The admin typed this address on purpose, and the setup link proves
-        // the mailbox anyway — nobody can sign in without receiving it.
-        emailVerifiedAt: new Date(),
+        // NOT verified yet. The mailbox is proven the moment the setup link is
+        // redeemed (resetPasswordWithToken stamps it), not when the admin
+        // types the address — until then the ✓ in the admin list would claim
+        // something nobody has checked, and the list could not tell an
+        // activated account from an invitation still sitting in an inbox.
+        emailVerifiedAt: null,
       },
       select: { id: true, name: true, surname: true, email: true, accountType: true, clubName: true },
     })

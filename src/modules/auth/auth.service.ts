@@ -194,8 +194,13 @@ export async function resetPasswordWithToken(token: string, newPassword: string)
   if (!record || record.usedAt || record.expiresAt < new Date()) return false
 
   const passwordHash = await bcrypt.hash(newPassword, BCRYPT_ROUNDS)
+  // Redeeming a link that was emailed to the address proves the mailbox, so
+  // an unverified account (an admin-created one, or a coach who never clicked
+  // the welcome link) becomes verified here. Already-verified stays as it was.
+  const now = new Date()
   await db.$transaction([
     db.user.update({ where: { id: record.userId }, data: { passwordHash } }),
+    db.user.updateMany({ where: { id: record.userId, emailVerifiedAt: null }, data: { emailVerifiedAt: now } }),
     db.passwordResetToken.update({ where: { id: record.id }, data: { usedAt: new Date() } }),
     db.refreshToken.deleteMany({ where: { userId: record.userId } }),
   ])

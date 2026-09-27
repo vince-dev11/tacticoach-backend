@@ -419,3 +419,42 @@ describe('complimentary plans', () => {
     expect(paid.statusCode).toBe(409)
   })
 })
+
+describe('admin-created accounts and email verification', () => {
+  it('a user the admin adds is NOT marked verified until they open the setup link', async () => {
+    const app = await getApp()
+    // Owner asking; the "email taken?" lookup (selects id only) finds nobody.
+    dbMock.user.findUnique.mockImplementation((args?: unknown) => {
+      const select = (args as { select?: Record<string, unknown> } | undefined)?.select ?? {}
+      const keys = Object.keys(select)
+      if (keys.length && keys.every((k) => k === 'role' || k === 'accountType')) return Promise.resolve({ role: 'owner', accountType: 'coach' } as never)
+      return Promise.resolve(null as never)
+    })
+    dbMock.user.create.mockResolvedValue({ id: 77, name: 'New', surname: 'Coach', email: 'new@club.com', accountType: 'coach', clubName: null } as never)
+    dbMock.passwordResetToken.deleteMany.mockResolvedValue({ count: 0 } as never)
+    dbMock.passwordResetToken.create.mockResolvedValue({} as never)
+
+    const res = await app.inject({
+      method: 'POST', url: '/api/admin/users', headers: authHeaders(await accessToken()),
+      payload: { name: 'New', surname: 'Coach', email: 'new@club.com', sendEmail: false },
+    })
+    expect(res.statusCode).toBe(201)
+    const data = dbMock.user.create.mock.calls[0][0].data as { emailVerifiedAt?: Date | null }
+    expect(data.emailVerifiedAt).toBeNull()
+  })
+
+  it('redeeming a setup/reset link verifies the email', async () => {
+    const app = await getApp()
+    dbMock.passwordResetToken.findUnique.mockResolvedValue({
+      id: 9, userId: 77, tokenHash: 'x', expiresAt: new Date(Date.now() + 3600_000), usedAt: null, createdAt: new Date(),
+    } as never)
+    dbMock.$transaction.mockResolvedValue([] as never)
+    const res = await app.inject({ method: 'POST', url: '/api/auth/reset-password', payload: { token: 'setup-token', password: 'newpassword1' } })
+    expect(res.statusCode).toBe(200)
+    // Prisma's $transaction([...]) receives the already-built operations; the
+    // verification stamp is one of them, scoped to "still unverified".
+    expect(dbMock.user.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: 77, emailVerifiedAt: null }, data: { emailVerifiedAt: expect.any(Date) } }),
+    )
+  })
+})
