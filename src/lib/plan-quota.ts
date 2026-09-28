@@ -45,7 +45,9 @@ const COUNTERS: Record<Quota, (userId: number) => Promise<number>> = {
   books: (userId) =>
     (db as unknown as { ebook: { count(a: unknown): Promise<number> } })
       .ebook.count({ where: { authorId: userId } }),
-  sessions: (userId) => db.trainingSession.count({ where: { userId } }),
+  // Matches are fixtures, not training content, and never count (see the
+  // sessions route, which lets a coach at the limit still add a match).
+  sessions: (userId) => db.trainingSession.count({ where: { userId, isMatch: false } }),
 }
 
 /** What a coach is told when each runs out. */

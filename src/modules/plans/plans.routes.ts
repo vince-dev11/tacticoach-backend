@@ -6,6 +6,7 @@
 //   PATCH  /api/plans/:id             title / label / week-starts-on
 //   DELETE /api/plans/:id
 //   POST   /api/plans/:id/weeks       append weeks
+//   POST   /api/plans/:id/copy        new season from this one { title, startDate }
 //   GET    /api/plans/weeks/:weekId   the week screen
 //   PATCH  /api/plans/weeks/:weekId   theme / phase
 //   POST   /api/plans/weeks/:weekId/copy-to    { toWeekId }
@@ -26,6 +27,7 @@ import {
   createPlan,
   addWeeks,
   copyWeek,
+  copyPlan,
   clearWeek,
   listPlans,
   MAX_WEEKS,
@@ -121,6 +123,22 @@ export async function plansRoutes(app: FastifyInstance) {
     // coach's actual work survives and returns to his session library.
     await db.seasonPlan.delete({ where: { id } })
     return reply.send({ message: 'Plan deleted' })
+  })
+
+  app.post('/:id/copy', { preHandler: requireEditorAccess }, async (request, reply) => {
+    const input = z
+      .object({
+        title: z.string().max(255).transform((t) => t.trim() || 'Season plan'),
+        startDate: z.coerce.date(),
+        seasonLabel: z.string().max(40).optional().nullable(),
+      })
+      .parse(request.body)
+    const result = await copyPlan(uid(request), idOf(request), input)
+    if (!result) return reply.status(404).send(notFound('Plan'))
+    return reply.status(201).send({
+      copiedSessions: result.sessions,
+      plan: await getPlan(uid(request), result.planId),
+    })
   })
 
   app.post('/:id/weeks', { preHandler: requireEditorAccess }, async (request, reply) => {

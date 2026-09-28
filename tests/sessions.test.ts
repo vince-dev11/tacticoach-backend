@@ -186,3 +186,67 @@ describe('GET/PATCH/DELETE /api/sessions/:id', () => {
     expect(res.statusCode).toBe(200)
   })
 })
+
+describe('Fixtures (migration 37)', () => {
+  it('a free coach at the session limit can still add a match — fixtures are not training content', async () => {
+    const app = await getApp()
+    onFreeTier()
+    dbMock.trainingSession.count.mockResolvedValue(1 as never) // at the limit
+    dbMock.trainingSession.create.mockResolvedValue(sessionRow({ isMatch: true }) as never)
+    const res = await app.inject({
+      method: 'POST', url: '/api/sessions', headers: authHeaders(await accessToken()),
+      payload: { title: 'vs Riverside', isMatch: true, sessionType: 'match', opponent: 'Riverside FC', homeAway: 'away', competition: 'League', startTime: '10:30' },
+    })
+    expect(res.statusCode).toBe(201)
+    const data = (dbMock.trainingSession.create.mock.calls[0][0] as { data: Record<string, unknown> }).data
+    expect(data).toMatchObject({ isMatch: true, opponent: 'Riverside FC', homeAway: 'away', competition: 'League' })
+  })
+
+  it('the session limit counts training only, never matches', async () => {
+    const app = await getApp()
+    onFreeTier()
+    dbMock.trainingSession.count.mockResolvedValue(0 as never)
+    dbMock.trainingSession.create.mockResolvedValue(sessionRow() as never)
+    await app.inject({ method: 'POST', url: '/api/sessions', headers: authHeaders(await accessToken()), payload: { title: 'Tuesday' } })
+    expect(dbMock.trainingSession.count).toHaveBeenCalledWith({ where: { userId: 1, isMatch: false } })
+  })
+
+  it('entering the result later writes only the result', async () => {
+    const app = await getApp()
+    grantEditorAccess()
+    dbMock.trainingSession.findFirst.mockResolvedValue({ id: 1 } as never)
+    dbMock.trainingSession.update.mockResolvedValue(sessionRow({ isMatch: true }) as never)
+    const res = await app.inject({
+      method: 'PATCH', url: '/api/sessions/1', headers: authHeaders(await accessToken()),
+      payload: { goalsFor: 3, goalsAgainst: 1, matchNote: '  Pressed well, tired late.  ' },
+    })
+    expect(res.statusCode).toBe(200)
+    const data = (dbMock.trainingSession.update.mock.calls[0][0] as { data: Record<string, unknown> }).data
+    expect(data).toEqual({ goalsFor: 3, goalsAgainst: 1, matchNote: 'Pressed well, tired late.' })
+  })
+
+  it('rejects nonsense: an unknown home/away value or a negative score', async () => {
+    const app = await getApp()
+    grantEditorAccess()
+    dbMock.trainingSession.findFirst.mockResolvedValue({ id: 1 } as never)
+    const bad1 = await app.inject({ method: 'PATCH', url: '/api/sessions/1', headers: authHeaders(await accessToken()), payload: { homeAway: 'neutral' } })
+    const bad2 = await app.inject({ method: 'PATCH', url: '/api/sessions/1', headers: authHeaders(await accessToken()), payload: { goalsFor: -1 } })
+    expect(bad1.statusCode).toBe(422)
+    expect(bad2.statusCode).toBe(422)
+  })
+})
+
+describe('PATCH touches only what was sent', () => {
+  it('adding a drill (blocks only) keeps the brand colour — it used to be reset to {}', async () => {
+    const app = await getApp()
+    grantEditorAccess()
+    dbMock.trainingSession.findFirst.mockResolvedValue({ id: 1 } as never)
+    dbMock.trainingSession.update.mockResolvedValue(sessionRow() as never)
+    await app.inject({
+      method: 'PATCH', url: '/api/sessions/1', headers: authHeaders(await accessToken()),
+      payload: { blocks: [{ kind: 'text', title: 'Rondo', minutes: 10 }] },
+    })
+    const data = (dbMock.trainingSession.update.mock.calls[0][0] as { data: Record<string, unknown> }).data
+    expect(Object.keys(data)).toEqual(['blocks'])
+  })
+})

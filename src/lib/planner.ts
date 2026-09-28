@@ -50,6 +50,33 @@ export interface SessionLoadInput {
 }
 
 /**
+ * A typical RPE for each kind of session — used only when the coach has not
+ * rated one.
+ *
+ * Most coaches never fill in "how hard", so their weekly load read 0 beside
+ * 90 minutes of training, and the load chart — the planner's best feature —
+ * stayed flat. An unrated session now counts at the intensity its type
+ * usually has, and every screen marks it as an estimate (`rpeEstimated`), so
+ * it is never mistaken for a number the coach gave. A coach's own rating
+ * always wins. Rest days carry no load at all.
+ */
+export const TYPICAL_RPE: Record<string, number> = {
+  recovery: 2,
+  technical: 4,
+  tactical: 5,
+  physical: 7,
+  match: 8,
+  rest: 0,
+}
+
+/** The rating to use: the coach's, else the typical one for the type. */
+export function effectiveRpe(rpe: number | null | undefined, type: string | null | undefined, isMatch = false): { rpe: number; estimated: boolean } {
+  if (rpe != null && Number(rpe) > 0) return { rpe: Number(rpe), estimated: false }
+  const typical = TYPICAL_RPE[isMatch ? 'match' : (type ?? 'tactical')] ?? 0
+  return { rpe: typical, estimated: typical > 0 }
+}
+
+/**
  * Session load = minutes × RPE.
  *
  * Returns 0 rather than null when either number is missing, so a half-planned

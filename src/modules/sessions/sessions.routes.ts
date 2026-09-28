@@ -87,6 +87,12 @@ const CreateSessionSchema = z.object({
   isMatch: z.boolean().optional(),
   opponent: z.string().max(120).optional().nullable(),
   venue: z.string().max(120).optional().nullable(),
+  // ---- Match details. Only meaningful when isMatch; ignored otherwise.
+  homeAway: z.enum(['home', 'away']).optional().nullable(),
+  competition: z.string().max(80).optional().nullable(),
+  goalsFor: z.coerce.number().int().min(0).max(99).optional().nullable(),
+  goalsAgainst: z.coerce.number().int().min(0).max(99).optional().nullable(),
+  matchNote: z.string().max(1000).optional().nullable(),
   /** Part names in order. Three to five, or empty for the defaults. */
   parts: z
     .array(z.string().max(60).transform((n) => n.trim()))
@@ -97,7 +103,34 @@ const CreateSessionSchema = z.object({
     .optional(),
 })
 
-const UpdateSessionSchema = CreateSessionSchema.partial()
+// No defaults on update. `.partial()` keeps the create schema's defaults, so a
+// PATCH that sent only `blocks` (the "Add to session" dialog) also wrote
+// `brand: {}` — wiping the session's colour and logo setting every time a
+// drill was added — and a PATCH with only a result would have emptied the
+// session's blocks. A field that is not sent must not be touched.
+const UpdateSessionSchema = CreateSessionSchema.extend({
+  blocks: z.array(BlockSchema).max(40).optional(),
+  brand: BrandSchema.optional(),
+}).partial()
+
+type MatchInput = Partial<Pick<z.infer<typeof CreateSessionSchema>, 'homeAway' | 'competition' | 'goalsFor' | 'goalsAgainst' | 'matchNote'>>
+
+/**
+ * The match columns (migration 37), for create and update. Only keys that were
+ * sent are written, so a PATCH that edits a session's title leaves the score
+ * alone.
+ *
+ * ---- TEMPORARY typing: the generated Prisma client learns these columns when
+ * `prisma generate` runs against migration 37 (the deploy script does); until
+ * then the object is passed through untyped. Runtime is unaffected.
+ */
+function matchData(input: MatchInput): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  for (const k of ['homeAway', 'competition', 'goalsFor', 'goalsAgainst', 'matchNote'] as const) {
+    if (input[k] !== undefined) out[k] = typeof input[k] === 'string' ? (input[k] as string).trim() || null : input[k]
+  }
+  return out
+}
 
 /**
  * Resolve a plan-week id the client sent, but only if this coach owns the plan
@@ -139,6 +172,8 @@ export async function sessionsRoutes(app: FastifyInstance) {
         intensityRpe: true,
         startTime: true,
         isMatch: true,
+        opponent: true,
+        ...({ homeAway: true, goalsFor: true, goalsAgainst: true } as object),
         parts: true,
       },
     })
@@ -160,7 +195,9 @@ export async function sessionsRoutes(app: FastifyInstance) {
   app.post('/', { preHandler: requireEditorAccess }, async (request, reply) => {
     const userId = (request.user as any).sub as number
     const input = CreateSessionSchema.parse(request.body)
-    await assertQuota(userId, 'sessions')
+    // A fixture is not training content: a free coach (one session) must
+    // still be able to enter the season's matches. See plan-quota COUNTERS.
+    if (!input.isMatch) await assertQuota(userId, 'sessions')
     const session = await db.trainingSession.create({
       data: {
         userId,
@@ -181,6 +218,7 @@ export async function sessionsRoutes(app: FastifyInstance) {
         opponent: input.opponent ?? null,
         venue: input.venue ?? null,
         parts: input.parts ?? [],
+        ...(matchData(input) as object),
       },
     })
     return reply.status(201).send(session)
@@ -215,6 +253,7 @@ export async function sessionsRoutes(app: FastifyInstance) {
         ...(input.opponent !== undefined && { opponent: input.opponent }),
         ...(input.venue !== undefined && { venue: input.venue }),
         ...(input.parts !== undefined && { parts: input.parts }),
+        ...(matchData(input) as object),
       },
     })
     return reply.send(session)

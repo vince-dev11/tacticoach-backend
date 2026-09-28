@@ -15,10 +15,12 @@ import {
   addDays,
   isoDate,
   shiftSessionsToWeek,
+  effectiveRpe,
   type WeekStart,
   type WeekTotals,
   type LoadVerdict,
 } from '../../lib/planner.js'
+import { quotaState, quotaError } from '../../lib/plan-quota.js'
 
 /** A coach can plan a whole year, but not ten. */
 export const MAX_WEEKS = 60
@@ -35,6 +37,10 @@ const SESSION_FIELDS = {
   isMatch: true,
   opponent: true,
   venue: true,
+  homeAway: true,
+  competition: true,
+  goalsFor: true,
+  goalsAgainst: true,
   blocks: true,
   parts: true,
 } as const
@@ -50,6 +56,10 @@ type SessionRow = {
   isMatch: boolean
   opponent: string | null
   venue: string | null
+  homeAway?: string | null
+  competition?: string | null
+  goalsFor?: number | null
+  goalsAgainst?: number | null
   blocks: unknown
   parts: unknown
 }
@@ -61,18 +71,25 @@ export interface SessionSummary {
   startTime: string | null
   minutes: number | null
   rpe: number | null
+  /** True when load used the typical RPE for the type (no rating given). */
+  rpeEstimated: boolean
   /** Derived — minutes × rpe. Never stored, never sent by the client. */
   load: number
   type: string
   isMatch: boolean
   opponent: string | null
   venue: string | null
+  homeAway: string | null
+  competition: string | null
+  goalsFor: number | null
+  goalsAgainst: number | null
   partCount: number
 }
 
 function toSummary(row: SessionRow): SessionSummary {
   const parts = Array.isArray(row.parts) ? row.parts : []
   const blocks = Array.isArray(row.blocks) ? row.blocks : []
+  const eff = effectiveRpe(row.intensityRpe, row.sessionType, row.isMatch)
   return {
     id: row.id,
     title: row.title,
@@ -80,11 +97,16 @@ function toSummary(row: SessionRow): SessionSummary {
     startTime: row.startTime,
     minutes: row.targetMinutes,
     rpe: row.intensityRpe,
-    load: sessionLoad({ minutes: row.targetMinutes, rpe: row.intensityRpe }),
+    rpeEstimated: eff.estimated && sessionLoad({ minutes: row.targetMinutes, rpe: eff.rpe }) > 0,
+    load: sessionLoad({ minutes: row.targetMinutes, rpe: eff.rpe }),
     type: row.sessionType,
     isMatch: row.isMatch,
     opponent: row.opponent,
     venue: row.venue,
+    homeAway: row.homeAway ?? null,
+    competition: row.competition ?? null,
+    goalsFor: row.goalsFor ?? null,
+    goalsAgainst: row.goalsAgainst ?? null,
     // The week card shows "5 parts". A session with no named parts still has
     // blocks, so fall back to counting those rather than showing 0.
     partCount: parts.length || (blocks.length > 0 ? 1 : 0),
@@ -180,7 +202,9 @@ function buildWeek(
     theme: week.theme,
     phase: week.phase,
     totals: weekTotals(
-      ordered.map((s) => ({ minutes: s.minutes, rpe: s.rpe, isMatch: s.isMatch })),
+      // The same RPE the cards show (the coach's, else the typical one), so
+      // the week total always equals the sum of its cards.
+      ordered.map((s) => ({ minutes: s.minutes, rpe: effectiveRpe(s.rpe, s.type, s.isMatch).rpe, isMatch: s.isMatch })),
     ),
     dailyLoad,
     sessions: ordered,
@@ -218,11 +242,11 @@ export async function getWeek(userId: number, weekId: number): Promise<WeekView 
     where: { planId: week.planId, weekIndex: { lt: week.weekIndex } },
     orderBy: { weekIndex: 'desc' },
     take: 4,
-    include: { sessions: { select: { targetMinutes: true, intensityRpe: true } } },
+    include: { sessions: { select: { targetMinutes: true, intensityRpe: true, sessionType: true, isMatch: true } } },
   })
   const previousLoads = previous.map((w) =>
     w.sessions.reduce(
-      (sum, s) => sum + sessionLoad({ minutes: s.targetMinutes, rpe: s.intensityRpe }),
+      (sum, s) => sum + sessionLoad({ minutes: s.targetMinutes, rpe: effectiveRpe(s.intensityRpe, s.sessionType, s.isMatch).rpe }),
       0,
     ),
   )
@@ -362,6 +386,134 @@ export async function copyWeek(userId: number, fromWeekId: number, toWeekId: num
     })),
   })
   return shifted.length
+}
+
+/**
+ * "Rondos · Sun, August 30" → "Rondos".
+ *
+ * Sessions planned onto a day are named for it (the planner writes the day in
+ * the coach's language). In next season's copy that day is wrong, so it goes.
+ * The server cannot know which language the day was written in, so the test
+ * is structural: a trailing " · …" part, short, containing the original
+ * date's day of the month. "Rondos · 4v4" keeps its name.
+ */
+export function stripDaySuffix(title: string, date: Date | null): string {
+  if (!date) return title
+  const at = title.lastIndexOf(' · ')
+  if (at <= 0) return title
+  const tail = title.slice(at + 3)
+  const day = String(date.getUTCDate())
+  return tail.length <= 40 && new RegExp(`(^|\\D)${day}(\\D|$)`).test(tail) ? title.slice(0, at) : title
+}
+
+/**
+ * Start a new season from an old one.
+ *
+ * A coach who planned 2026/27 wants 2027/28 to begin as that plan, not as 42
+ * empty weeks. The copy keeps the SHAPE — the same number of weeks, each
+ * week's theme and phase, and every training session on the same weekday of
+ * the same week number — and moves it all to the new start date.
+ *
+ * Matches are left behind. A fixture belongs to one date against one
+ * opponent; next season's fixtures are not this season's, and copying them
+ * would invent forty matches nobody scheduled. (copyWeek drops the opponent
+ * for the same reason; here the whole match row goes, because a season of
+ * "vs Riverside" training sessions would be worse than none.)
+ *
+ * Checked against the session quota BEFORE anything is written: a Basic coach
+ * copying a 40-session season must be told up front, not left with a plan
+ * holding the first twelve.
+ *
+ * Returns the new plan's id and how many sessions came across, or null when
+ * the source is not this coach's.
+ */
+export async function copyPlan(
+  userId: number,
+  sourceId: number,
+  params: { title: string; startDate: Date; seasonLabel?: string | null },
+): Promise<{ planId: number; sessions: number } | null> {
+  const source = await db.seasonPlan.findFirst({
+    where: { id: sourceId, userId },
+    include: {
+      weeks: {
+        orderBy: { weekIndex: 'asc' },
+        include: { sessions: { where: { isMatch: false } } },
+      },
+    },
+  })
+  if (!source) return null
+
+  const sessionCount = source.weeks.reduce((n, w) => n + w.sessions.length, 0)
+  if (sessionCount > 0) {
+    const quota = await quotaState(userId, 'sessions')
+    if (quota.limit !== null && (quota.remaining ?? 0) < sessionCount) {
+      throw quotaError('sessions', quota.limit)
+    }
+  }
+
+  const weekStartsOn = source.weekStartsOn as WeekStart
+  const first = startOfWeek(params.startDate, weekStartsOn)
+  const weeks = source.weeks.slice(0, MAX_WEEKS)
+
+  const plan = await db.seasonPlan.create({
+    data: {
+      userId,
+      title: params.title,
+      ageGroup: source.ageGroup,
+      seasonLabel: params.seasonLabel ?? null,
+      startDate: first,
+      weekStartsOn,
+      weeks: {
+        create: weeks.map((w) => ({
+          weekIndex: w.weekIndex,
+          startDate: addDays(first, (w.weekIndex - 1) * 7),
+          theme: w.theme,
+          phase: w.phase,
+        })),
+      },
+    },
+    select: { id: true, weeks: { select: { id: true, weekIndex: true, startDate: true } } },
+  })
+
+  if (sessionCount === 0) return { planId: plan.id, sessions: 0 }
+
+  try {
+    const newWeekByIndex = new Map(plan.weeks.map((w) => [w.weekIndex, w]))
+    const rows = weeks.flatMap((w) => {
+      const target = newWeekByIndex.get(w.weekIndex)
+      if (!target) return []
+      // Same weekday of the same week number, whatever the gap between seasons.
+      return shiftSessionsToWeek(
+        w.sessions,
+        startOfWeek(w.startDate, weekStartsOn),
+        startOfWeek(target.startDate, weekStartsOn),
+      ).map((s, i) => ({
+        userId,
+        title: stripDaySuffix(s.title, w.sessions[i].sessionDate),
+        sessionDate: s.sessionDate,
+        ageGroup: s.ageGroup,
+        squadId: s.squadId,
+        targetMinutes: s.targetMinutes,
+        blocks: s.blocks as never,
+        brand: s.brand as never,
+        parts: s.parts as never,
+        planWeekId: target.id,
+        sessionType: s.sessionType,
+        intensityRpe: s.intensityRpe,
+        startTime: s.startTime,
+        isMatch: false,
+        opponent: null,
+        venue: null,
+      }))
+    })
+    await db.trainingSession.createMany({ data: rows })
+    return { planId: plan.id, sessions: rows.length }
+  } catch (err) {
+    // All or nothing: a half-copied season is worse than a clear error, and
+    // the coach would not know which weeks were missing.
+    await db.seasonPlan.delete({ where: { id: plan.id } }).catch(() => {})
+    throw err
+  }
 }
 
 /** Clear a week: sessions become standalone, the week row stays. */

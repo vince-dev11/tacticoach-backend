@@ -829,6 +829,16 @@ model TrainingSession {
   isMatch      Boolean      @default(false) @map("is_match")
   opponent     String?      @db.VarChar(120)
   venue        String?      @db.VarChar(120)
+  // ---- Match details (fixtures). Null on training sessions. ----------------
+  /// "home" | "away". Null = not said (or neutral ground).
+  homeAway     String?      @map("home_away") @db.VarChar(4)
+  /// League, Cup, Friendly, Tournament — free text, the coach's own words.
+  competition  String?      @db.VarChar(80)
+  /// The result, entered after the game. Both null until then.
+  goalsFor     Int?         @map("goals_for") @db.SmallInt
+  goalsAgainst Int?         @map("goals_against") @db.SmallInt
+  /// A few lines after the game: what went well, what to work on.
+  matchNote    String?      @map("match_note") @db.VarChar(1000)
   /// Names of the session's parts, in order: ["Warm-up","Main part",…].
   /// Between 3 and 5. Empty means the default set.
   parts        Json         @default("[]")
