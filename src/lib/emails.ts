@@ -127,6 +127,7 @@ export type EmailKind =
   | 'player_note'
   | 'password_reset'
   | 'coach_contact'
+  | 'book_coauthor_invite'
 
 /**
  * Send an email without ever throwing — logs and swallows failures.
@@ -321,6 +322,45 @@ export async function sendClubInviteEmail(params: {
       ),
     },
     'club_invite',
+  )
+}
+
+// ---- Book co-author invite -------------------------------------------------------
+
+/** HTML-escape a value typed by a person (names, book titles). */
+const escHtml = (v: string) => v.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+
+export async function sendCoauthorInviteEmail(params: {
+  to: string
+  inviterName: string
+  bookTitle: string
+  acceptUrl: string
+}): Promise<void> {
+  const { to, acceptUrl } = params
+  const inviter = escHtml(params.inviterName)
+  const title = escHtml(params.bookTitle)
+  await sendSafely(
+    {
+      to,
+      subject: `${params.inviterName} invited you to co-write "${params.bookTitle}" on TactiCoach`,
+      text:
+        `Hi,\n\n` +
+        `${params.inviterName} invited you to co-write the book "${params.bookTitle}" on TactiCoach. ` +
+        `Co-authors can write and edit its chapters, and both names go on the cover, the book page and every certificate it issues.\n\n` +
+        `Accept the invite:\n${acceptUrl}\n\n` +
+        `You'll need a TactiCoach account with this email address — signing up is free.\n\n` +
+        `The TactiCoach team`,
+      html: layout(
+        `${inviter} invited you to co-write a book on TactiCoach.`,
+        `${kicker('CO-AUTHOR INVITE')}
+         <h1 style="margin:0 0 12px;font-size:21px">Write &ldquo;${title}&rdquo; together 📖</h1>
+         <p style="margin:0 0 12px"><strong>${inviter}</strong> invited you to co-write <strong>${title}</strong> on TactiCoach.</p>
+         ${pitchCard('AS A CO-AUTHOR', `&#9989; Write and edit the chapters<br>&#9989; Your name on the cover and the book page<br>&#9989; Your name on every certificate it issues`)}
+         ${button(acceptUrl, 'Accept invite')}
+         <p style="margin:0;color:#6b7280;font-size:13px">You'll need a TactiCoach account with this email address &#8212; signing up is free.</p>`,
+      ),
+    },
+    'book_coauthor_invite',
   )
 }
 

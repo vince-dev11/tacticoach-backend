@@ -78,7 +78,8 @@ describe('the shop is public', () => {
     const res = await req('GET', '/api/ebooks/sitemap.xml')
     expect(res.statusCode).toBe(200)
     expect(res.body).toContain('/books/playing-out</loc>')
-    expect(mock.ebook.findMany.mock.calls[0][0]!.where).toEqual({ status: 'published' })
+    // Published, and never a club book (private to its club).
+    expect(mock.ebook.findMany.mock.calls[0][0]!.where).toEqual({ status: 'published', clubId: null })
   })
 })
 

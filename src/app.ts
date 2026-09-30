@@ -35,6 +35,7 @@ import { collaborationsRoutes } from './modules/collaborations/collaborations.ro
 import { plansRoutes } from './modules/plans/plans.routes.js'
 import { ebooksRoutes } from './modules/ebooks/ebooks.routes.js'
 import { authoringRoutes } from './modules/ebooks/authoring.routes.js'
+import { certificatesRoutes } from './modules/certificates/certificates.routes.js'
 import { playerLockdown } from './middleware/player-guard.js'
 
 export async function buildApp(): Promise<FastifyInstance> {
@@ -178,6 +179,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   // reader) because every route here is scoped to the signed-in author and
   // gated on the plan — see authoring.routes.
   await app.register(authoringRoutes, { prefix: '/api/my-books' })
+  await app.register(certificatesRoutes, { prefix: '/api/certificates' })
 
   // ---- Local uploads (dev fallback when S3 is unconfigured) -----------------
 

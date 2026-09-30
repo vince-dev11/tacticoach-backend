@@ -35,6 +35,11 @@ import {
 } from './ebooks.service.js'
 import { transition, isFrozenToAuthor, type EbookStatus } from './ebook-review.js'
 import { authorDashboard, replyToReview, ReviewError } from './engagement.service.js'
+import { AUDIENCES, writableClub } from './club-books.js'
+import { inviteToken } from './course.service.js'
+import { db } from '../../config/database.js'
+import { env } from '../../config/env.js'
+import { sendCoauthorInviteEmail } from '../../lib/emails.js'
 
 const userId = (r: { user: unknown }) => (r.user as { sub: number }).sub
 
@@ -56,6 +61,14 @@ const BookInput = z.object({
   ageBand: z.enum(AGE_BANDS),
   cover: Cover,
   language: z.string().min(2).max(8).default('en'),
+  // Course mode (course.service). The pass mark is ours, not the author's:
+  // 80%, so a TactiCoach certificate means the same thing on every course.
+  isCourse: z.boolean().optional(),
+  studyMinutes: z.number().int().min(0).max(6000).nullable().optional(),
+  // Series: the id of one of the author's series, and the book's place in it.
+  seriesId: z.number().int().positive().nullable().optional(),
+  seriesOrder: z.number().int().min(1).max(99).nullable().optional(),
+  clubAudience: z.enum(AUDIENCES).optional(),
 })
 
 /**
@@ -64,10 +77,11 @@ const BookInput = z.object({
  * Asking for `published` is asking to skip the queue — the state machine
  * answers that with a sentence rather than silently downgrading it.
  */
-const AuthorStatus = z.enum(['draft', 'in_review', 'archived'])
+const AuthorStatus = z.enum(['draft', 'in_review', 'archived', 'published'])
 
 const Chapters = z.object({
   chapters: z.array(z.object({
+    key: z.string().max(24).optional(),
     title: latinOnly(z.string().trim().min(1).max(200)),
     isSample: z.boolean().default(false),
     blocks: z.array(z.object({
@@ -116,13 +130,23 @@ export async function authoringRoutes(app: FastifyInstance) {
 
   app.post('/', async (request, reply) => {
     const input = BookInput.parse(request.body)
+    const { clubBook } = z.object({ clubBook: z.boolean().optional() }).parse(request.body)
     const uid = userId(request)
+    // A club book: only the club's owner or an admin writes one.
+    const clubId = clubBook ? await writableClub(uid) : null
+    if (clubBook && !clubId) {
+      return reply.status(403).send({ statusCode: 403, error: 'Forbidden', message: 'Only a club owner or club admin can write club books.' })
+    }
     // Free gets one book, Basic three. Checked before the row is written, so
     // the refusal costs the coach nothing but the click.
     await assertQuota(uid, 'books')
+    const { seriesId, seriesOrder, clubAudience, ...rest } = input
+    void seriesId
+    void seriesOrder
     const book = await ebookDelegate().create({
       data: {
-        ...input,
+        ...rest,
+        ...(clubId ? { clubId, clubAudience: clubAudience ?? 'coaches' } : {}),
         subtitle: input.subtitle || null,
         blurb: input.blurb || null,
         slug: await uniqueSlug(input.title),
@@ -149,6 +173,24 @@ export async function authoringRoutes(app: FastifyInstance) {
       request.body,
     )
     const from = existing.status as EbookStatus
+    const isAuthor = existing.authorId === uid
+    // A club book is the club's own document: its owner (or an admin) is its
+    // reviewer, and it is never frozen — nobody outside the club reads it.
+    const clubBook = !!existing.clubId
+    const clubWriter = clubBook && (await writableClub(uid)) === existing.clubId
+
+    // The series is the author's to arrange (a co-author writes, the author
+    // decides where the book sits), and it must be one of theirs.
+    if (input.seriesId !== undefined || input.seriesOrder !== undefined) {
+      if (!isAuthor) {
+        return reply.status(403).send({ statusCode: 403, error: 'Forbidden', message: 'Only the book\'s author can change its series.' })
+      }
+      if (input.seriesId) {
+        const own = await db.ebookSeries.findFirst({ where: { id: input.seriesId, ownerId: existing.authorId }, select: { id: true } })
+        if (!own) return reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'Series not found' })
+      }
+    }
+    if (input.clubAudience !== undefined && !clubBook) delete input.clubAudience
 
     // Details of a book under review or in the shop are frozen to its author.
     // Approving what you read means nothing if the author can edit it while
@@ -156,7 +198,7 @@ export async function authoringRoutes(app: FastifyInstance) {
     // counted as an edit would make "withdraw it to keep editing" impossible
     // to obey, because the withdrawal itself would be refused as an edit.
     const editsDetails = touchesMoreThan(request.body, 'status')
-    if (editsDetails && isFrozenToAuthor(from)) {
+    if (editsDetails && isFrozenToAuthor(from) && !clubBook) {
       return reply.status(409).send({
         statusCode: 409,
         error: 'Conflict',
@@ -167,7 +209,20 @@ export async function authoringRoutes(app: FastifyInstance) {
     }
 
     let statusPatch = {}
-    if (input.status && input.status !== from) {
+    if (input.status && input.status !== from && clubBook) {
+      if (!clubWriter) {
+        return reply.status(403).send({ statusCode: 403, error: 'Forbidden', message: 'Only the club owner or a club admin can publish club books.' })
+      }
+      if (input.status === 'published' && !(await hasContent(id))) {
+        return reply.status(422).send({ statusCode: 422, error: 'Unprocessable Entity', message: 'Add at least one chapter with something in it before publishing.' })
+      }
+      const move = transition({
+        from, to: input.status, isOwner: true, firstPublishAt: existing.publishedAt ?? null,
+        canPublish: true, hasContent: true,
+      })
+      if (!move.ok) return reply.status(422).send({ statusCode: 422, error: 'Unprocessable Entity', message: move.reason })
+      statusPatch = move.patch ?? {}
+    } else if (input.status && input.status !== from) {
       const ent = await getEntitlements(uid)
       const move = transition({
         from,
@@ -222,7 +277,7 @@ export async function authoringRoutes(app: FastifyInstance) {
 
     const existing = await adminGet(id, uid)
     if (!existing) return reply.status(404).send(notFound)
-    if (isFrozenToAuthor(existing.status as EbookStatus)) {
+    if (isFrozenToAuthor(existing.status as EbookStatus) && !existing.clubId) {
       return reply.status(409).send({
         statusCode: 409,
         error: 'Conflict',
@@ -244,9 +299,13 @@ export async function authoringRoutes(app: FastifyInstance) {
     const uid = userId(request)
     const existing = await adminGet(id, uid)
     if (!existing) return reply.status(404).send(notFound)
+    // A co-author writes the book; only its author may bin it.
+    if (existing.authorId !== uid) {
+      return reply.status(403).send({ statusCode: 403, error: 'Forbidden', message: 'Only the book\'s author can delete it.' })
+    }
     // A published book has readers — possibly mid-chapter, with notes. Taking
     // it out of the shop is a decision with someone else in it.
-    if (existing.status === 'published') {
+    if (existing.status === 'published' && !existing.clubId) {
       return reply.status(409).send({
         statusCode: 409,
         error: 'Conflict',
@@ -255,5 +314,155 @@ export async function authoringRoutes(app: FastifyInstance) {
     }
     await removeBook(id)
     return reply.status(204).send()
+  })
+
+  // ---- Series ----------------------------------------------------------------------
+  //
+  //   GET    /series          my series, with their books in order
+  //   POST   /series          { title }
+  //   PATCH  /series/:sid     { title }
+  //   DELETE /series/:sid     the books stay; they just leave the series
+
+  const SeriesInput = z.object({ title: latinOnly(z.string().trim().min(1).max(120)) })
+
+  app.get('/series', async (request, reply) => {
+    const rows = await db.ebookSeries.findMany({
+      where: { ownerId: userId(request) },
+      orderBy: { createdAt: 'asc' },
+      select: {
+        id: true, title: true,
+        books: { orderBy: [{ seriesOrder: 'asc' }, { createdAt: 'asc' }], select: { id: true, title: true, status: true, seriesOrder: true, cover: true } },
+      },
+    })
+    return reply.send(rows)
+  })
+
+  app.post('/series', async (request, reply) => {
+    const { title } = SeriesInput.parse(request.body)
+    const made = await db.ebookSeries.create({ data: { ownerId: userId(request), title: title as string } })
+    return reply.status(201).send({ id: made.id, title: made.title, books: [] })
+  })
+
+  app.patch('/series/:sid', async (request, reply) => {
+    const sid = Number((request.params as { sid: string }).sid)
+    const { title } = SeriesInput.parse(request.body)
+    const own = await db.ebookSeries.findFirst({ where: { id: sid, ownerId: userId(request) }, select: { id: true } })
+    if (!own) return reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'Series not found' })
+    await db.ebookSeries.update({ where: { id: sid }, data: { title: title as string } })
+    return reply.send({ ok: true })
+  })
+
+  app.delete('/series/:sid', async (request, reply) => {
+    const sid = Number((request.params as { sid: string }).sid)
+    const own = await db.ebookSeries.findFirst({ where: { id: sid, ownerId: userId(request) }, select: { id: true } })
+    if (!own) return reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'Series not found' })
+    // ON DELETE SET NULL on ebooks.series_id: the books stay, out of the series.
+    await db.ebookSeries.delete({ where: { id: sid } })
+    return reply.status(204).send()
+  })
+
+  // ---- Co-authors ------------------------------------------------------------------
+  //
+  //   POST   /:id/coauthors             { email, sharePercent }   the author invites
+  //   PATCH  /:id/coauthors/:cid        { sharePercent }
+  //   DELETE /:id/coauthors/:cid        remove (or withdraw the invite)
+  //   GET    /coauthors/invite/:token   what am I being invited to?
+  //   POST   /coauthors/accept          { token }   the invitee accepts
+  //
+  // Only the author manages co-authors. The shares must add up to 100 or less
+  // with the author keeping the rest — agreed now, used when sales exist.
+
+  const MAX_COAUTHORS = 3
+
+  const authorBook = async (id: number, uid: number) =>
+    db.ebook.findFirst({ where: { id, authorId: uid }, select: { id: true, title: true, coauthors: { select: { id: true, sharePercent: true } } } })
+
+  app.post('/:id/coauthors', { config: { rateLimit: { max: 20, timeWindow: '1 hour' } } }, async (request, reply) => {
+    const id = Number((request.params as { id: string }).id)
+    const uid = userId(request)
+    const { email, sharePercent } = z.object({
+      email: z.string().trim().toLowerCase().email().max(255),
+      sharePercent: z.number().int().min(0).max(90).default(0),
+    }).parse(request.body)
+    const book = await authorBook(id, uid)
+    if (!book) return reply.status(404).send(notFound)
+    const me = await db.user.findUnique({ where: { id: uid }, select: { email: true, name: true, surname: true } })
+    if (me?.email.toLowerCase() === email) {
+      return reply.status(422).send({ statusCode: 422, error: 'Unprocessable Entity', message: 'You are already the author.' })
+    }
+    if (book.coauthors.length >= MAX_COAUTHORS) {
+      return reply.status(422).send({ statusCode: 422, error: 'Unprocessable Entity', message: `A book can have up to ${MAX_COAUTHORS} co-authors.` })
+    }
+    const shared = book.coauthors.reduce((n, c) => n + c.sharePercent, 0) + sharePercent
+    if (shared > 90) {
+      return reply.status(422).send({ statusCode: 422, error: 'Unprocessable Entity', message: 'Co-authors can share at most 90% — the author keeps at least 10%.' })
+    }
+    const existing = await db.ebookCoauthor.findUnique({ where: { ebookId_email: { ebookId: id, email } }, select: { id: true } })
+    if (existing) return reply.status(409).send({ statusCode: 409, error: 'Conflict', message: 'That person is already invited.' })
+    const token = inviteToken()
+    const row = await db.ebookCoauthor.create({ data: { ebookId: id, email, sharePercent, token } })
+    void sendCoauthorInviteEmail({
+      to: email,
+      inviterName: me ? [me.name, me.surname].filter(Boolean).join(' ') : 'A coach',
+      bookTitle: book.title,
+      acceptUrl: `${env.FRONTEND_URL}/books/co-author/${token}`,
+    })
+    return reply.status(201).send({ id: row.id, email: row.email, sharePercent: row.sharePercent, acceptedAt: null, user: null })
+  })
+
+  app.patch('/:id/coauthors/:cid', async (request, reply) => {
+    const { id, cid } = request.params as { id: string; cid: string }
+    const { sharePercent } = z.object({ sharePercent: z.number().int().min(0).max(90) }).parse(request.body)
+    const book = await authorBook(Number(id), userId(request))
+    if (!book || !book.coauthors.some((c) => c.id === Number(cid))) return reply.status(404).send(notFound)
+    const others = book.coauthors.filter((c) => c.id !== Number(cid)).reduce((n, c) => n + c.sharePercent, 0)
+    if (others + sharePercent > 90) {
+      return reply.status(422).send({ statusCode: 422, error: 'Unprocessable Entity', message: 'Co-authors can share at most 90% — the author keeps at least 10%.' })
+    }
+    await db.ebookCoauthor.update({ where: { id: Number(cid) }, data: { sharePercent } })
+    return reply.send({ ok: true })
+  })
+
+  app.delete('/:id/coauthors/:cid', async (request, reply) => {
+    const { id, cid } = request.params as { id: string; cid: string }
+    const book = await authorBook(Number(id), userId(request))
+    if (!book || !book.coauthors.some((c) => c.id === Number(cid))) return reply.status(404).send(notFound)
+    await db.ebookCoauthor.delete({ where: { id: Number(cid) } })
+    return reply.status(204).send()
+  })
+
+  app.get('/coauthors/invite/:token', async (request, reply) => {
+    const { token } = request.params as { token: string }
+    const invite = await db.ebookCoauthor.findUnique({
+      where: { token },
+      select: { email: true, acceptedAt: true, ebook: { select: { title: true, author: { select: { name: true, surname: true } } } } },
+    })
+    if (!invite) return reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'This invite is no longer valid.' })
+    const me = await db.user.findUnique({ where: { id: userId(request) }, select: { email: true } })
+    return reply.send({
+      bookTitle: invite.ebook.title,
+      author: [invite.ebook.author.name, invite.ebook.author.surname].filter(Boolean).join(' '),
+      accepted: !!invite.acceptedAt,
+      // Said up front rather than after they press Accept.
+      emailMatches: me?.email.toLowerCase() === invite.email.toLowerCase(),
+      invitedEmail: invite.email,
+    })
+  })
+
+  app.post('/coauthors/accept', async (request, reply) => {
+    const { token } = z.object({ token: z.string().min(10).max(64) }).parse(request.body)
+    const uid = userId(request)
+    const invite = await db.ebookCoauthor.findUnique({ where: { token }, select: { id: true, email: true, ebookId: true, acceptedAt: true } })
+    if (!invite) return reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'This invite is no longer valid.' })
+    const me = await db.user.findUnique({ where: { id: uid }, select: { email: true } })
+    // The invite is for an address, and so is the account: a forwarded link
+    // must not let somebody else become a co-author.
+    if (me?.email.toLowerCase() !== invite.email.toLowerCase()) {
+      return reply.status(403).send({ statusCode: 403, error: 'Forbidden', message: `This invite was sent to ${invite.email}. Sign in with that account to accept it.` })
+    }
+    if (!invite.acceptedAt) {
+      await db.ebookCoauthor.update({ where: { id: invite.id }, data: { userId: uid, acceptedAt: new Date() } })
+    }
+    return reply.send({ ok: true, ebookId: invite.ebookId })
   })
 }

@@ -130,6 +130,34 @@ describe('POST /api/sessions', () => {
     expect(res.statusCode).toBe(422)
   })
 
+  it('keeps an exercise drawn in the session: its pitch and its area', async () => {
+    const app = await getApp()
+    grantEditorAccess()
+    const board = { canvas: { version: '5', objects: [{ tcType: 'pitch', tcKey: 'pitch_2' }] }, frames: [] }
+    dbMock.trainingSession.create.mockResolvedValue(sessionRow() as never)
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/sessions',
+      headers: authHeaders(await accessToken()),
+      payload: { title: 'Drawn', blocks: [{ kind: 'drill', title: 'Rondo', minutes: 12, part: 0, board, area: '20 × 20 m' }] },
+    })
+    expect(res.statusCode).toBe(201)
+    const saved = (dbMock.trainingSession.create.mock.calls.at(-1)![0] as { data: { blocks: unknown[] } }).data.blocks[0]
+    expect(saved).toMatchObject({ kind: 'drill', area: '20 × 20 m', board: { canvas: { objects: [{ tcKey: 'pitch_2' }] } } })
+  })
+
+  it('refuses a drawing that is not a board', async () => {
+    const app = await getApp()
+    grantEditorAccess()
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/sessions',
+      headers: authHeaders(await accessToken()),
+      payload: { title: 'Bad', blocks: [{ kind: 'drill', title: 'X', minutes: 5, board: { hello: 1 } }] },
+    })
+    expect(res.statusCode).toBe(422)
+  })
+
   it('rejects a block with an unknown kind', async () => {
     const app = await getApp()
     grantEditorAccess()

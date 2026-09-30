@@ -11,6 +11,8 @@ import { db } from '../../config/database.js'
 import { presignUrl } from '../../config/s3.js'
 import { authorProfileFor } from '../coach-page/coach-page.service.js'
 import { ratingsFor, authorRating } from './engagement.service.js'
+import { keepOrNewKey, withQuestionIds, stripAnswers, questionsOf, chapterMinutes } from './course.service.js'
+import { mayOpen } from './club-books.js'
 
 // ---- TEMPORARY: remove once `prisma generate` has run against migration 28 --
 // The generated client has no ebook delegates until then. Narrow on purpose.
@@ -58,6 +60,13 @@ interface EbookRow {
   publishedAt: Date | null
   pricePence: number
   language: string
+  isCourse?: boolean
+  passPercent?: number
+  studyMinutes?: number | null
+  seriesId?: number | null
+  seriesOrder?: number | null
+  clubId?: number | null
+  clubAudience?: string | null
   createdAt: Date
   updatedAt: Date
   author?: {
@@ -71,6 +80,7 @@ interface EbookRow {
   }
   chapters?: {
     id: number
+    key?: string
     title: string
     sortOrder: number
     isSample: boolean
@@ -84,6 +94,7 @@ interface EbookRow {
 interface ChapterRow {
   id: number
   ebookId: number
+  key?: string
   title: string
   sortOrder: number
   isSample: boolean
@@ -178,6 +189,8 @@ export async function listBooks(filters: ShopFilters) {
   const books = await ebookDb().findMany({
     where: {
       status: 'published',
+      // Club books are private to their club: never in the shop.
+      clubId: null,
       ...(filters.category && CATEGORIES.includes(filters.category as 'tactics')
         ? { category: filters.category }
         : {}),
@@ -192,13 +205,14 @@ export async function listBooks(filters: ShopFilters) {
     take: 120,
     select: {
       id: true, title: true, subtitle: true, slug: true, category: true, ageBand: true,
-      cover: true, pricePence: true, publishedAt: true,
+      cover: true, pricePence: true, publishedAt: true, isCourse: true,
       author: {
         select: {
           name: true, surname: true, clubName: true, clubLogoKey: true,
           coachPhotoKey: true, coachPageEnabled: true, coachTitle: true,
         },
       },
+      coauthors: { where: { acceptedAt: { not: null } }, orderBy: { createdAt: 'asc' }, select: { user: { select: { name: true, surname: true } } } },
       _count: { select: { chapters: true } },
     },
   })
@@ -218,6 +232,8 @@ export async function listBooks(filters: ShopFilters) {
     pricePence: b.pricePence,
     chapters: b._count?.chapters ?? 0,
     author: authorName(b.author),
+    coauthors: coauthorNames(b),
+    isCourse: !!b.isCourse,
     authorLogoUrl: b.author?.clubLogoKey ? logos.get(b.author.clubLogoKey) ?? null : null,
     // Avatar and role line under the title — only for coaches whose public
     // page is switched on (same rule as the author box on the book page).
@@ -238,6 +254,12 @@ export async function listBooks(filters: ShopFilters) {
   )
 }
 
+/** Accepted co-authors' names, in the order they joined. */
+function coauthorNames(b: unknown): string[] {
+  const rows = (b as { coauthors?: { user: { name: string; surname: string | null } | null }[] }).coauthors ?? []
+  return rows.filter((c) => c.user).map((c) => authorName(c.user!))
+}
+
 const RANK_MIN_REVIEWS = 3
 function rankScore(r: { average: number | null; count: number }): number {
   return r.count >= RANK_MIN_REVIEWS && r.average != null ? r.average : 0
@@ -249,14 +271,17 @@ function rankScore(r: { average: number | null; count: number }): number {
  * Chapter titles only. No block ever crosses this boundary, so the book page
  * cannot be scraped for the text.
  */
-export async function getBook(slug: string) {
+export async function getBook(slug: string, viewer?: number) {
   const book = await ebookDb().findFirst({
     where: { slug, status: 'published' },
     select: {
       id: true, title: true, subtitle: true, slug: true, blurb: true, category: true,
       ageBand: true, cover: true, pricePence: true, language: true, publishedAt: true,
-      authorId: true,
+      authorId: true, isCourse: true, passPercent: true, studyMinutes: true,
+      seriesId: true, clubId: true, clubAudience: true,
       author: { select: { name: true, surname: true, clubName: true, clubLogoKey: true } },
+      coauthors: { where: { acceptedAt: { not: null } }, orderBy: { createdAt: 'asc' }, select: { user: { select: { name: true, surname: true } } } },
+      club: { select: { name: true } },
       chapters: {
         orderBy: { sortOrder: 'asc' },
         select: { id: true, title: true, sortOrder: true, isSample: true },
@@ -264,6 +289,8 @@ export async function getBook(slug: string) {
     },
   })
   if (!book) return null
+  // A club book does not exist for anyone outside the club — 404, not 403.
+  if (!(await mayOpen({ clubId: book.clubId ?? null, clubAudience: book.clubAudience }, viewer))) return null
   const authorId = (book as { authorId?: number }).authorId
   // The author box and "more by" are extras: a failure in either must never
   // take the book page down with it.
@@ -273,10 +300,30 @@ export async function getBook(slug: string) {
     ratingsFor([book.id]),
     authorId ? authorRating(authorId) : Promise.resolve({ average: null, count: 0 }),
   ])
-  const { authorId: _omit, ...rest } = book as typeof book & { authorId?: number }
+  const { authorId: _omit, chapters: rawChapters, coauthors: _co, club: _club, seriesId, clubAudience: _aud, ...rest } = book as typeof book & {
+    authorId?: number; coauthors?: unknown; club?: { name: string } | null; clubAudience?: string | null
+  }
   void _omit
+  void _co
+  void _aud
+  // Reading time per chapter, from a counts-only query: the page never sees
+  // a block (pinned by a test), but it can say "≈ 6 min".
+  const minutes = await chapterMinutes(book.id).catch(() => new Map<number, number>())
+  const chapters = (rawChapters ?? []).map((c) => ({ ...c, minutes: minutes.get(c.id) ?? null }))
+  const course = book.isCourse
+    ? {
+        passPercent: book.passPercent ?? 80,
+        studyMinutes: book.studyMinutes ?? null,
+        questions: await courseQuestionCount(book.id).catch(() => 0),
+      }
+    : null
   return {
     ...rest,
+    chapters,
+    course,
+    coauthors: coauthorNames(book),
+    clubName: book.clubId ? (_club?.name ?? null) : null,
+    series: seriesId ? await seriesStrip(seriesId).catch(() => null) : null,
     author: authorName(book.author),
     authorLogoUrl: await authorLogo(book.author),
     club: book.author?.clubName ?? null,
@@ -288,10 +335,35 @@ export async function getBook(slug: string) {
   }
 }
 
+/**
+ * How many marked questions a course has — for the book page ("50 quiz
+ * questions"). Its own query on purpose: the book page never selects chapter
+ * blocks, so the text of a book cannot leak through it (pinned by a test).
+ */
+async function courseQuestionCount(ebookId: number): Promise<number> {
+  const quizzes = await db.ebookBlock.findMany({
+    where: { kind: 'quiz', chapter: { ebookId } },
+    select: { kind: true, data: true },
+  })
+  return questionsOf([{ key: '', blocks: quizzes }]).length
+}
+
+/** The series a book belongs to: its title and its published books, in order. */
+async function seriesStrip(seriesId: number) {
+  const series = await db.ebookSeries.findUnique({ where: { id: seriesId }, select: { id: true, title: true } })
+  if (!series) return null
+  const books = await db.ebook.findMany({
+    where: { seriesId, status: 'published', clubId: null },
+    orderBy: [{ seriesOrder: 'asc' }, { publishedAt: 'asc' }],
+    select: { slug: true, title: true, cover: true, isCourse: true },
+  })
+  return { id: series.id, title: series.title, books }
+}
+
 /** Up to four other PUBLISHED books by the same author, newest first. */
 async function moreBy(authorId: number, excludeId: number) {
   const rows = await ebookDb().findMany({
-    where: { authorId, status: 'published', id: { not: excludeId } },
+    where: { authorId, status: 'published', clubId: null, id: { not: excludeId } },
     orderBy: { publishedAt: 'desc' },
     take: 4,
     select: {
@@ -313,7 +385,7 @@ async function moreBy(authorId: number, excludeId: number) {
  * conservative: it is much easier to open a door later than to explain why a
  * paid book was readable for a fortnight.
  */
-export async function getChapter(slug: string, chapterId: number, opts: { signedIn?: boolean } = { signedIn: true }) {
+export async function getChapter(slug: string, chapterId: number, opts: { signedIn?: boolean; viewer?: number } = { signedIn: true }) {
   const chapter = await chapterDb().findFirst({
     where: { id: chapterId, ebook: { slug, status: 'published' } },
     select: {
@@ -325,21 +397,27 @@ export async function getChapter(slug: string, chapterId: number, opts: { signed
 
   const book = await ebookDb().findFirst({
     where: { id: chapter.ebookId },
-    select: { pricePence: true, title: true, slug: true },
+    select: { pricePence: true, title: true, slug: true, isCourse: true, clubId: true, clubAudience: true },
   })
+  if (book?.clubId && !(await mayOpen({ clubId: book.clubId, clubAudience: book.clubAudience }, opts.viewer))) return null
+  // A course's quiz goes out without its answers: the reader chooses, the
+  // server marks (course.service).
+  if (book?.isCourse && chapter.blocks) {
+    chapter.blocks = stripAnswers(chapter.blocks) as typeof chapter.blocks
+  }
   const sample = await isSampleChapter(chapter)
 
   // Signed out: the sample only. It is the shop window — enough to judge the
   // book by, and a reason to make an account for the rest.
   if (opts.signedIn === false) {
     if (!sample) return { locked: true as const, reason: 'signin' as const, title: chapter.title, ebookId: chapter.ebookId, sample }
-    return { locked: false as const, ...chapter, sample }
+    return { locked: false as const, ...chapter, course: !!book?.isCourse, sample }
   }
 
   const readable = (book?.pricePence ?? 0) === 0 || chapter.isSample
   if (!readable) return { locked: true as const, reason: 'purchase' as const, title: chapter.title, ebookId: chapter.ebookId, sample }
 
-  return { locked: false as const, ...chapter, sample }
+  return { locked: false as const, ...chapter, course: !!book?.isCourse, sample }
 }
 
 /**
@@ -361,7 +439,7 @@ async function isSampleChapter(chapter: { id: number; ebookId: number; isSample:
 /** Published books, for the sitemap. Slugs and dates only. */
 export async function sitemapBooks() {
   return ebookDb().findMany({
-    where: { status: 'published' },
+    where: { status: 'published', clubId: null },
     orderBy: { publishedAt: 'desc' },
     select: { slug: true, updatedAt: true },
   }) as Promise<{ slug: string; updatedAt: Date }[]>
@@ -370,7 +448,7 @@ export async function sitemapBooks() {
 /** A coach's published books for the Books tab on /coach/:slug. */
 export async function booksByAuthor(authorId: number) {
   const rows = await ebookDb().findMany({
-    where: { authorId, status: 'published' },
+    where: { authorId, status: 'published', clubId: null },
     orderBy: { publishedAt: 'desc' },
     take: 24,
     select: { id: true, slug: true, title: true, subtitle: true, category: true, ageBand: true, cover: true, pricePence: true },
@@ -384,7 +462,9 @@ export async function booksByAuthor(authorId: number) {
 }
 
 /** Every chapter of a book, titles only — the reader's own contents list. */
-export async function getContents(slug: string) {
+export async function getContents(slug: string, viewer?: number) {
+  const book = await ebookDb().findFirst({ where: { slug, status: 'published' }, select: { clubId: true, clubAudience: true } })
+  if (!book || !(await mayOpen({ clubId: book.clubId ?? null, clubAudience: book.clubAudience }, viewer))) return []
   return chapterDb().findMany({
     where: { ebook: { slug, status: 'published' } },
     orderBy: { sortOrder: 'asc' },
@@ -452,7 +532,9 @@ export async function uniqueSlug(title: string, excludeId?: number): Promise<str
 export async function adminList(authorId?: number, opts?: { status?: string; queue?: boolean }) {
   const books = await ebookDb().findMany({
     where: {
-      ...(authorId === undefined ? {} : { authorId }),
+      ...(authorId === undefined ? {} : { OR: [{ authorId }, ...coauthorOf(authorId)] }),
+      // The owner's review queue never holds club books (no review for them).
+      ...(authorId === undefined ? { clubId: null } : {}),
       ...(opts?.status ? { status: opts.status } : {}),
     },
     // A review QUEUE is oldest-waiting-first: whoever has been waiting longest
@@ -463,7 +545,7 @@ export async function adminList(authorId?: number, opts?: { status?: string; que
     select: {
       id: true, title: true, subtitle: true, slug: true, status: true, category: true,
       ageBand: true, cover: true, pricePence: true, publishedAt: true, updatedAt: true,
-      submittedAt: true, reviewNote: true,
+      submittedAt: true, reviewNote: true, isCourse: true, clubId: true, authorId: true,
       author: { select: { name: true, surname: true, clubLogoKey: true } },
       _count: { select: { chapters: true } },
     },
@@ -485,6 +567,10 @@ export async function adminList(authorId?: number, opts?: { status?: string; que
     updatedAt: b.updatedAt,
     chapters: b._count?.chapters ?? 0,
     author: authorName(b.author),
+    isCourse: !!b.isCourse,
+    clubBook: !!b.clubId,
+    /** False when the caller is a co-author: they write, the owner decides. */
+    mine: authorId === undefined || b.authorId === authorId,
     authorLogoUrl: b.author?.clubLogoKey ? logos.get(b.author.clubLogoKey) ?? null : null,
     // Unlike the shop's card, an unpublished book has nothing to boast about.
     bestSeller: false,
@@ -498,13 +584,18 @@ export async function adminList(authorId?: number, opts?: { status?: string; que
  * the filter this opened any book by guessing an id, which is a hole that
  * `requireOwner` was hiding rather than closing.
  */
+/** "Books I co-write": an accepted invitation, nothing less. */
+const coauthorOf = (userId: number) => [{ coauthors: { some: { userId, acceptedAt: { not: null } } } }]
+
 export async function adminGet(id: number, authorId?: number) {
   const book = await ebookDb().findFirst({
-    where: authorId === undefined ? { id } : { id, authorId },
+    where: authorId === undefined ? { id } : { id, OR: [{ authorId }, ...coauthorOf(authorId)] },
     select: {
       id: true, title: true, subtitle: true, slug: true, blurb: true, category: true,
       ageBand: true, cover: true, status: true, pricePence: true, language: true,
       authorId: true, submittedAt: true, reviewNote: true,
+      isCourse: true, passPercent: true, studyMinutes: true, seriesId: true, seriesOrder: true,
+      clubId: true, clubAudience: true,
       // Selected because PATCH /admin/ebooks/:id reads it to decide whether
       // this is the FIRST publish. Omitted, it arrived undefined and the route
       // restamped publishedAt on every save — making an edited book look new in
@@ -516,10 +607,11 @@ export async function adminGet(id: number, authorId?: number) {
       chapters: {
         orderBy: { sortOrder: 'asc' },
         select: {
-          id: true, title: true, sortOrder: true, isSample: true,
+          id: true, key: true, title: true, sortOrder: true, isSample: true,
           blocks: { orderBy: { sortOrder: 'asc' }, select: { id: true, kind: true, sortOrder: true, data: true } },
         },
       },
+      coauthors: { orderBy: { createdAt: 'asc' }, select: { id: true, email: true, sharePercent: true, acceptedAt: true, user: { select: { name: true, surname: true } } } },
     },
   })
   if (!book) return null
@@ -527,6 +619,9 @@ export async function adminGet(id: number, authorId?: number) {
     ...book,
     author: authorName(book.author),
     authorLogoUrl: await authorLogo(book.author),
+    // A co-author opens the same book; the author arranges its series and
+    // co-authors. The owner (no authorId) is treated as the author.
+    mine: authorId === undefined || book.authorId === authorId,
   }
 }
 
@@ -535,6 +630,8 @@ export { ebookDb, chapterDb, blockDb }
 // ---- Authoring, shared by the coach routes and the owner's ------------------
 
 export interface ChapterInput {
+  /** The stable key the editor was given; kept, or a new one is made. */
+  key?: string
   title: string
   isSample: boolean
   blocks: { kind: string; data: Record<string, unknown> }[]
@@ -557,17 +654,26 @@ export interface ChapterInput {
  */
 export async function replaceChapters(ebookId: number, chapters: ChapterInput[]): Promise<void> {
   const existing = await chapterDb().findMany({ where: { ebookId }, select: { id: true } })
+  // Stable keys: kept when the editor sent one back, made otherwise, and
+  // never shared by two chapters (a duplicated chapter gets its own).
+  const seen = new Set<string>()
+  const keys = chapters.map((ch) => {
+    let k = keepOrNewKey(ch.key)
+    while (seen.has(k)) k = keepOrNewKey(undefined)
+    seen.add(k)
+    return k
+  })
   await db.$transaction(async () => {
     for (const ch of existing) {
       await chapterDb().delete({ where: { id: ch.id } })
     }
     for (const [ci, ch] of chapters.entries()) {
       const made = await chapterDb().create({
-        data: { ebookId, title: ch.title, sortOrder: ci, isSample: ch.isSample },
+        data: { ebookId, key: keys[ci], title: ch.title, sortOrder: ci, isSample: ch.isSample },
       })
       for (const [bi, b] of ch.blocks.entries()) {
         await blockDb().create({
-          data: { chapterId: made.id, kind: b.kind, sortOrder: bi, data: b.data as object },
+          data: { chapterId: made.id, kind: b.kind, sortOrder: bi, data: withQuestionIds(b.kind, b.data) as object },
         })
       }
     }

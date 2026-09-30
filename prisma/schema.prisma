@@ -120,6 +120,11 @@ model User {
   videoExports     VideoExport[]
 
   ebookReviews EbookReview[]
+  ebookSeries       EbookSeries[]
+  ebookCoauthoring  EbookCoauthor[]    @relation("EbookCoauthorUser")
+  ebookQuizAnswers  EbookQuizAnswer[]
+  ebookChapterReads EbookChapterRead[]
+  ebookCertificates EbookCertificate[]
 
   @@map("users")
 }
@@ -678,6 +683,7 @@ model Club {
   members ClubMember[]
   invites ClubInvite[]
   photos  ClubPhoto[]
+  books   Ebook[]
 
   @@map("clubs")
 }
@@ -1298,6 +1304,23 @@ model Ebook {
   /// The language the author actually wrote in; translations derive from it.
   language    String      @default("en") @db.VarChar(8)
 
+  /// COURSE MODE: chapter quizzes are marked on the server, progress is kept,
+  /// and a reader who reads every chapter and scores `passPercent` or more
+  /// across the quizzes earns a certificate (EbookCertificate).
+  isCourse     Boolean @default(false) @map("is_course")
+  passPercent  Int     @default(80) @map("pass_percent") @db.TinyInt
+  /// The author's estimate, printed on the certificate as such.
+  studyMinutes Int?    @map("study_minutes") @db.SmallInt
+
+  /// A series ("Pressing", books 1–3), and this book's place in it.
+  seriesId    Int? @map("series_id")
+  seriesOrder Int? @map("series_order")
+
+  /// A CLUB BOOK: private to one club, never in the shop. Written by the club
+  /// owner, published without our review (nobody outside the club reads it).
+  clubId       Int?          @map("club_id")
+  clubAudience ClubAudience? @map("club_audience")
+
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
@@ -1308,12 +1331,132 @@ model Ebook {
   progress EbookProgress[]
   reviews  EbookReview[]
   stats    EbookDailyStat[]
+  series   EbookSeries?    @relation(fields: [seriesId], references: [id], onDelete: SetNull)
+  club     Club?           @relation(fields: [clubId], references: [id], onDelete: Cascade)
+  coauthors    EbookCoauthor[]
+  quizAnswers  EbookQuizAnswer[]
+  chapterReads EbookChapterRead[]
+  certificates EbookCertificate[]
 
   @@index([status, category, ageBand])
   @@index([authorId])
   /// The author's own list: "my books, newest first", by status.
   @@index([authorId, status])
+  @@index([seriesId, seriesOrder])
+  @@index([clubId, status])
   @@map("ebooks")
+}
+
+/// Who a club book is for.
+enum ClubAudience {
+  coaches
+  players
+  everyone
+}
+
+/// Books in order under one name. Owned by one author; a book joins by
+/// pointing at it (Ebook.seriesId).
+model EbookSeries {
+  id        Int      @id @default(autoincrement())
+  ownerId   Int      @map("owner_id")
+  title     String   @db.VarChar(120)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  owner User    @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  books Ebook[]
+
+  @@index([ownerId])
+  @@map("ebook_series")
+}
+
+/// A second (or third) author. Invited by email; `userId` is filled when they
+/// accept. Named on the book page and on every certificate the book issues.
+/// `sharePercent` is the agreed split of sales, kept for when sales exist.
+model EbookCoauthor {
+  id           Int       @id @default(autoincrement())
+  ebookId      Int       @map("ebook_id")
+  userId       Int?      @map("user_id")
+  email        String    @db.VarChar(255)
+  token        String    @unique @db.VarChar(64)
+  sharePercent Int       @default(0) @map("share_percent") @db.TinyInt
+  acceptedAt   DateTime? @map("accepted_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
+
+  ebook Ebook @relation(fields: [ebookId], references: [id], onDelete: Cascade)
+  user  User? @relation("EbookCoauthorUser", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([ebookId, email])
+  @@index([userId])
+  @@map("ebook_coauthors")
+}
+
+/// A reader's answer to one course quiz question. Keyed by the question's
+/// stable id (inside the block's data), not by block id — saving a book
+/// recreates its blocks. One row per question: the latest answer counts, and
+/// `attempts` caps retakes at one (see course.service).
+model EbookQuizAnswer {
+  userId     Int      @map("user_id")
+  ebookId    Int      @map("ebook_id")
+  questionId String   @map("question_id") @db.VarChar(24)
+  chapterKey String   @map("chapter_key") @db.VarChar(24)
+  choice     Int      @db.TinyInt
+  correct    Boolean
+  attempts   Int      @default(1) @db.TinyInt
+  answeredAt DateTime @default(now()) @map("answered_at")
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ebook Ebook @relation(fields: [ebookId], references: [id], onDelete: Cascade)
+
+  @@id([userId, ebookId, questionId])
+  @@map("ebook_quiz_answers")
+}
+
+/// A chapter the reader has read to the end. By stable chapter key.
+model EbookChapterRead {
+  userId     Int      @map("user_id")
+  ebookId    Int      @map("ebook_id")
+  chapterKey String   @map("chapter_key") @db.VarChar(24)
+  readAt     DateTime @default(now()) @map("read_at")
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ebook Ebook @relation(fields: [ebookId], references: [id], onDelete: Cascade)
+
+  @@id([userId, ebookId, chapterKey])
+  @@map("ebook_chapter_reads")
+}
+
+/// A certificate of completion. Everything printed on it is copied here at
+/// the moment it is issued, so it reads the same forever — renaming the book
+/// or the reader later does not rewrite a certificate someone has framed.
+/// `code` is the public id on the paper and in the QR link (random, not
+/// guessable). Revoked, never deleted: the verify page must be able to say so.
+model EbookCertificate {
+  id           Int       @id @default(autoincrement())
+  code         String    @unique @db.VarChar(16)
+  userId       Int       @map("user_id")
+  ebookId      Int       @map("ebook_id")
+  holderName   String    @map("holder_name") @db.VarChar(160)
+  courseTitle  String    @map("course_title") @db.VarChar(160)
+  courseSub    String?   @map("course_sub") @db.VarChar(200)
+  authors      Json
+  chapters     Int       @db.SmallInt
+  correct      Int       @db.SmallInt
+  total        Int       @db.SmallInt
+  percent      Int       @db.TinyInt
+  studyMinutes Int?      @map("study_minutes") @db.SmallInt
+  topics       Json
+  /// Set for a club book's certificate: the club's name, printed as issuer.
+  clubName     String?   @map("club_name") @db.VarChar(150)
+  issuedAt     DateTime  @default(now()) @map("issued_at")
+  revokedAt    DateTime? @map("revoked_at")
+  revokeReason String?   @map("revoke_reason") @db.VarChar(300)
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  ebook Ebook @relation(fields: [ebookId], references: [id], onDelete: Restrict)
+
+  @@unique([userId, ebookId])
+  @@map("ebook_certificates")
 }
 
 enum EbookCategory {
@@ -1351,6 +1494,9 @@ model EbookChapter {
   /// Readable without buying. A column, not "chapter 1 is always free": an
   /// author may want a later chapter as the sample.
   isSample  Boolean @default(false) @map("is_sample")
+  /// Stable across saves (the tree is rewritten on every save, so ids are
+  /// not). Course progress hangs off this.
+  key       String  @default("") @map("chapter_key") @db.VarChar(24)
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")

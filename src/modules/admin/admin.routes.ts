@@ -27,8 +27,8 @@ import { COLLABORATION_AGREEMENT } from '../collaborations/collaboration-agreeme
 import { REFERRAL_AGREEMENT, REFERRAL_AGREEMENT_VERSION } from '../referrals/referral-agreement.js'
 import {
   adminList as adminListEbooks, adminGet as adminGetEbook, uniqueSlug as uniqueEbookSlug,
-  ebookDelegate,
-  ebookDb, chapterDb, blockDb,
+  ebookDelegate, replaceChapters, type ChapterInput,
+  ebookDb,
   CATEGORIES as EBOOK_CATEGORIES, AGE_BANDS as EBOOK_AGE_BANDS, BLOCK_KINDS as EBOOK_BLOCK_KINDS,
 } from '../ebooks/ebooks.service.js'
 // One state machine for both callers — the author's PATCH and this review
@@ -947,6 +947,8 @@ export async function adminRoutes(app: FastifyInstance) {
     // the validation exist so that adding payment later is not a migration.
     pricePence: z.number().int().min(0).max(100_000).default(0),
     language: z.string().min(2).max(8).default('en'),
+    isCourse: z.boolean().optional(),
+    studyMinutes: z.number().int().min(0).max(6000).nullable().optional(),
   })
 
   // The owner sees EVERY author's books. `adminList()` with no argument is
@@ -1067,6 +1069,7 @@ export async function adminRoutes(app: FastifyInstance) {
     const { chapters } = z
       .object({
         chapters: z.array(z.object({
+          key: z.string().max(24).optional(),
           title: latinOnly(z.string().trim().min(1).max(200)),
           isSample: z.boolean().default(false),
           blocks: z.array(z.object({
@@ -1082,24 +1085,11 @@ export async function adminRoutes(app: FastifyInstance) {
       return reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'Book not found' })
     }
 
-    // Replace wholesale. Notes reference chapters and blocks with ON DELETE
-    // SET NULL, so a reader's note survives its anchor being rewritten — see
-    // migration 28.
-    await db.$transaction(async () => {
-      for (const ch of existing.chapters ?? []) {
-        await chapterDb().delete({ where: { id: ch.id } })
-      }
-      for (const [ci, ch] of chapters.entries()) {
-        const made = await chapterDb().create({
-          data: { ebookId: id, title: ch.title, sortOrder: ci, isSample: ch.isSample },
-        })
-        for (const [bi, b] of ch.blocks.entries()) {
-          await blockDb().create({
-            data: { chapterId: made.id, kind: b.kind, sortOrder: bi, data: b.data as object },
-          })
-        }
-      }
-    })
+    // Replace wholesale — the same function the coach route uses, so chapter
+    // keys and quiz question ids (course progress hangs off them) are kept the
+    // same way here. Notes reference chapters and blocks with ON DELETE SET
+    // NULL, so a reader's note survives its anchor being rewritten.
+    await replaceChapters(id, chapters as ChapterInput[])
     return reply.send(await adminGetEbook(id))
   })
 

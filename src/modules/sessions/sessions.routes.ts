@@ -7,6 +7,7 @@
 
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
+import type { Prisma } from '@prisma/client'
 import { authGuard } from '../../middleware/auth-guard.js'
 import { requireEditorAccess } from '../../middleware/entitlement-guard.js'
 import { assertQuota } from '../../lib/plan-quota.js'
@@ -18,8 +19,25 @@ import { latinOnly } from '../../lib/latin-only.js'
 // title or a 0-minute placeholder block is the coach's draft, not an error —
 // the earlier strict schema (title min 1, minutes min 1) rejected the whole
 // save for one blank field, and the client only ever showed "Save failed".
+/**
+ * A pitch drawn inside the session (the stacked-pitch builder), in the same
+ * wire shape the tactics board saves. Stored as-is in the block JSON; only its
+ * shape and size are checked here, the same way the drill sheet stores its
+ * drawing. 150 KB is several times a crowded animated board.
+ */
+const BLOCK_BOARD_MAX_BYTES = 150_000
+const SESSION_BODY_LIMIT = 4 * 1024 * 1024
+const BlockBoardSchema = z
+  .object({ canvas: z.object({ objects: z.array(z.unknown()) }).passthrough(), frames: z.array(z.unknown()) })
+  .passthrough()
+  .refine((b) => JSON.stringify(b).length <= BLOCK_BOARD_MAX_BYTES, { message: 'Drawing is too large' })
+
 const BlockSchema = z.object({
-  kind: z.enum(['board', 'sheet', 'text']),
+  /**
+   * `drill` is an exercise drawn in the session itself (its pitch is `board`).
+   * `board` / `sheet` reference the library; `text` is a note ("water break").
+   */
+  kind: z.enum(['board', 'sheet', 'text', 'drill']),
   /** Library id for board/sheet blocks; absent for text blocks. */
   refId: z.number().int().positive().optional().nullable(),
   title: latinOnly(z.string().max(255)).transform((t) => t.trim() || 'Untitled block'),
@@ -50,6 +68,10 @@ const BlockSchema = z.object({
    * back to the generic mark on render rather than failing a save.
    */
   icon: z.string().regex(/^[a-z][a-z0-9-]{0,31}$/).optional().nullable(),
+  /** The exercise's own pitch — drawn here, or a library board edited for this session. */
+  board: BlockBoardSchema.optional().nullable(),
+  /** The area as a coach says it: "20 × 20 m", "half pitch". Printed under the pitch. */
+  area: z.string().max(40).optional().nullable(),
 })
 
 const BrandSchema = z.object({
@@ -192,7 +214,9 @@ export async function sessionsRoutes(app: FastifyInstance) {
   })
 
   // POST /sessions — create (needs editor access, like boards and sheets)
-  app.post('/', { preHandler: requireEditorAccess }, async (request, reply) => {
+  // Drawn pitches ride inside the blocks, so a session can outgrow the 1 MB
+  // default. 4 MB is a dozen crowded drawings with room to spare.
+  app.post('/', { preHandler: requireEditorAccess, bodyLimit: SESSION_BODY_LIMIT }, async (request, reply) => {
     const userId = (request.user as any).sub as number
     const input = CreateSessionSchema.parse(request.body)
     // A fixture is not training content: a free coach (one session) must
@@ -206,7 +230,7 @@ export async function sessionsRoutes(app: FastifyInstance) {
         ageGroup: input.ageGroup ?? null,
         squadId: input.squadId ?? null,
         targetMinutes: input.targetMinutes ?? null,
-        blocks: input.blocks,
+        blocks: input.blocks as Prisma.InputJsonValue,
         brand: input.brand,
         // A week id from the client is only honoured if the coach owns that
         // week — otherwise anyone could file sessions into someone else's plan.
@@ -225,7 +249,7 @@ export async function sessionsRoutes(app: FastifyInstance) {
   })
 
   // PATCH /sessions/:id — update (owner only)
-  app.patch('/:id', { preHandler: requireEditorAccess }, async (request, reply) => {
+  app.patch('/:id', { preHandler: requireEditorAccess, bodyLimit: SESSION_BODY_LIMIT }, async (request, reply) => {
     const userId = (request.user as any).sub as number
     const id = Number((request.params as { id: string }).id)
     const existing = await db.trainingSession.findFirst({ where: { id, userId }, select: { id: true } })
@@ -241,7 +265,7 @@ export async function sessionsRoutes(app: FastifyInstance) {
         ...(input.ageGroup !== undefined && { ageGroup: input.ageGroup }),
         ...(input.squadId !== undefined && { squadId: input.squadId }),
         ...(input.targetMinutes !== undefined && { targetMinutes: input.targetMinutes }),
-        ...(input.blocks !== undefined && { blocks: input.blocks }),
+        ...(input.blocks !== undefined && { blocks: input.blocks as Prisma.InputJsonValue }),
         ...(input.brand !== undefined && { brand: input.brand }),
         ...(input.planWeekId !== undefined && {
           planWeekId: await ownedWeekId(userId, input.planWeekId),

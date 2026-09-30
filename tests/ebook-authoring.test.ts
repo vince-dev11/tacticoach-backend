@@ -76,6 +76,11 @@ function belongsTo(authorId: number, over: Record<string, unknown> = {}) {
     const select = (args as { select?: Record<string, unknown> } | undefined)?.select ?? {}
     if (Object.keys(select).length === 1 && select.id) return null
     if (where.authorId !== undefined && where.authorId !== authorId) return null
+    // The authoring read is "my book, or one I co-write": { id, OR: [{ authorId },
+    // { coauthors: … }] }. The fixture honours the author half; nobody here is a
+    // co-author (that has its own tests), so a stranger's book is not found.
+    const or = where.OR as Record<string, unknown>[] | undefined
+    if (or && !or.some((c) => c.authorId === authorId)) return null
     return bookRow({ authorId, ...over }) as never
   })
 }
@@ -172,12 +177,19 @@ describe('one coach cannot reach another coach\'s book', () => {
   it('scopes the list to the caller', async () => {
     const res = await call('GET', '/api/my-books')
     expect(res.statusCode).toBe(200)
-    expect(mock.ebook.findMany.mock.calls[0][0]!.where).toMatchObject({ authorId: 1 })
+    // Mine, or a book I co-write after ACCEPTING the invite — nobody else's.
+    expect(mock.ebook.findMany.mock.calls[0][0]!.where.OR).toEqual([
+      { authorId: 1 },
+      { coauthors: { some: { userId: 1, acceptedAt: { not: null } } } },
+    ])
   })
 
   it('scopes the read to the caller', async () => {
     await call('GET', '/api/my-books/5')
-    expect(mock.ebook.findFirst.mock.calls[0][0]!.where).toMatchObject({ id: 5, authorId: 1 })
+    expect(mock.ebook.findFirst.mock.calls[0][0]!.where).toEqual({
+      id: 5,
+      OR: [{ authorId: 1 }, { coauthors: { some: { userId: 1, acceptedAt: { not: null } } } }],
+    })
   })
 
   it('answers 404, not 403, for a book that is not theirs', async () => {
