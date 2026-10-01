@@ -213,6 +213,7 @@ export async function rosterForSession(viewerId: number, sessionId: number) {
           boardId: true,
           sentAt: true,
           readAt: true,
+          acknowledgedAt: true,
           createdAt: true,
           coachUserId: true,
           coach: { select: { name: true, surname: true } },
@@ -441,6 +442,7 @@ export async function notesForPlayer(playerUserId: number) {
           workOns: true,
           boardId: true,
           readAt: true,
+          acknowledgedAt: true,
           createdAt: true,
           coachUserId: true,
           coach: { select: { name: true, surname: true } },
@@ -470,6 +472,24 @@ export async function notesForPlayer(playerUserId: number) {
 }
 
 /** Mark notes read. Drives a tick for the coach and nothing else. */
+/**
+ * "Got it, coach." Only the player the note was sent to, only once it was
+ * sent, and only the first time — a second tap changes nothing. Returns
+ * whether a row was actually ticked so the route can 404 a stranger's id.
+ */
+export async function acknowledgeNote(playerUserId: number, noteId: number): Promise<boolean> {
+  const res = await db.playerNote.updateMany({
+    where: {
+      id: noteId,
+      acknowledgedAt: null,
+      sentAt: { not: null },
+      squadPlayer: { playerUserId, linkStatus: 'active' },
+    },
+    data: { acknowledgedAt: new Date(), readAt: new Date() },
+  })
+  return res.count > 0
+}
+
 export async function markNotesRead(playerUserId: number, noteIds: number[]): Promise<void> {
   if (noteIds.length === 0) return
   await db.playerNote.updateMany({

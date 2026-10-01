@@ -19,6 +19,7 @@ import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { authGuard } from '../../middleware/auth-guard.js'
 import { requireEditorAccess } from '../../middleware/entitlement-guard.js'
+import { withQuota } from '../../lib/plan-quota.js'
 import { db } from '../../config/database.js'
 import { SEASON_PHASES, type WeekStart } from '../../lib/planner.js'
 import {
@@ -31,6 +32,7 @@ import {
   clearWeek,
   listPlans,
   MAX_WEEKS,
+  weekDayIsos,
 } from './plans.service.js'
 
 /** Prisma maps 'pre-season' to the enum member `pre_season`. */
@@ -56,6 +58,14 @@ const UpdatePlanSchema = z.object({
 const UpdateWeekSchema = z.object({
   theme: z.string().max(255).optional().nullable(),
   phase: z.enum(SEASON_PHASES).optional(),
+  /** SEASON-5: set (or clear, when both are blank) one day's title and description. */
+  dayNote: z
+    .object({
+      date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Use YYYY-MM-DD'),
+      title: z.string().max(80).transform((v) => v.trim()).optional().default(''),
+      description: z.string().max(300).transform((v) => v.trim()).optional().default(''),
+    })
+    .optional(),
 })
 
 const notFound = (what: string) => ({
@@ -77,7 +87,8 @@ export async function plansRoutes(app: FastifyInstance) {
 
   app.post('/', { preHandler: requireEditorAccess }, async (request, reply) => {
     const input = CreatePlanSchema.parse(request.body)
-    const planId = await createPlan({
+    // Season plans are counted (free trial: one, ever).
+    const planId = await withQuota(uid(request), 'seasons', () => createPlan({
       userId: uid(request),
       title: input.title,
       ageGroup: input.ageGroup,
@@ -85,7 +96,7 @@ export async function plansRoutes(app: FastifyInstance) {
       startDate: input.startDate,
       weekStartsOn: input.weekStartsOn as WeekStart,
       weeks: input.weeks,
-    })
+    }))
     return reply.status(201).send(await getPlan(uid(request), planId))
   })
 
@@ -133,7 +144,7 @@ export async function plansRoutes(app: FastifyInstance) {
         seasonLabel: z.string().max(40).optional().nullable(),
       })
       .parse(request.body)
-    const result = await copyPlan(uid(request), idOf(request), input)
+    const result = await withQuota(uid(request), 'seasons', () => copyPlan(uid(request), idOf(request), input))
     if (!result) return reply.status(404).send(notFound('Plan'))
     return reply.status(201).send({
       copiedSessions: result.sessions,
@@ -164,16 +175,35 @@ export async function plansRoutes(app: FastifyInstance) {
     const weekId = idOf(request, 'weekId')
     const owned = await db.planWeek.findFirst({
       where: { id: weekId, plan: { userId: uid(request) } },
-      select: { id: true },
+      select: { id: true, startDate: true, dayNotes: true, plan: { select: { weekStartsOn: true } } },
     })
     if (!owned) return reply.status(404).send(notFound('Week'))
 
     const input = UpdateWeekSchema.parse(request.body)
+    let dayNotes: Record<string, { title: string; description: string }> | undefined
+    if (input.dayNote) {
+      // The day must be one of THIS week's seven days.
+      const days = weekDayIsos(owned.startDate, owned.plan.weekStartsOn as WeekStart)
+      if (!days.includes(input.dayNote.date)) {
+        return reply.status(422).send({
+          statusCode: 422,
+          error: 'Unprocessable Entity',
+          message: 'That day is not in this week',
+          issues: { 'dayNote.date': ['That day is not in this week'] },
+        })
+      }
+      const current = (owned.dayNotes ?? {}) as Record<string, { title: string; description: string }>
+      const { date, title, description } = input.dayNote
+      dayNotes = { ...current }
+      if (title || description) dayNotes[date] = { title, description }
+      else delete dayNotes[date]
+    }
     await db.planWeek.update({
       where: { id: weekId },
       data: {
         ...(input.theme !== undefined && { theme: input.theme }),
         ...(input.phase !== undefined && { phase: toPrismaPhase(input.phase) }),
+        ...(dayNotes !== undefined && { dayNotes }),
       },
     })
     return reply.send(await getWeek(uid(request), weekId))

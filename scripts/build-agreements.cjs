@@ -20,6 +20,9 @@ const {
 } = require('docx')
 
 const SRC = path.join(__dirname, '..', 'src', 'modules')
+// The address printed in both documents. The Gmail account until the domain
+// mailbox exists; then run with CONTACT_EMAIL=info@tacticoach.co.uk.
+const CONTACT = process.env.CONTACT_EMAIL || 'tacticoach.co.uk@gmail.com'
 
 /**
  * Evaluate a TypeScript agreement module in plain node.
@@ -219,7 +222,7 @@ const BUILDS = [
   {
     label: 'Collaboration Programme Agreement',
     counterparty: 'Collaborator',
-    contact: 'collaborate@tacticoach.co.uk',
+    contact: CONTACT,
     out: 'TactiCoach_Collaboration_Programme_Agreement.docx',
     load: {
       file: path.join(SRC, 'collaborations', 'collaboration-agreement.ts'),
@@ -230,7 +233,7 @@ const BUILDS = [
   {
     label: 'Referral Programme Terms',
     counterparty: 'Referrer',
-    contact: 'hello@tacticoach.co.uk',
+    contact: CONTACT,
     out: 'TactiCoach_Referral_Programme_Terms.docx',
     load: {
       file: path.join(SRC, 'referrals', 'referral-agreement.ts'),

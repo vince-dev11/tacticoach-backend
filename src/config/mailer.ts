@@ -31,13 +31,29 @@ function getTransport(): Transporter {
   return transporter
 }
 
+/** The bare address inside "Name <addr>" (or the string itself). */
+const bare = (a: string) => (a.match(/<([^>]+)>/)?.[1] ?? a).trim().toLowerCase()
+
+/**
+ * Reply-To for everything we send: the team inbox, so a reply to an email
+ * from no-reply@ reaches a person. Left off when it is the sender anyway.
+ */
+export function teamReplyTo(from: string): string | undefined {
+  const team = env.SUPPORT_EMAIL?.trim()
+  if (!team || bare(team) === bare(from)) return undefined
+  return team
+}
+
 export interface SendMailOptions {
   to: string
   subject: string
   html: string
   text?: string
-  /** Set when the coach should answer somebody other than us (page contact relay). */
+  /** Set when the coach should answer somebody other than us (page contact relay).
+   *  Otherwise replies go to the team inbox (SUPPORT_EMAIL). */
   replyTo?: string
+  /** Sender, when not the automatic one (MAIL_FROM) — e.g. TEAM_MAIL_FROM. */
+  from?: string
   /**
    * Which template this is — 'account_setup', 'password_reset', … Recorded so
    * the admin's history reads as "set-password link" rather than a subject
@@ -102,13 +118,14 @@ export async function sendMail(opts: SendMailOptions): Promise<void> {
   }
 
   try {
+    const replyTo = opts.replyTo ?? teamReplyTo(opts.from ?? env.MAIL_FROM)
     await getTransport().sendMail({
-      from: env.MAIL_FROM,
+      from: opts.from ?? env.MAIL_FROM,
       to: opts.to,
       subject: opts.subject,
       html: opts.html,
       text: opts.text,
-      ...(opts.replyTo && { replyTo: opts.replyTo }),
+      ...(replyTo && { replyTo }),
     })
   } catch (error) {
     await record(opts, 'failed', error)

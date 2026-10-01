@@ -42,6 +42,27 @@ export async function sweepTrialReminders(now: Date = new Date()): Promise<numbe
     await sendTrialReminderEmail(sub.user, sub.expiresAt!)
     sent += 1
   }
+
+  // The free plan's 14-day trial lives on the user, not on a subscription
+  // (lib/free-trial.ts). Same window, same claim-before-send.
+  const freeDue = await db.user.findMany({
+    where: {
+      accountType: { not: 'player' },
+      freeTrialReminderSentAt: null,
+      freeTrialEndsAt: { gt: now, lte: windowEnd },
+      OR: [{ subscription: null }, { subscription: { status: { notIn: ['active', 'trial'] } } }],
+    },
+    select: { id: true, name: true, email: true, freeTrialEndsAt: true },
+  })
+  for (const u of freeDue) {
+    const claimed = await db.user.updateMany({
+      where: { id: u.id, freeTrialReminderSentAt: null },
+      data: { freeTrialReminderSentAt: now },
+    })
+    if (claimed.count === 0) continue
+    await sendTrialReminderEmail(u, u.freeTrialEndsAt!)
+    sent += 1
+  }
   return sent
 }
 

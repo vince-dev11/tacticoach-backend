@@ -137,7 +137,10 @@ export async function buildApp(): Promise<FastifyInstance> {
   })
 
   await app.register(fastifyRateLimit, {
-    max: env.NODE_ENV === 'test' ? 10_000 : 100,
+    // 100/min per IP in production. Looser everywhere else: a local
+    // end-to-end run makes several hundred requests a minute from one
+    // address and was being shown "We've lost contact with the dugout".
+    max: env.NODE_ENV === 'test' ? 10_000 : env.NODE_ENV === 'production' ? 100 : 5_000,
     timeWindow: '1 minute',
   })
 

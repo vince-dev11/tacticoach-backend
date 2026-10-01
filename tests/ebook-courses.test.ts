@@ -21,8 +21,9 @@ function callerIs(accountType: 'coach' | 'player' = 'coach') {
   dbMock.user.findUnique.mockImplementation((args?: unknown) => {
     const select = (args as { select?: Record<string, unknown> } | undefined)?.select
     const keys = select ? Object.keys(select) : []
-    if (keys.length > 0 && keys.every((k) => k === 'role' || k === 'accountType')) {
-      return Promise.resolve({ role: 'user', accountType } as never)
+    if (keys.length > 0 && keys.every((k) => k === 'role' || k === 'accountType' || k === 'freeTrialEndsAt')) {
+      // A coach inside the free trial (FT-2) — the state these tests assume.
+      return Promise.resolve({ role: 'user', accountType, freeTrialEndsAt: new Date(Date.now() + 5 * 86_400_000) } as never)
     }
     return Promise.resolve({ id: 1, name: 'Daniel', surname: 'Okafor', email: 'coach@test.dev', role: 'user', accountType } as never)
   })

@@ -6,8 +6,15 @@ import { dbMock } from './setup.js'
 
 const quota = vi.hoisted(() => ({ state: { limit: null as number | null, used: 0, remaining: null as number | null, allowed: true } }))
 vi.mock('../src/lib/plan-quota.js', () => ({
-  quotaState: vi.fn(async () => quota.state),
-  quotaError: (_q: string, limit: number) => Object.assign(new Error(`Your plan covers ${limit} saved sessions.`), { statusCode: 402 }),
+  // copyPlan claims every copied session up front (FT-3). Same rule as before:
+  // refuse when they do not fit; otherwise hand back a release.
+  claimQuota: vi.fn(async (_u: number, _q: string, count: number) => {
+    const { limit, remaining } = quota.state
+    if (limit !== null && (remaining ?? 0) < count) {
+      throw Object.assign(new Error(`Your plan covers ${limit} saved sessions.`), { statusCode: 402 })
+    }
+    return async () => {}
+  }),
 }))
 
 import { copyPlan, stripDaySuffix } from '../src/modules/plans/plans.service.js'

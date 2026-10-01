@@ -4,7 +4,7 @@ import type { Prisma } from '@prisma/client'
 import { authGuard } from '../../middleware/auth-guard.js'
 import { requireEditorAccess } from '../../middleware/entitlement-guard.js'
 import { videoQuota, recordVideoExport } from '../../lib/video-quota.js'
-import { assertQuota } from '../../lib/plan-quota.js'
+import { withQuota } from '../../lib/plan-quota.js'
 import { getEntitlements } from '../../lib/entitlements.js'
 import { db } from '../../config/database.js'
 import { uploadToS3, deleteFromS3, presignUrl } from '../../config/s3.js'
@@ -33,6 +33,8 @@ const CreateBoardSchema = z.object({
   state: z.unknown().optional(),
   tags: TagsSchema.optional(),
   ...DetailsSchema,
+  /** Share to the community library. Off unless the coach ticks it. */
+  published: z.boolean().optional(),
 })
 
 const UpdateBoardSchema = z.object({
@@ -181,17 +183,19 @@ export async function canvasRoutes(app: FastifyInstance) {
   app.post('/boards', { preHandler: requireEditorAccess }, async (request, reply) => {
     const userId = (request.user as any).sub as number
     const input = CreateBoardSchema.parse(request.body)
-    // Free keeps five. Checked before the create, so the refusal costs the
-    // coach nothing but the click.
-    await assertQuota(userId, 'boards')
-    const board = await db.canvasBoard.create({
+    // Counted before the create (free trial: three, ever — see plan-quota),
+    // and handed back if the create fails.
+    const board = await withQuota(userId, 'boards', async () => db.canvasBoard.create({
       data: {
         userId,
         title: input.title,
         pitchKey: input.pitchKey ?? null,
-        // Boards are public by default; the owner can switch to private.
-        published: true,
-        publishedAt: new Date(),
+        // PRIVATE unless the coach ticked "share to the community" when
+        // saving. Boards were public by default until 30 Sep 2026, which put
+        // a coach's first board — with their real players' names on it — in
+        // the public library without them choosing it.
+        published: input.published === true,
+        publishedAt: input.published === true ? new Date() : null,
         ...(input.state !== undefined && { state: input.state as Prisma.InputJsonValue }),
         ...(input.tags !== undefined && { tags: input.tags }),
         ...(input.ageGroup !== undefined && { ageGroup: input.ageGroup }),
@@ -199,7 +203,7 @@ export async function canvasRoutes(app: FastifyInstance) {
         hasAnimation: stateHasAnimation(input.state),
         ...((snap) => (snap !== undefined ? { contextSnapshot: snap } : {}))(await contextSnapshotFor(userId)),
       },
-    })
+    }))
     return reply.status(201).send(board)
   })
 

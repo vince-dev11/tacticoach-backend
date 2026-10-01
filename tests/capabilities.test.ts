@@ -90,7 +90,7 @@ describe('the free tier', () => {
 
   it('counts everything the paid tiers do not', () => {
     expect(limitsFor(ent('free'))).toMatchObject({
-      boards: 5, drillSheets: 5, books: 1, sessions: 1, squads: 1, videoExports: 3,
+      boards: 3, drillSheets: 3, books: 1, sessions: 3, seasons: 1, squads: 0, videoExports: 3,
     })
   })
 

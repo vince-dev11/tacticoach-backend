@@ -37,8 +37,9 @@ const on = (slug: string): Entitlements => ({
   viaClub: false,
   viaCollaboration: false,
   isClubOwner: false,
-  subscriptionStatus: 'active',
+  subscriptionStatus: slug === 'free' ? 'free_trial' : 'active',
   expiresAt: null,
+  trialEndsAt: slug === 'free' ? new Date(Date.now() + 5 * 86_400_000) : null,
 })
 
 function callerIs(accountType: 'coach' | 'player' = 'coach', role = 'user') {
@@ -230,14 +231,16 @@ describe('what the plan allows', () => {
 
   it('lets a free coach start their first book', async () => {
     getEntitlements.mockResolvedValue(on('free'))
-    mock.ebook.count.mockResolvedValue(0)
+    mock.freeUsage.upsert.mockResolvedValue({})
+    mock.$executeRaw.mockResolvedValue(1)
     const res = await call('POST', '/api/my-books', DETAILS)
     expect(res.statusCode).toBe(201)
   })
 
   it('refuses the second with a 402 carrying the sentence the UI shows', async () => {
     getEntitlements.mockResolvedValue(on('free'))
-    mock.ebook.count.mockResolvedValue(1)
+    mock.freeUsage.upsert.mockResolvedValue({})
+    mock.$executeRaw.mockResolvedValue(0) // the one book is spent
     const res = await call('POST', '/api/my-books', DETAILS)
     expect(res.statusCode).toBe(402)
     expect(res.json().message).toMatch(/one book/i)
@@ -248,8 +251,10 @@ describe('what the plan allows', () => {
 
   it('counts only the caller\'s own books against the limit', async () => {
     getEntitlements.mockResolvedValue(on('free'))
+    mock.freeUsage.upsert.mockResolvedValue({})
+    mock.$executeRaw.mockResolvedValue(1)
     await call('POST', '/api/my-books', DETAILS)
-    expect(mock.ebook.count.mock.calls[0][0]!.where).toMatchObject({ authorId: 1 })
+    expect(mock.freeUsage.upsert.mock.calls[0][0]!.where).toMatchObject({ userId: 1 })
   })
 
   it('creates a draft, whatever the request asked for', async () => {

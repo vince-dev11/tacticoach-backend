@@ -10,7 +10,7 @@ import { z } from 'zod'
 import type { Prisma } from '@prisma/client'
 import { authGuard } from '../../middleware/auth-guard.js'
 import { requireEditorAccess } from '../../middleware/entitlement-guard.js'
-import { assertQuota } from '../../lib/plan-quota.js'
+import { withQuota } from '../../lib/plan-quota.js'
 import { db } from '../../config/database.js'
 import { SESSION_TYPES, MIN_PARTS, MAX_PARTS, RPE_MIN, RPE_MAX } from '../../lib/planner.js'
 import { latinOnly } from '../../lib/latin-only.js'
@@ -72,6 +72,20 @@ const BlockSchema = z.object({
   board: BlockBoardSchema.optional().nullable(),
   /** The area as a coach says it: "20 × 20 m", "half pitch". Printed under the pitch. */
   area: z.string().max(40).optional().nullable(),
+  /**
+   * Practice type the way coaches name it (rondo, ssg, phase …); a client id, so only its shape is checked.
+   * B-PT1: the client's ids are camelCase (oneVone, buildUp, phaseOfPlay) — a lowercase-only pattern refused
+   * every save that used one ("Couldn't save" in the builder).
+   */
+  practiceType: z.string().regex(/^[a-zA-Z][a-zA-Z0-9_-]{0,31}$/).optional().nullable(),
+  /** Numbers as a coach says them: "4v4+2", "8v8 + GKs". */
+  numbers: z.string().max(40).optional().nullable(),
+  /** Make it harder — one line. */
+  progression: z.string().max(400).optional().nullable(),
+  /** Make it easier — one line. */
+  regression: z.string().max(400).optional().nullable(),
+  /** How the coach knows it worked: "3 switches before scoring" (PD-1). */
+  successCriteria: z.string().max(400).optional().nullable(),
 })
 
 const BrandSchema = z.object({
@@ -86,6 +100,8 @@ const BrandSchema = z.object({
 
 const CreateSessionSchema = z.object({
   title: latinOnly(z.string().max(255)).transform((t) => t.trim() || 'Untitled session'),
+  /** SEASON-2: one line about the session, shown under the title on the season screen. */
+  description: z.string().max(300).transform((d) => d.trim() || null).optional().nullable(),
   sessionDate: z.coerce.date().optional().nullable(),
   ageGroup: z.string().max(16).optional().nullable(),
   /// Which of the coach's teams this session is for. Null = their default
@@ -221,11 +237,11 @@ export async function sessionsRoutes(app: FastifyInstance) {
     const input = CreateSessionSchema.parse(request.body)
     // A fixture is not training content: a free coach (one session) must
     // still be able to enter the season's matches. See plan-quota COUNTERS.
-    if (!input.isMatch) await assertQuota(userId, 'sessions')
-    const session = await db.trainingSession.create({
+    const create = async () => db.trainingSession.create({
       data: {
         userId,
         title: input.title,
+        description: input.description ?? null,
         sessionDate: input.sessionDate ?? null,
         ageGroup: input.ageGroup ?? null,
         squadId: input.squadId ?? null,
@@ -245,6 +261,7 @@ export async function sessionsRoutes(app: FastifyInstance) {
         ...(matchData(input) as object),
       },
     })
+    const session = input.isMatch ? await create() : await withQuota(userId, 'sessions', create)
     return reply.status(201).send(session)
   })
 
@@ -261,6 +278,7 @@ export async function sessionsRoutes(app: FastifyInstance) {
       where: { id },
       data: {
         ...(input.title !== undefined && { title: input.title }),
+        ...(input.description !== undefined && { description: input.description }),
         ...(input.sessionDate !== undefined && { sessionDate: input.sessionDate }),
         ...(input.ageGroup !== undefined && { ageGroup: input.ageGroup }),
         ...(input.squadId !== undefined && { squadId: input.squadId }),

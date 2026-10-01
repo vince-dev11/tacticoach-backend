@@ -31,6 +31,8 @@ function grantEditorAccess() {
 }
 
 function onFreeTier() {
+  // Inside the 14-day free trial (FT-2): the editor is open, AI is not.
+  dbMock.user.findUnique.mockResolvedValue({ role: 'user', accountType: 'coach', freeTrialEndsAt: new Date(Date.now() + 5 * 86_400_000) } as never)
   dbMock.userSubscription.findUnique.mockResolvedValue(null)
   dbMock.clubMember.findUnique.mockResolvedValue(null)
   dbMock.club.findUnique.mockResolvedValue(null)

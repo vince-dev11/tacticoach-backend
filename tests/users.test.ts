@@ -1,6 +1,6 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeEach } from 'vitest'
 import { dbMock } from './setup.js'
-import { getApp, accessToken, authHeaders, userRow } from './helpers.js'
+import { getApp, accessToken, authHeaders, userRow, activeSubscription } from './helpers.js'
 
 describe('GET /api/users/me', () => {
   it('requires auth', async () => {
@@ -219,6 +219,13 @@ describe('GET /api/users/me/squad', () => {
 })
 
 describe('PUT /api/users/me/squad', () => {
+  // Squads are a paid feature (FT-4); these tests are about the roster itself.
+  beforeEach(() => {
+    dbMock.userSubscription.findUnique.mockResolvedValue(activeSubscription() as never)
+    dbMock.clubMember.findUnique.mockResolvedValue(null)
+    dbMock.club.findUnique.mockResolvedValue(null)
+  })
+
   it('saves the squad and returns the saved list', async () => {
     const app = await getApp()
     dbMock.$transaction.mockResolvedValue([] as never)

@@ -29,7 +29,10 @@ function grantEditorAccess() {
   dbMock.club.findUnique.mockResolvedValue(null)
 }
 
+/** A coach inside the 14-day free trial (FT-2): three sessions, counted by creation. */
 function onFreeTier() {
+  dbMock.user.findUnique.mockResolvedValue({ role: 'user', accountType: 'coach', freeTrialEndsAt: new Date(Date.now() + 5 * 86_400_000) } as never)
+  dbMock.freeUsage.upsert.mockResolvedValue({} as never)
   dbMock.userSubscription.findUnique.mockResolvedValue(null)
   dbMock.clubMember.findUnique.mockResolvedValue(null)
   dbMock.club.findUnique.mockResolvedValue(null)
@@ -60,10 +63,10 @@ describe('GET /api/sessions', () => {
 })
 
 describe('POST /api/sessions', () => {
-  it('lets a free coach save their one session', async () => {
+  it('lets a free-trial coach save a session while a slot is left', async () => {
     const app = await getApp()
     onFreeTier()
-    dbMock.trainingSession.count.mockResolvedValue(0 as never)
+    dbMock.$executeRaw.mockResolvedValue(1 as never)
     dbMock.trainingSession.create.mockResolvedValue(sessionRow() as never)
 
     const res = await app.inject({
@@ -146,6 +149,26 @@ describe('POST /api/sessions', () => {
     expect(saved).toMatchObject({ kind: 'drill', area: '20 × 20 m', board: { canvas: { objects: [{ tcKey: 'pitch_2' }] } } })
   })
 
+  it('PR-4 · keeps practice type, numbers, progression and regression on a block', async () => {
+    const app = await getApp()
+    grantEditorAccess()
+    dbMock.trainingSession.create.mockResolvedValue(sessionRow() as never)
+    const block = {
+      kind: 'text', title: 'Rondo', minutes: 12, part: 0,
+      practiceType: 'rondo', numbers: '4v4+2', progression: 'Two touch', regression: 'Add a floater',
+      successCriteria: '3 switches before scoring',
+    }
+    const res = await app.inject({ method: 'POST', url: '/api/sessions', headers: authHeaders(await accessToken()), payload: { title: 'Typed', blocks: [block] } })
+    expect(res.statusCode).toBe(201)
+    const saved = (dbMock.trainingSession.create.mock.calls.at(-1)![0] as { data: { blocks: unknown[] } }).data.blocks[0]
+    expect(saved).toMatchObject({ practiceType: 'rondo', numbers: '4v4+2', progression: 'Two touch', regression: 'Add a floater' })
+    // PD-1: success criteria are kept too.
+    expect(saved).toMatchObject({ successCriteria: '3 switches before scoring' })
+
+    const bad = await app.inject({ method: 'POST', url: '/api/sessions', headers: authHeaders(await accessToken()), payload: { title: 'Bad', blocks: [{ ...block, practiceType: 'Rondo!' }] } })
+    expect(bad.statusCode).toBe(422)
+  })
+
   it('refuses a drawing that is not a board', async () => {
     const app = await getApp()
     grantEditorAccess()
@@ -219,7 +242,7 @@ describe('Fixtures (migration 37)', () => {
   it('a free coach at the session limit can still add a match — fixtures are not training content', async () => {
     const app = await getApp()
     onFreeTier()
-    dbMock.trainingSession.count.mockResolvedValue(1 as never) // at the limit
+    dbMock.$executeRaw.mockResolvedValue(0 as never) // every slot spent
     dbMock.trainingSession.create.mockResolvedValue(sessionRow({ isMatch: true }) as never)
     const res = await app.inject({
       method: 'POST', url: '/api/sessions', headers: authHeaders(await accessToken()),
@@ -233,10 +256,13 @@ describe('Fixtures (migration 37)', () => {
   it('the session limit counts training only, never matches', async () => {
     const app = await getApp()
     onFreeTier()
-    dbMock.trainingSession.count.mockResolvedValue(0 as never)
+    dbMock.trainingSession.create.mockResolvedValue(sessionRow({ isMatch: true }) as never)
+    await app.inject({ method: 'POST', url: '/api/sessions', headers: authHeaders(await accessToken()), payload: { title: 'vs Riverside', isMatch: true, sessionType: 'match', opponent: 'Riverside FC' } })
+    expect(dbMock.$executeRaw).not.toHaveBeenCalled() // a match spends no slot
+    dbMock.$executeRaw.mockResolvedValue(1 as never)
     dbMock.trainingSession.create.mockResolvedValue(sessionRow() as never)
     await app.inject({ method: 'POST', url: '/api/sessions', headers: authHeaders(await accessToken()), payload: { title: 'Tuesday' } })
-    expect(dbMock.trainingSession.count).toHaveBeenCalledWith({ where: { userId: 1, isMatch: false } })
+    expect(dbMock.$executeRaw).toHaveBeenCalledTimes(1) // training does
   })
 
   it('entering the result later writes only the result', async () => {
@@ -276,5 +302,63 @@ describe('PATCH touches only what was sent', () => {
     })
     const data = (dbMock.trainingSession.update.mock.calls[0][0] as { data: Record<string, unknown> }).data
     expect(Object.keys(data)).toEqual(['blocks'])
+  })
+})
+
+describe('B-PT1 · practice types are the client\'s camelCase ids', () => {
+  it.each(['oneVone', 'buildUp', 'phaseOfPlay', 'positionGame', 'setPiece', 'rondo'])('saves a block typed %s', async (practiceType) => {
+    const app = await getApp()
+    grantEditorAccess()
+    dbMock.trainingSession.create.mockResolvedValue(sessionRow() as never)
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/sessions',
+      headers: authHeaders(await accessToken()),
+      payload: { title: '1v1 — beat a player · 7v7', blocks: [{ kind: 'text', title: '1v1: 1v1 to mini goals', minutes: 22, part: 1, practiceType }] },
+    })
+    expect(res.statusCode).toBe(201)
+  })
+
+  it('still refuses something that is not an id', async () => {
+    const app = await getApp()
+    grantEditorAccess()
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/sessions',
+      headers: authHeaders(await accessToken()),
+      payload: { title: 'x', blocks: [{ kind: 'text', title: 'x', minutes: 5, practiceType: '<script>' }] },
+    })
+    expect(res.statusCode).toBe(422)
+  })
+})
+
+describe('SEASON-2 · a session has a one-line description', () => {
+  it('saves it on create, trims it, and stores a blank as null', async () => {
+    const app = await getApp()
+    grantEditorAccess()
+    dbMock.trainingSession.create.mockResolvedValue(sessionRow() as never)
+    let res = await app.inject({ method: 'POST', url: '/api/sessions', headers: authHeaders(await accessToken()), payload: { title: 'Pressing', description: '  Win it back in 5 seconds  ' } })
+    expect(res.statusCode).toBe(201)
+    expect(dbMock.trainingSession.create).toHaveBeenLastCalledWith(expect.objectContaining({ data: expect.objectContaining({ description: 'Win it back in 5 seconds' }) }))
+    res = await app.inject({ method: 'POST', url: '/api/sessions', headers: authHeaders(await accessToken()), payload: { title: 'x', description: '   ' } })
+    expect(dbMock.trainingSession.create).toHaveBeenLastCalledWith(expect.objectContaining({ data: expect.objectContaining({ description: null }) }))
+  })
+
+  it('refuses more than 300 characters', async () => {
+    const app = await getApp()
+    grantEditorAccess()
+    const res = await app.inject({ method: 'POST', url: '/api/sessions', headers: authHeaders(await accessToken()), payload: { title: 'x', description: 'a'.repeat(301) } })
+    expect(res.statusCode).toBe(422)
+  })
+
+  it('a PATCH without it leaves it alone; with it, updates it', async () => {
+    const app = await getApp()
+    grantEditorAccess()
+    dbMock.trainingSession.findFirst.mockResolvedValue({ id: 1 } as never)
+    dbMock.trainingSession.update.mockResolvedValue(sessionRow() as never)
+    await app.inject({ method: 'PATCH', url: '/api/sessions/1', headers: authHeaders(await accessToken()), payload: { title: 'Renamed' } })
+    expect((dbMock.trainingSession.update.mock.calls.at(-1)![0] as { data: object }).data).not.toHaveProperty('description')
+    await app.inject({ method: 'PATCH', url: '/api/sessions/1', headers: authHeaders(await accessToken()), payload: { description: 'New line' } })
+    expect((dbMock.trainingSession.update.mock.calls.at(-1)![0] as { data: { description: string } }).data.description).toBe('New line')
   })
 })

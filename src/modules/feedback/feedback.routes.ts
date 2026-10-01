@@ -14,7 +14,12 @@
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { authGuard } from '../../middleware/auth-guard.js'
-import { requireEditorAccess } from '../../middleware/entitlement-guard.js'
+import { requireCapability, requireEditorAccess } from '../../middleware/entitlement-guard.js'
+
+// Squads and player feedback come with a paid plan (decided 1 Oct 2026):
+// the editor check first (a player, or a trial that has ended, gets its own
+// answer), then the plan.
+const coachFeedback = [requireEditorAccess, requireCapability('player_feedback')]
 import { db } from '../../config/database.js'
 import { sendPlayerNoteEmail } from '../../lib/emails.js'
 import { MAX_TAGS_PER_LIST, cleanTags } from '../../lib/feedback-tags.js'
@@ -29,6 +34,7 @@ import {
   discardNote,
   sendSessionNotes,
   notesForPlayer,
+  acknowledgeNote,
   markNotesRead,
 } from './feedback.service.js'
 
@@ -124,14 +130,14 @@ export async function feedbackRoutes(app: FastifyInstance) {
     // ---- Coach: linking ------------------------------------------------------
 
     // GET /feedback/lookup?email= — exists or not, and nothing else.
-    secure.get('/lookup', { preHandler: requireEditorAccess }, async (request, reply) => {
+    secure.get('/lookup', { preHandler: coachFeedback }, async (request, reply) => {
       const { email } = z.object({ email: z.string().email() }).parse(request.query)
       return reply.send({ exists: await playerAccountExists(email) })
     })
 
     // POST /feedback/squad/:id/link { email } — ask to link. Pending until the
     // player says yes.
-    secure.post('/squad/:id/link', { preHandler: requireEditorAccess }, async (request, reply) => {
+    secure.post('/squad/:id/link', { preHandler: coachFeedback }, async (request, reply) => {
       const id = Number((request.params as { id: string }).id)
       const { email } = z.object({ email: z.string().email() }).parse(request.body)
       const result = await requestLink(userId(request), id, email)
@@ -155,7 +161,7 @@ export async function feedbackRoutes(app: FastifyInstance) {
 
     // ---- Coach: writing ------------------------------------------------------
 
-    secure.get('/sessions/:id', { preHandler: requireEditorAccess }, async (request, reply) => {
+    secure.get('/sessions/:id', { preHandler: coachFeedback }, async (request, reply) => {
       const id = Number((request.params as { id: string }).id)
       const roster = await rosterForSession(userId(request), id)
       return roster
@@ -163,7 +169,7 @@ export async function feedbackRoutes(app: FastifyInstance) {
         : reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'Session not found' })
     })
 
-    secure.post('/sessions/:id/notes', { preHandler: requireEditorAccess }, async (request, reply) => {
+    secure.post('/sessions/:id/notes', { preHandler: coachFeedback }, async (request, reply) => {
       const id = Number((request.params as { id: string }).id)
       const input = NoteSchema.parse(request.body)
       const result = await writeNote(userId(request), id, input)
@@ -185,7 +191,7 @@ export async function feedbackRoutes(app: FastifyInstance) {
       return reply.status(201).send(result.note)
     })
 
-    secure.delete('/notes/:id', { preHandler: requireEditorAccess }, async (request, reply) => {
+    secure.delete('/notes/:id', { preHandler: coachFeedback }, async (request, reply) => {
       const id = Number((request.params as { id: string }).id)
       return (await discardNote(userId(request), id))
         ? reply.send({ discarded: true })
@@ -193,7 +199,7 @@ export async function feedbackRoutes(app: FastifyInstance) {
     })
 
     // POST /feedback/sessions/:id/send — deliver the batch.
-    secure.post('/sessions/:id/send', { preHandler: requireEditorAccess }, async (request, reply) => {
+    secure.post('/sessions/:id/send', { preHandler: coachFeedback }, async (request, reply) => {
       const id = Number((request.params as { id: string }).id)
       const coachId = userId(request)
       const sent = await sendSessionNotes(coachId, id)
@@ -250,6 +256,18 @@ export async function feedbackRoutes(app: FastifyInstance) {
     })
 
     secure.get('/my-notes', async (request, reply) => reply.send(await notesForPlayer(userId(request))))
+
+    // POST /feedback/my-notes/:id/ack — "got it, coach". Idempotent; a
+    // second tap after the first is a 404 the client never shows.
+    secure.post('/my-notes/:id/ack', async (request, reply) => {
+      const id = Number((request.params as { id: string }).id)
+      if (!Number.isInteger(id) || id <= 0) {
+        return reply.status(422).send({ statusCode: 422, error: 'Unprocessable Entity', message: 'Note id is not valid' })
+      }
+      return (await acknowledgeNote(userId(request), id))
+        ? reply.send({ ok: true })
+        : reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'Note not found' })
+    })
 
     secure.post('/my-notes/read', async (request, reply) => {
       const { ids } = z.object({ ids: z.array(z.number().int().positive()).max(200) }).parse(request.body)

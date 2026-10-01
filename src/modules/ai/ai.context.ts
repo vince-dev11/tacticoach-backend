@@ -8,13 +8,18 @@
 // before tactics enter the conversation, and a sustained coordinated press is
 // beyond what the age can execute or is being taught.
 //
-// Age is the key that unlocks the rest: it fixes the playing format, the format
-// fixes the squad size and the pitch, and the age also sets how fast anyone can
-// actually move. Encoding that here means the knowledge is inspectable and
-// testable, rather than buried in prompt wording and hoped for.
+// The FORMAT is the coach's own answer (FR-I9, football review 1 Oct 2026).
+// Formats vary by country and change over time — England moved every youth
+// band a year later in 2026/27 (FutureFit) — so an age can only SUGGEST one.
+// Resolution: the coach's stated format (this request, or their saved profile
+// for the same age) → otherwise the age's suggestion, flagged `formatSource:
+// 'age'` so the prompt and the summary say it was assumed. The format fixes
+// the squad size and the pitch; the age sets the concepts and how fast anyone
+// can move. Encoding that here keeps it inspectable and testable.
 //
-// Formats follow the English FA's youth football rules, which are the most
-// widely adopted and match the mini-soccer pitch the editor draws.
+// Suggestions follow England's FutureFit formats for 2026/27: 3v3 at U7 (we
+// draw it on our smallest, 5v5, pitch), 5v5 U8–U9, 7v7 U10–U11, 9v9 U12–U13,
+// 11v11 from U14. [Guidance — The FA]
 
 export type AgeGroup = 'u7' | 'u9' | 'u11' | 'u13' | 'u15' | 'u17' | 'senior'
 export type PlayFormat = '5v5' | '7v7' | '9v9' | '11v11'
@@ -24,6 +29,11 @@ export interface CoachContext {
   age: AgeGroup
   format: PlayFormat
   level: CoachLevel
+  /**
+   * Where the format came from: the coach said so, or it was assumed from
+   * the age (and must be shown as an assumption). Absent = the default.
+   */
+  formatSource?: 'coach' | 'age'
   /** The team's usual shape, validated against the format ("2-3-1" at 7v7). */
   formation?: string
   /** Players the coach actually has tonight — 14 at 7v7 means two groups. */
@@ -60,7 +70,7 @@ export const DEFAULT_CONTEXT: CoachContext = { age: 'senior', format: '11v11', l
 
 export interface AgeProfile {
   label: string
-  /** The format this age plays by default (a coach may still override it). */
+  /** A SUGGESTION — England's 2026/27 format for this age. The coach's own format always wins. */
   format: PlayFormat
   /**
    * Fastest a player of this age is animated at, m/s. An under-9 does not run
@@ -95,7 +105,7 @@ export const AGE_PROFILES: Record<AgeGroup, AgeProfile> = {
   },
   u9: {
     label: 'Under 9',
-    format: '7v7',
+    format: '5v5',
     runSpeed: 4.5,
     maxPhases: 3,
     emphasis:
@@ -108,7 +118,7 @@ export const AGE_PROFILES: Record<AgeGroup, AgeProfile> = {
   },
   u11: {
     label: 'Under 11',
-    format: '9v9',
+    format: '7v7',
     runSpeed: 5.5,
     maxPhases: 3,
     emphasis:
@@ -119,11 +129,11 @@ export const AGE_PROFILES: Record<AgeGroup, AgeProfile> = {
     },
   u13: {
     label: 'Under 13',
-    format: '11v11',
+    format: '9v9',
     runSpeed: 6,
     maxPhases: 4,
     emphasis:
-      'The first full-pitch year. Positions, basic shape in and out of possession, and the principles behind them.',
+      'The last small-sided years before 11v11 in many countries. Positions, basic shape in and out of possession, and the principles behind them.',
     disallowedConcepts: {},
   },
   u15: {
@@ -215,9 +225,10 @@ export interface LooseContext {
  * under-13 side but is covering a senior session tonight should not have to
  * edit their profile to get a sensible answer.
  *
- * Format follows the age unless it was chosen explicitly, so picking "under 9"
- * gives 7v7 without a second question — but a coach running 9v9 at under-9,
- * which happens, can still say so.
+ * Format (FR-I9): the coach's stated format wins — on this request, or saved
+ * on their profile when tonight's age is the profile's age (or not given).
+ * Covering a different age tonight means the saved format may not apply, so
+ * the age's suggestion is used and marked as assumed.
  */
 export function resolveContext(
   request: LooseContext | undefined,
@@ -228,9 +239,10 @@ export function resolveContext(
     : isAgeGroup(profile?.age)
       ? profile.age
       : DEFAULT_CONTEXT.age
+  const sameTeam = !isAgeGroup(request?.age) || request?.age === profile?.age
   const explicitFormat = isPlayFormat(request?.format)
     ? request.format
-    : isPlayFormat(profile?.format) && !isAgeGroup(request?.age)
+    : isPlayFormat(profile?.format) && sameTeam
       ? profile.format
       : undefined
   const level = isCoachLevel(request?.level)
@@ -239,6 +251,9 @@ export function resolveContext(
       ? profile.level
       : DEFAULT_CONTEXT.level
   const format = explicitFormat ?? AGE_PROFILES[age].format
+  // Nothing said at all → the plain default, not an assumption worth flagging.
+  const anyAge = isAgeGroup(request?.age) || isAgeGroup(profile?.age)
+  const formatSource: CoachContext['formatSource'] = explicitFormat ? 'coach' : anyAge ? 'age' : undefined
 
   // Formation only survives if it exists in the RESOLVED format. A profile
   // saved as "4-3-3" while covering a 7v7 session tonight must not leak an
@@ -256,7 +271,7 @@ export function resolveContext(
   const rawProblem = (request?.problem ?? '').trim()
   const problem = rawProblem.length >= 3 ? rawProblem.slice(0, 160) : undefined
 
-  return { age, format, level, formation, squad, problem }
+  return { age, format, level, ...(formatSource ? { formatSource } : {}), formation, squad, problem }
 }
 
 /** The most players per team this context permits. */
@@ -277,5 +292,6 @@ export function conceptObjection(ctx: CoachContext, conceptId: string | undefine
 /** A short, human description used in prompts and summaries. */
 export function describeContext(ctx: CoachContext): string {
   const age = AGE_PROFILES[ctx.age]
-  return `${age.label} · ${FORMAT_PROFILES[ctx.format].label} · ${LEVEL_LABELS[ctx.level]}`
+  const format = FORMAT_PROFILES[ctx.format].label + (ctx.formatSource === 'age' ? ' (assumed from age — not confirmed by the coach)' : '')
+  return `${age.label} · ${format} · ${LEVEL_LABELS[ctx.level]}`
 }

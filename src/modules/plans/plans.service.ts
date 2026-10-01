@@ -20,7 +20,7 @@ import {
   type WeekTotals,
   type LoadVerdict,
 } from '../../lib/planner.js'
-import { quotaState, quotaError } from '../../lib/plan-quota.js'
+import { claimQuota } from '../../lib/plan-quota.js'
 
 /** A coach can plan a whole year, but not ten. */
 export const MAX_WEEKS = 60
@@ -29,6 +29,7 @@ export const MAX_WEEKS = 60
 const SESSION_FIELDS = {
   id: true,
   title: true,
+  description: true,
   sessionDate: true,
   startTime: true,
   targetMinutes: true,
@@ -48,6 +49,7 @@ const SESSION_FIELDS = {
 type SessionRow = {
   id: number
   title: string
+  description?: string | null
   sessionDate: Date | null
   startTime: string | null
   targetMinutes: number | null
@@ -67,6 +69,8 @@ type SessionRow = {
 export interface SessionSummary {
   id: number
   title: string
+  /** SEASON-2: one line under the title on the day card. */
+  description: string | null
   date: string | null
   startTime: string | null
   minutes: number | null
@@ -93,6 +97,7 @@ function toSummary(row: SessionRow): SessionSummary {
   return {
     id: row.id,
     title: row.title,
+    description: row.description ?? null,
     date: row.sessionDate ? isoDate(row.sessionDate) : null,
     startTime: row.startTime,
     minutes: row.targetMinutes,
@@ -134,6 +139,8 @@ export interface WeekSummary {
   startDate: string
   endDate: string
   theme: string | null
+  /** SEASON-5: title + description per day, only for this week's days. */
+  dayNotes: Record<string, { title: string; description: string }>
   phase: string
   totals: WeekTotals
   /** Load per day, in display order. Drives the little bar chart. */
@@ -179,8 +186,14 @@ export async function getPlan(userId: number, planId: number): Promise<SeasonPla
   }
 }
 
+/** The seven ISO dates of the week that holds `startDate`, in display order. */
+export function weekDayIsos(startDate: Date, weekStartsOn: WeekStart): string[] {
+  const start = startOfWeek(startDate, weekStartsOn)
+  return Array.from({ length: 7 }, (_, i) => isoDate(addDays(start, i)))
+}
+
 function buildWeek(
-  week: { id: number; weekIndex: number; startDate: Date; theme: string | null; phase: string },
+  week: { id: number; weekIndex: number; startDate: Date; theme: string | null; phase: string; dayNotes?: unknown },
   sessions: SessionSummary[],
   weekStartsOn: WeekStart,
 ): WeekSummary {
@@ -200,6 +213,11 @@ function buildWeek(
     startDate: isoDate(start),
     endDate: isoDate(addDays(start, 6)),
     theme: week.theme,
+    dayNotes: Object.fromEntries(
+      Object.entries((week.dayNotes ?? {}) as Record<string, { title?: string; description?: string }>)
+        .filter(([d]) => d >= isoDate(start) && d <= isoDate(addDays(start, 6)))
+        .map(([d, n]) => [d, { title: n?.title ?? '', description: n?.description ?? '' }]),
+    ),
     phase: week.phase,
     totals: weekTotals(
       // The same RPE the cards show (the coach's, else the typical one), so
@@ -352,6 +370,9 @@ export async function copyWeek(userId: number, fromWeekId: number, toWeekId: num
   ])
   if (!from || !to) return 0
   if (from.sessions.length === 0) return 0
+  // Copies are sessions like any other and spend the same quota — this was
+  // the one path that created sessions without asking.
+  const release = await claimQuota(userId, 'sessions', from.sessions.length)
 
   const weekStartsOn = from.plan.weekStartsOn as WeekStart
   const fromStart = startOfWeek(from.startDate, weekStartsOn)
@@ -363,28 +384,34 @@ export async function copyWeek(userId: number, fromWeekId: number, toWeekId: num
     toStart,
   )
 
-  await db.trainingSession.createMany({
-    data: shifted.map((s) => ({
-      userId,
-      title: s.title,
-      sessionDate: s.sessionDate,
-      ageGroup: s.ageGroup,
-      targetMinutes: s.targetMinutes,
-      blocks: s.blocks as never,
-      brand: s.brand as never,
-      parts: s.parts as never,
-      planWeekId: toWeekId,
-      sessionType: s.sessionType,
-      intensityRpe: s.intensityRpe,
-      startTime: s.startTime,
-      // A copied week carries the training across but NOT the fixture: an
-      // opponent and a venue belong to one date, and duplicating them would
-      // invent a second match against Riverside that nobody scheduled.
-      isMatch: false,
-      opponent: null,
-      venue: null,
-    })),
-  })
+  try {
+    await db.trainingSession.createMany({
+      data: shifted.map((s) => ({
+        userId,
+        title: s.title,
+        description: s.description ?? null,
+        sessionDate: s.sessionDate,
+        ageGroup: s.ageGroup,
+        targetMinutes: s.targetMinutes,
+        blocks: s.blocks as never,
+        brand: s.brand as never,
+        parts: s.parts as never,
+        planWeekId: toWeekId,
+        sessionType: s.sessionType,
+        intensityRpe: s.intensityRpe,
+        startTime: s.startTime,
+        // A copied week carries the training across but NOT the fixture: an
+        // opponent and a venue belong to one date, and duplicating them would
+        // invent a second match against Riverside that nobody scheduled.
+        isMatch: false,
+        opponent: null,
+        venue: null,
+      })),
+    })
+  } catch (err) {
+    await release().catch(() => {})
+    throw err
+  }
   return shifted.length
 }
 
@@ -443,13 +470,10 @@ export async function copyPlan(
   })
   if (!source) return null
 
+  // Every copied session is a session: claimed up front (refused before
+  // anything is created), handed back if the copy fails below.
   const sessionCount = source.weeks.reduce((n, w) => n + w.sessions.length, 0)
-  if (sessionCount > 0) {
-    const quota = await quotaState(userId, 'sessions')
-    if (quota.limit !== null && (quota.remaining ?? 0) < sessionCount) {
-      throw quotaError('sessions', quota.limit)
-    }
-  }
+  const releaseSessions = await claimQuota(userId, 'sessions', sessionCount)
 
   const weekStartsOn = source.weekStartsOn as WeekStart
   const first = startOfWeek(params.startDate, weekStartsOn)
@@ -490,6 +514,7 @@ export async function copyPlan(
       ).map((s, i) => ({
         userId,
         title: stripDaySuffix(s.title, w.sessions[i].sessionDate),
+        description: s.description ?? null,
         sessionDate: s.sessionDate,
         ageGroup: s.ageGroup,
         squadId: s.squadId,
@@ -509,6 +534,7 @@ export async function copyPlan(
     await db.trainingSession.createMany({ data: rows })
     return { planId: plan.id, sessions: rows.length }
   } catch (err) {
+    await releaseSessions().catch(() => {})
     // All or nothing: a half-copied season is worse than a clear error, and
     // the coach would not know which weeks were missing.
     await db.seasonPlan.delete({ where: { id: plan.id } }).catch(() => {})

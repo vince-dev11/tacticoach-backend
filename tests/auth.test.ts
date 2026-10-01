@@ -12,14 +12,10 @@ const registerBody = {
 }
 
 describe('POST /api/auth/register', () => {
-  it('creates a user, starts a 7-day trial and returns tokens', async () => {
+  it('FT-4 · creates a coach on the 14-day free trial — no subscription row — and returns tokens', async () => {
     const app = await getApp()
-    // No duplicate (the unselected lookup), then the profile read-back that
-    // builds the response — the same shape GET /users/me returns.
     mockUserFindUnique(dbMock.user.findUnique, userRow(), { whenNoSelect: null })
     dbMock.user.create.mockResolvedValue(userRow() as never)
-    dbMock.membershipPlan.findUnique.mockResolvedValue({ id: 2, slug: 'pro-ai' } as never)
-    dbMock.userSubscription.create.mockResolvedValue({} as never)
     dbMock.refreshToken.create.mockResolvedValue({} as never)
 
     const res = await app.inject({ method: 'POST', url: '/api/auth/register', payload: registerBody })
@@ -29,28 +25,22 @@ describe('POST /api/auth/register', () => {
     expect(body.user.email).toBe('coach@test.dev')
     expect(body.accessToken).toBeTruthy()
     expect(body.refreshToken).toBeTruthy()
-    // Trial subscription created against the pro-ai plan
-    expect(dbMock.userSubscription.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({ status: 'trial', planId: 2 }),
-      }),
-    )
-    const expiresAt = dbMock.userSubscription.create.mock.calls[0][0].data.expiresAt as Date
-    const days = (expiresAt.getTime() - Date.now()) / 86400_000
-    expect(days).toBeGreaterThan(6.9)
-    expect(days).toBeLessThanOrEqual(7)
+    // The free plan is the trial: held on the user, never a Pro trial row.
+    expect(dbMock.userSubscription.create).not.toHaveBeenCalled()
+    const endsAt = (dbMock.user.create.mock.calls[0][0] as { data: { freeTrialEndsAt: Date } }).data.freeTrialEndsAt
+    const days = (endsAt.getTime() - Date.now()) / 86400_000
+    expect(days).toBeGreaterThan(13.9)
+    expect(days).toBeLessThanOrEqual(14)
   })
 
-  it('still registers when the trial plan is not seeded', async () => {
+  it('FT-4 · a player account gets no trial window', async () => {
     const app = await getApp()
-    dbMock.user.findUnique.mockResolvedValue(null)
-    dbMock.user.create.mockResolvedValue(userRow() as never)
-    dbMock.membershipPlan.findUnique.mockResolvedValue(null)
+    mockUserFindUnique(dbMock.user.findUnique, userRow({ accountType: 'player' }), { whenNoSelect: null })
+    dbMock.user.create.mockResolvedValue(userRow({ accountType: 'player' }) as never)
     dbMock.refreshToken.create.mockResolvedValue({} as never)
-
-    const res = await app.inject({ method: 'POST', url: '/api/auth/register', payload: registerBody })
+    const res = await app.inject({ method: 'POST', url: '/api/auth/register', payload: { ...registerBody, accountType: 'player' } })
     expect(res.statusCode).toBe(201)
-    expect(dbMock.userSubscription.create).not.toHaveBeenCalled()
+    expect((dbMock.user.create.mock.calls[0][0] as { data: Record<string, unknown> }).data.freeTrialEndsAt).toBeNull()
   })
 
   it('rejects a duplicate email with 409', async () => {

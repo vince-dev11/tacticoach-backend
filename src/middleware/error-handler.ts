@@ -59,5 +59,17 @@ export function errorHandler(error: FastifyError, request: FastifyRequest, reply
     // The reference a coach can quote to support ("error ref 7f3a…"). Only on
     // server errors — a 404 or 403 has nothing to look up.
     ...(status >= 500 ? { requestId: String(request.id) } : {}),
+    // A plan wall carries what the UI needs to say it in the coach's
+    // language: which quota, its limit, and whether deletes give it back.
+    ...(status === 402 ? planWallFields(error) : {}),
   })
+}
+
+function planWallFields(error: unknown): Record<string, unknown> {
+  const e = error as { code?: unknown; quota?: unknown; limit?: unknown; lifetime?: unknown; capability?: unknown }
+  const out: Record<string, unknown> = {}
+  for (const k of ['code', 'quota', 'limit', 'lifetime', 'capability'] as const) {
+    if (e[k] !== undefined) out[k] = e[k]
+  }
+  return out
 }

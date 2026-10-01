@@ -1,10 +1,9 @@
 // Blocks editor actions for anyone who may not open the editor at all.
 //
-// Since the free tier landed this is a much narrower gate than its name
-// suggests: every coach account has editorAccess, so in practice this now
-// refuses only player accounts (which return editorAccess: false regardless of
-// what subscription they hold). It stays because that case is real and this is
-// the one place that catches it for every editor route at once.
+// Refuses two kinds of account: players (403 — never theirs) and coaches whose
+// 14-day free trial has ended (402 TRIAL_ENDED — theirs for a price). Every
+// write route sits behind this and no read route does, which is exactly what
+// "library only after the trial" means.
 //
 // What it no longer does is enforce PLAN limits. A free coach may open the
 // editor and save boards — up to five of them. Those caps are counted in the
@@ -26,6 +25,16 @@ export async function requireEditorAccess(request: FastifyRequest, reply: Fastif
       .send({ statusCode: 401, error: 'Unauthorized', message: 'Invalid or expired token' })
   }
   const entitlements = await getEntitlements(userId)
+  // A coach whose 14-day free trial has ended: not forbidden, un-upgraded —
+  // so 402, with a code the frontend turns into the "trial ended" dialog.
+  if (!entitlements.editorAccess && entitlements.subscriptionStatus === 'free_expired') {
+    return reply.status(402).send({
+      statusCode: 402,
+      error: 'Payment Required',
+      message: 'Your 14-day free trial has ended. Your work is safe in the library — choose a plan to keep building.',
+      code: 'TRIAL_ENDED',
+    })
+  }
   if (!entitlements.editorAccess) {
     return reply.status(403).send({
       statusCode: 403,

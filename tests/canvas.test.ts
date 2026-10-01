@@ -27,8 +27,9 @@ function grantEditorAccess() {
   dbMock.club.findUnique.mockResolvedValue(null)
 }
 
-/** No sub, no club → the FREE tier (five boards), not a locked door. */
+/** No sub, no club → the free plan, inside its 14-day trial (FT-2). */
 function onFreeTier() {
+  dbMock.user.findUnique.mockResolvedValue({ role: 'user', accountType: 'coach', freeTrialEndsAt: new Date(Date.now() + 5 * 86_400_000) } as never)
   dbMock.userSubscription.findUnique.mockResolvedValue(null)
   dbMock.clubMember.findUnique.mockResolvedValue(null)
   dbMock.club.findUnique.mockResolvedValue(null)
@@ -63,13 +64,11 @@ describe('GET /api/canvas/boards', () => {
 })
 
 describe('POST /api/canvas/boards', () => {
-  it('lets a free coach create a board — up to their five', async () => {
-    // This used to assert a 403. An expired trial is no longer a wall: it is
-    // the free tier, and the free tier can draw. The limit is a COUNT now,
-    // and the test below is the one that holds it.
+  it('FT-3 · lets a free-trial coach create a board while a slot is left', async () => {
     const app = await getApp()
     onFreeTier()
-    dbMock.canvasBoard.count.mockResolvedValue(2 as never)
+    dbMock.freeUsage.upsert.mockResolvedValue({} as never)
+    dbMock.$executeRaw.mockResolvedValue(1 as never)
     dbMock.canvasBoard.create.mockResolvedValue(boardRow() as never)
 
     const res = await app.inject({
@@ -81,24 +80,57 @@ describe('POST /api/canvas/boards', () => {
     expect(res.statusCode).toBe(201)
   })
 
-  it('refuses the sixth with a 402, not a 403', async () => {
-    // 402 is the whole point: the coach is not forbidden, they are
-    // un-upgraded, and that is what lets the UI show a price rather than an
-    // apology. A 403 here would render as "something went wrong".
+  it('FT-3 · refuses the fourth with a 402 QUOTA_REACHED and the lifetime wording', async () => {
     const app = await getApp()
     onFreeTier()
-    dbMock.canvasBoard.count.mockResolvedValue(5 as never)
+    dbMock.freeUsage.upsert.mockResolvedValue({} as never)
+    dbMock.$executeRaw.mockResolvedValue(0 as never)
 
     const res = await app.inject({
       method: 'POST',
       url: '/api/canvas/boards',
       headers: authHeaders(await accessToken()),
-      payload: { title: 'Board six' },
+      payload: { title: 'Board four' },
     })
     expect(res.statusCode).toBe(402)
-    expect(res.json().message).toMatch(/5 saved boards/)
-    // And nothing was written.
+    expect(res.json()).toMatchObject({ code: 'QUOTA_REACHED', quota: 'boards', limit: 3, lifetime: true })
+    expect(res.json().message).toMatch(/deleted boards still count/)
     expect(dbMock.canvasBoard.create).not.toHaveBeenCalled()
+  })
+
+  it('FT-3 · gives the slot back when the create fails', async () => {
+    const app = await getApp()
+    onFreeTier()
+    dbMock.freeUsage.upsert.mockResolvedValue({} as never)
+    dbMock.$executeRaw.mockResolvedValue(1 as never)
+    dbMock.canvasBoard.create.mockRejectedValue(new Error('db down'))
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/canvas/boards',
+      headers: authHeaders(await accessToken()),
+      payload: { title: 'Board' },
+    })
+    expect(res.statusCode).toBe(500)
+    const call = dbMock.$executeRaw.mock.calls.at(-1)! as unknown[]
+    expect((call[0] as TemplateStringsArray).join('?')).toMatch(/GREATEST\(\? - \?, 0\)/)
+    expect(call[3]).toBe(1) // params: col, col, count, userId — one slot back
+  })
+
+  it('FT-3 · editing an existing board never touches the quota', async () => {
+    const app = await getApp()
+    onFreeTier()
+    dbMock.canvasBoard.findFirst.mockResolvedValue(boardRow() as never)
+    dbMock.canvasBoard.findUnique.mockResolvedValue(boardRow() as never)
+    dbMock.canvasBoard.update.mockResolvedValue(boardRow() as never)
+    const res = await app.inject({
+      method: 'PATCH',
+      url: '/api/canvas/boards/1',
+      headers: authHeaders(await accessToken()),
+      payload: { title: 'Renamed' },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(dbMock.$executeRaw).not.toHaveBeenCalled()
   })
 
   it('does not count boards at all for a paid coach', async () => {
@@ -130,8 +162,9 @@ describe('POST /api/canvas/boards', () => {
       payload: { title: 'High press 4-3-3', pitchKey: 'full' },
     })
     expect(res.statusCode).toBe(201)
+    // Private unless asked: a coach's first board must not be public by accident.
     expect(dbMock.canvasBoard.create).toHaveBeenCalledWith(
-      expect.objectContaining({ data: expect.objectContaining({ published: true }) }),
+      expect.objectContaining({ data: expect.objectContaining({ published: false, publishedAt: null }) }),
     )
   })
 })

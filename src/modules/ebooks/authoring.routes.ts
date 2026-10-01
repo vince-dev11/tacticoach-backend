@@ -24,7 +24,7 @@ import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { authGuard } from '../../middleware/auth-guard.js'
 import { requireCapability } from '../../middleware/entitlement-guard.js'
-import { assertQuota } from '../../lib/plan-quota.js'
+import { withQuota } from '../../lib/plan-quota.js'
 import { can } from '../../lib/capabilities.js'
 import { getEntitlements } from '../../lib/entitlements.js'
 import { latinOnly } from '../../lib/latin-only.js'
@@ -69,6 +69,9 @@ const BookInput = z.object({
   seriesId: z.number().int().positive().nullable().optional(),
   seriesOrder: z.number().int().min(1).max(99).nullable().optional(),
   clubAudience: z.enum(AUDIENCES).optional(),
+  // The author's price, in pence: 0 = free, otherwise 99p to £200. Whole
+  // pence only. Club books are never sold, so it is ignored for them.
+  pricePence: z.number().int().min(0).max(20_000).refine((p) => p === 0 || p >= 99, { message: 'A paid book costs at least 99p' }).optional(),
 })
 
 /**
@@ -139,14 +142,13 @@ export async function authoringRoutes(app: FastifyInstance) {
     }
     // Free gets one book, Basic three. Checked before the row is written, so
     // the refusal costs the coach nothing but the click.
-    await assertQuota(uid, 'books')
     const { seriesId, seriesOrder, clubAudience, ...rest } = input
     void seriesId
     void seriesOrder
-    const book = await ebookDelegate().create({
+    const book = await withQuota(uid, 'books', async () => ebookDelegate().create({
       data: {
         ...rest,
-        ...(clubId ? { clubId, clubAudience: clubAudience ?? 'coaches' } : {}),
+        ...(clubId ? { clubId, clubAudience: clubAudience ?? 'coaches', pricePence: 0 } : {}),
         subtitle: input.subtitle || null,
         blurb: input.blurb || null,
         slug: await uniqueSlug(input.title),
@@ -155,7 +157,7 @@ export async function authoringRoutes(app: FastifyInstance) {
         status: 'draft',
         publishedAt: null,
       },
-    })
+    }))
     return reply.status(201).send(book)
   })
 
@@ -191,6 +193,8 @@ export async function authoringRoutes(app: FastifyInstance) {
       }
     }
     if (input.clubAudience !== undefined && !clubBook) delete input.clubAudience
+    // Club books are never sold.
+    if (input.pricePence !== undefined && clubBook) delete input.pricePence
 
     // Details of a book under review or in the shop are frozen to its author.
     // Approving what you read means nothing if the author can edit it while

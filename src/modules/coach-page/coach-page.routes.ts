@@ -28,9 +28,9 @@ const BrandKitSchema = z.object({
     .string()
     .trim()
     .toLowerCase()
-    .min(3)
-    .max(60)
-    .regex(COACH_SLUG_RE, 'Lowercase letters, numbers and hyphens only')
+    // Single hyphens only, none at the ends: "qa-coach--" becomes "qa-coach" (QA B-18).
+    .transform((v) => v.replace(/-{2,}/g, '-').replace(/^-+|-+$/g, ''))
+    .pipe(z.string().min(3).max(60).regex(COACH_SLUG_RE, 'Lowercase letters, numbers and hyphens only'))
     .optional()
     .nullable(),
   color: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional().nullable(),

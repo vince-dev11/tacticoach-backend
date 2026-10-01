@@ -17,6 +17,7 @@ import { db } from '../../config/database.js'
 import { getReferralSummary } from './referrals.service.js'
 import { getCollaborationStatement, acceptAgreement } from '../collaborations/collaborations.service.js'
 import { COLLABORATION_AGREEMENT } from '../collaborations/collaboration-agreement.js'
+import { redeemInvite } from '../collaborations/applications.service.js'
 import { REFERRAL_AGREEMENT, REFERRAL_AGREEMENT_VERSION } from './referral-agreement.js'
 import {
   hasAccepted, recordAcceptance, getAcceptance, signatureProblem,
@@ -164,6 +165,23 @@ export async function referralsRoutes(app: FastifyInstance) {
     // rather than baked into the frontend bundle so the text a collaborator accepts
     // and the version recorded against them come from the same place.
     scoped.get('/collaboration/agreement', async () => COLLABORATION_AGREEMENT)
+
+    // POST /api/referrals/collaboration/redeem { token } — the approval link,
+    // opened by somebody who already has an account (or signed up without
+    // it). Turns the approved application into an invitation on THIS account;
+    // they then sign the agreement as usual. Single use, 14-day expiry.
+    scoped.post('/collaboration/redeem', { config: { rateLimit: { max: process.env.NODE_ENV === 'test' ? 10_000 : 10, timeWindow: '1 hour' } } }, async (request, reply) => {
+      const { token } = z.object({ token: z.string().min(10).max(100) }).parse(request.body)
+      const user = await db.user.findUnique({ where: { id: userId(request) }, select: { accountType: true } })
+      if (user?.accountType === 'player') {
+        return reply.status(409).send({ statusCode: 409, error: 'player_account', message: 'Collaboration is for coach and club accounts.' })
+      }
+      const ok = await redeemInvite(token, userId(request))
+      if (!ok) {
+        return reply.status(404).send({ statusCode: 404, error: 'invalid_token', message: 'This link has expired or was already used. Write to us and we will send a new one.' })
+      }
+      return getCollaborationStatement(userId(request))
+    })
 
     // POST /api/referrals/collaboration/accept — the click that activates them.
     scoped.post('/collaboration/accept', async (request, reply) => {

@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs'
 import { db } from '../../config/database.js'
 import { env } from '../../config/env.js'
 import { attachReferral } from '../referrals/referrals.service.js'
+import { redeemInvite } from '../collaborations/applications.service.js'
 import type { RegisterInput, LoginInput } from './auth.schema.js'
 
 const BCRYPT_ROUNDS = 12
@@ -12,9 +13,9 @@ const REFRESH_TTL_MS = 30 * 24 * 60 * 60 * 1000
 const RESET_TTL_MS = 60 * 60 * 1000
 
 const sha256 = (v: string) => crypto.createHash('sha256').update(v).digest('hex')
-// Every new account gets a 7-day full-access trial (pro-ai features).
-const TRIAL_DAYS = 7
-const TRIAL_PLAN_SLUG = 'pro-ai'
+// A new coach starts on the free plan, which is a 14-day trial held on the
+// user (lib/free-trial.ts) — no subscription row (decided 1 Oct 2026).
+import { freeTrialEnd } from '../../lib/free-trial.js'
 
 export async function registerUser(input: RegisterInput) {
   const exists = await db.user.findUnique({ where: { email: input.email } })
@@ -33,6 +34,8 @@ export async function registerUser(input: RegisterInput) {
       phone: input.phone ?? null,
       accountType: input.accountType,
       passwordHash,
+      // Players are never on a trial: their account is free and permanent.
+      freeTrialEndsAt: input.accountType === 'player' ? null : freeTrialEnd(),
       // The configured company-owner account gets the admin role immediately.
       ...(env.OWNER_EMAIL && input.email === env.OWNER_EMAIL ? { role: 'owner' as const } : {}),
     },
@@ -44,31 +47,16 @@ export async function registerUser(input: RegisterInput) {
   // the referral programme being healthy.
   await attachReferral(user.id, input.referralCode)
 
-  // Start the 7-day trial. Missing plan (unseeded DB) must not block signup —
-  // the user simply starts without editor access.
-  //
-  // Not for players. A trial is a sample of something you might buy, and there
-  // is nothing here for a player to buy: their account is free and permanent.
-  // Giving them one had two consequences, both bad — for seven days the whole
-  // coach product was open to a child's account, and on day eight they were
-  // shown "your trial has ended, choose a plan" for a product that was never
-  // theirs. getEntitlements refuses a player editorAccess independently, so
-  // this is about not creating a meaningless row and a countdown nobody wants,
-  // rather than about access.
-  const trialPlan =
-    user.accountType === 'player'
-      ? null
-      : await db.membershipPlan.findUnique({ where: { slug: TRIAL_PLAN_SLUG } })
-  if (trialPlan) {
-    await db.userSubscription.create({
-      data: {
-        userId: user.id,
-        planId: trialPlan.id,
-        status: 'trial',
-        expiresAt: new Date(Date.now() + TRIAL_DAYS * 24 * 60 * 60 * 1000),
-      },
-    })
+  // An approved collaboration applicant, signing up through the link we
+  // emailed. Until 30 Sep 2026 nothing redeemed this token: the applicant got
+  // an ordinary account and never became a collaborator. Players are skipped
+  // (a collaborator sells to coaches and clubs); a failure never blocks signup.
+  if (input.collabToken && user.accountType !== 'player') {
+    await redeemInvite(input.collabToken, user.id).catch(() => false)
   }
+
+  // No subscription is created. The free plan IS the 14-day trial, set on
+  // the user above; paid plans start when the coach chooses one.
 
   return user
 }

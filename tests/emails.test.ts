@@ -15,6 +15,8 @@ beforeEach(() => {
   mailConfigured.mockReturnValue(true)
   sendMailMock.mockReset()
   sendMailMock.mockResolvedValue(undefined)
+  // No free trials due unless a test says so (FT-5).
+  dbMock.user.findMany.mockResolvedValue([] as never)
 })
 
 afterEach(() => {
@@ -48,7 +50,7 @@ describe('welcome email on register', () => {
     const mail = sendMailMock.mock.calls[0][0]
     expect(mail.to).toBe('coach@test.dev')
     expect(mail.subject).toMatch(/welcome/i)
-    expect(mail.subject).toMatch(/7-day free trial/i)
+    expect(mail.subject).toMatch(/14-day free trial/i)
     expect(mail.text).toContain('/dashboard')
     expect(mail.html).toContain('/verify-email?token=')
   })
@@ -206,18 +208,43 @@ describe('POST /api/contact', () => {
     expect(sendMailMock).not.toHaveBeenCalled()
   })
 
-  it('returns 503 when SMTP is not configured', async () => {
+  it('returns 503 when SMTP is not configured AND the message could not be stored', async () => {
     const app = await getApp()
     mailConfigured.mockReturnValue(false)
+    ;(dbMock.contactMessage.create as unknown as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('db down'))
     const res = await app.inject({ method: 'POST', url: '/api/contact', payload })
     expect(res.statusCode).toBe(503)
   })
 
-  it('returns 502 when delivery fails (message must not vanish silently)', async () => {
+  it('returns 502 when delivery fails AND the message could not be stored (it must not vanish silently)', async () => {
     const app = await getApp()
     sendMailMock.mockRejectedValue(new Error('SMTP down'))
+    ;(dbMock.contactMessage.create as unknown as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('db down'))
     const res = await app.inject({ method: 'POST', url: '/api/contact', payload })
     expect(res.statusCode).toBe(502)
+  })
+
+  it('says "sent" when the email fails but the message is in the inbox', async () => {
+    // Telling someone "we could not deliver your message" while it sits in
+    // the admin inbox is what made our first real support request arrive
+    // four times.
+    const app = await getApp()
+    sendMailMock.mockRejectedValue(new Error('SMTP down'))
+    ;(dbMock.contactMessage.create as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({ id: 1 } as never)
+    const res = await app.inject({ method: 'POST', url: '/api/contact', payload })
+    expect(res.statusCode).toBe(200)
+  })
+
+  it('ignores the same message sent again within a day: answered as sent, not stored or emailed twice', async () => {
+    const app = await getApp()
+    ;(dbMock.contactMessage.findFirst as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({ id: 7 } as never)
+    const res = await app.inject({ method: 'POST', url: '/api/contact', payload: { ...payload, email: 'VINCE@test.dev ' } })
+    expect(res.statusCode).toBe(200)
+    expect(dbMock.contactMessage.create).not.toHaveBeenCalled()
+    expect(sendMailMock).not.toHaveBeenCalled()
+    const where = (dbMock.contactMessage.findFirst as unknown as ReturnType<typeof vi.fn>).mock.calls[0][0].where
+    expect(where.email).toBe('vince@test.dev')
+    expect(where.message).toBe(payload.message)
   })
 })
 
@@ -264,5 +291,46 @@ describe('club invite email', () => {
     expect(mail.to).toBe('newcoach@t.dev')
     expect(mail.subject).toContain('FC Test')
     expect(mail.html).toContain('/club/join/invitetoken')
+  })
+})
+
+import { sendFreeTrialStartedEmail } from '../src/lib/emails.js'
+
+describe('FT-5 · free-trial emails', () => {
+  it('the welcome email describes the trial: its counts and the library afterwards', async () => {
+    const app = await getApp()
+    mockRegisterDb()
+    await app.inject({ method: 'POST', url: '/api/auth/register', payload: registerBody })
+    await vi.waitFor(() => expect(sendMailMock).toHaveBeenCalledTimes(1))
+    const mail = sendMailMock.mock.calls[0][0]
+    expect(mail.text).toContain('3 boards')
+    expect(mail.text).toMatch(/library/i)
+    expect(mail.text).not.toMatch(/full access/i)
+  })
+
+  it('the free-trial sweep reminds a coach whose free trial ends within 2 days, once', async () => {
+    dbMock.userSubscription.findMany.mockResolvedValue([] as never)
+    const endsAt = new Date(Date.now() + 30 * 3600_000)
+    dbMock.user.findMany.mockResolvedValue([{ id: 7, name: 'Sam', email: 'sam@test.dev', freeTrialEndsAt: endsAt }] as never)
+    dbMock.user.updateMany.mockResolvedValueOnce({ count: 1 } as never).mockResolvedValueOnce({ count: 0 } as never)
+
+    expect(await sweepTrialReminders()).toBe(1)
+    const where = dbMock.user.findMany.mock.calls[0][0]!.where!
+    expect(where).toMatchObject({ accountType: { not: 'player' }, freeTrialReminderSentAt: null })
+    expect(dbMock.user.updateMany).toHaveBeenCalledWith(expect.objectContaining({ where: { id: 7, freeTrialReminderSentAt: null } }))
+    expect(sendMailMock.mock.calls[0][0].to).toBe('sam@test.dev')
+
+    // A second sweep that loses the claim sends nothing.
+    sendMailMock.mockClear()
+    expect(await sweepTrialReminders()).toBe(0)
+    expect(sendMailMock).not.toHaveBeenCalled()
+  })
+
+  it('the release email names the end date and says existing work counts', async () => {
+    await sendFreeTrialStartedEmail({ name: 'Sam', email: 'sam@test.dev' }, new Date('2026-10-15T12:00:00Z'))
+    const mail = sendMailMock.mock.calls[0][0]
+    expect(mail.subject).toBe('Your TactiCoach free trial: 14 days from today')
+    expect(mail.text).toContain('Thu Oct 15 2026')
+    expect(mail.text).toMatch(/already made counts/i)
   })
 })

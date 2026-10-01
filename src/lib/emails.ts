@@ -32,7 +32,7 @@ const BRAND = '#00A76F'
 const esc = (s: string): string =>
   s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 
-function layout(preheader: string, bodyHtml: string): string {
+function layout(preheader: string, bodyHtml: string, footerNote = 'You&#39;re receiving this because you have a TactiCoach account.'): string {
   const site = env.FRONTEND_URL
   return `<!doctype html>
 <html>
@@ -84,7 +84,7 @@ function layout(preheader: string, bodyHtml: string): string {
           </td></tr>
           <tr><td style="padding:8px 24px 4px;color:#5b6577;font-size:11px;line-height:1.6" align="center">
             TactiCoach — tactical boards, animations &amp; drill sheets for football coaches.<br>
-            You&#39;re receiving this because you have a TactiCoach account.
+            ${footerNote}
           </td></tr>
         </table>
       </td></tr>
@@ -128,6 +128,10 @@ export type EmailKind =
   | 'password_reset'
   | 'coach_contact'
   | 'book_coauthor_invite'
+  | 'admin_message'
+  | 'lead_reply'
+  | 'book_receipt'
+  | 'free_trial_started'
 
 /**
  * Send an email without ever throwing — logs and swallows failures.
@@ -170,21 +174,20 @@ export async function sendWelcomeEmail(
   await sendSafely(
     {
       to: user.email,
-      subject: 'Welcome to TactiCoach — your 7-day free trial has started',
+      subject: 'Welcome to TactiCoach — your 14-day free trial has started',
       text:
         `Hi ${user.name},\n\n` +
-        `Welcome to TactiCoach! Your 7-day free trial with full access is now active.\n${verifyText}\n` +
-        `During your trial you can:\n` +
-        `- Build tactical boards on multiple pitch types\n` +
-        `- Animate movements frame by frame and export video\n` +
-        `- Create printable drill sheets\n\n` +
+        `Welcome to TactiCoach! Your 14-day free trial has started.\n${verifyText}\n` +
+        `During your trial you can make 3 boards, 3 drill sheets, 3 sessions, a season plan and a book to write,\n` +
+        `with animation and up to 3 videos. Every pitch, from 5v5 to 11v11.\n\n` +
+        `After 14 days your work stays in your library; choose a plan any time to keep building.\n\n` +
         `Get started: ${dashboard}\n\n` +
         `Happy coaching!\nThe TactiCoach team`,
       html: layout(
-        'Your 7-day free trial with full access is now active.',
+        'Your 14-day free trial has started.',
         `${kicker("WELCOME TO THE SQUAD")}
          <h1 style="margin:0 0 12px;font-size:21px">You are on the team sheet, ${user.name} ✅</h1>
-         <p style="margin:0 0 12px">Your <strong>7-day free trial</strong> with full access is now active. Here is the game plan:</p>
+         <p style="margin:0 0 12px">Your <strong>14-day free trial</strong> has started: 3 boards, 3 drill sheets, 3 sessions, a season plan and a book to write, with animation and up to 3 videos. After 14 days your work stays in your library. Here is the game plan:</p>
          ${pitchCard('YOUR KICK-OFF PLAN', `1&#65039;&#8419; One click puts a full team on the board &#8212; add your squad and it is YOUR players, by name<br>2&#65039;&#8419; Drag the runs &#8212; every movement becomes an animation, with your coaching notes on screen<br>3&#65039;&#8419; Export HD video straight to the team group chat`)}
          ${verifyHtml}
          <p style="margin:0;color:#6b7280;font-size:13px">Happy coaching!<br>The TactiCoach team</p>`,
@@ -248,12 +251,44 @@ export async function sendTrialReminderEmail(
          <h1 style="margin:0 0 12px;font-size:21px">⏳ ${daysLeft} ${dayWord} left on the clock</h1>
          <p style="margin:0 0 12px">Hi ${user.name}, just a heads-up: your free trial ends on <strong>${expiresAt.toDateString()}</strong>.</p>
          ${pitchCard('KEEP YOUR FULL ACCESS', `&#9989; The tactics board and animations<br>&#9989; HD video and social exports<br>&#9989; Drill sheets and the session planner<br>&#9989; Every board you have already saved`)}
-         <p style="margin:0 0 4px">Plans start at &#163;2.99/month &#8212; yearly saves 33%.</p>
+         <p style="margin:0 0 4px">Plans start at &#163;4.99 a month, and a yearly plan costs less.</p>
          ${button(pricing, 'See plans & pricing')}
          <p style="margin:0;color:#6b7280;font-size:13px">If the trial lapses you can still sign in and browse — the editor just locks until you upgrade.</p>`,
       ),
     },
     'trial_reminder',
+  )
+}
+
+// ---- Free plan becomes a 14-day trial (one-off, at release) ---------------------
+
+export async function sendFreeTrialStartedEmail(
+  user: { name: string; email: string },
+  endsAt: Date,
+): Promise<void> {
+  const pricing = `${env.FRONTEND_URL}/#pricing`
+  const date = endsAt.toDateString()
+  await sendSafely(
+    {
+      to: user.email,
+      subject: 'Your TactiCoach free trial: 14 days from today',
+      text:
+        `Hi ${user.name},\n\n` +
+        `TactiCoach's free plan is now a 14-day free trial. Yours runs until ${date}.\n\n` +
+        `It includes 3 boards, 3 drill sheets, 3 sessions, 1 season plan and 1 book — what you have already made counts toward these.\n\n` +
+        `After ${date} everything you made stays in your library; choose a plan to keep building:\n${pricing}\n\n` +
+        `The TactiCoach team`,
+      html: layout(
+        `Your free trial runs until ${date}.`,
+        `${kicker('YOUR FREE TRIAL')}
+         <h1 style="margin:0 0 12px;font-size:21px">14 days from today, ${user.name}</h1>
+         <p style="margin:0 0 12px">TactiCoach's free plan is now a <strong>14-day free trial</strong>. Yours runs until <strong>${date}</strong>.</p>
+         ${pitchCard('INCLUDED', `&#9989; 3 boards and 3 drill sheets<br>&#9989; 3 sessions and 1 season plan<br>&#9989; 1 book to write<br>&#9989; Animation and up to 3 videos`)}
+         <p style="margin:0 0 12px">What you have already made counts toward these. After ${date} everything you made stays in your library.</p>
+         ${button(pricing, 'See plans & pricing')}`,
+      ),
+    },
+    'free_trial_started',
   )
 }
 
@@ -287,6 +322,51 @@ export async function sendPurchaseEmail(
       ),
     },
     'purchase',
+  )
+}
+
+// ---- Book receipt ----------------------------------------------------------------
+
+/** "You own this book" — after a paid purchase, or a book we gave them. */
+export async function sendBookReceiptEmail(params: {
+  user: { id: number; name: string; email: string }
+  book: { title: string; slug: string }
+  pricePence: number
+  currency: string
+  orderId: number
+  paidAt: Date
+  granted: boolean
+}): Promise<void> {
+  const { user, book } = params
+  const read = `${env.FRONTEND_URL}/books/${encodeURIComponent(book.slug)}`
+  const price = params.granted
+    ? 'Free (a gift from TactiCoach)'
+    : new Intl.NumberFormat('en-GB', { style: 'currency', currency: params.currency }).format(params.pricePence / 100)
+  const order = `TC-B${String(params.orderId).padStart(6, '0')}`
+  await sendSafely(
+    {
+      to: user.email,
+      subject: `Your book: ${book.title}`,
+      text:
+        `Hi ${user.name},\n\n` +
+        `${book.title} is now in your library. Read it any time: ${read}\n\n` +
+        `Order ${order}\nDate: ${params.paidAt.toDateString()}\nPrice: ${price}\n\n` +
+        `The TactiCoach team`,
+      html: layout(
+        `${book.title} is in your library.`,
+        `${kicker(params.granted ? 'A BOOK FOR YOU' : 'THANKS FOR YOUR ORDER')}
+         <h1 style="margin:0 0 12px;font-size:21px">${esc(book.title)} is yours 📘</h1>
+         <p style="margin:0 0 12px">Hi ${esc(user.name)}, the full book is now in your library. Read it on any device, as often as you like.</p>
+         ${button(read, 'Start reading')}
+         <table role="presentation" cellpadding="0" cellspacing="0" style="width:100%;font-size:13px;color:#374151;border-top:1px solid #e5e7eb;margin-top:8px">
+           <tr><td style="padding:10px 0 4px">Order</td><td align="right" style="padding:10px 0 4px">${order}</td></tr>
+           <tr><td style="padding:4px 0">Date</td><td align="right" style="padding:4px 0">${params.paidAt.toDateString()}</td></tr>
+           <tr><td style="padding:4px 0"><strong>Price</strong></td><td align="right" style="padding:4px 0"><strong>${price}</strong></td></tr>
+         </table>`,
+      ),
+    },
+    'book_receipt',
+    { userId: user.id },
   )
 }
 
@@ -474,17 +554,23 @@ export function buildContactEmail(input: {
   lastName: string
   email: string
   message: string
-}): { to: string; subject: string; html: string; text: string } {
+  /** What they said it is about, e.g. "Complaint". Leads the subject line. */
+  topic?: string
+}): { to: string; replyTo: string; subject: string; html: string; text: string } {
   return {
     to: env.SUPPORT_EMAIL ?? env.MAIL_FROM,
-    subject: `Contact form: ${input.firstName} ${input.lastName}`,
+    // Pressing Reply in the team inbox answers the person who wrote in.
+    replyTo: input.email,
+    subject: `${input.topic ? `[${input.topic}] ` : ''}Contact form: ${input.firstName} ${input.lastName}`,
     text:
       `New contact form submission\n\n` +
+      (input.topic ? `About: ${input.topic}\n` : '') +
       `From: ${input.firstName} ${input.lastName} <${input.email}>\n\n` +
       `${input.message}`,
     html: layout(
       'New contact form submission.',
       `<h1 style="margin:0 0 12px;font-size:18px">New contact form submission</h1>
+       ${input.topic ? `<p style="margin:0 0 6px"><strong>About:</strong> ${esc(input.topic)}</p>` : ''}
        <p style="margin:0 0 12px"><strong>From:</strong> ${esc(input.firstName)} ${esc(input.lastName)} &lt;${esc(input.email)}&gt;</p>
        <p style="margin:0;white-space:pre-wrap">${esc(input.message)}</p>`,
     ),
@@ -807,4 +893,68 @@ export async function sendPasswordResetEmail(
     'password_reset',
     { userId: user.id, actorId },
   )
+}
+
+// ---- A message written by us, to one person -------------------------------------
+
+/** What happened to a mail the admin is watching: they need the real answer. */
+export type DeliveryResult = 'sent' | 'skipped' | 'failed'
+
+/**
+ * A message an admin writes by hand — to a user from Admin → Users, or as the
+ * answer to somebody who used the contact form (Admin → Leads).
+ *
+ * The admin's words are ESCAPED and kept as paragraphs: they are typed into a
+ * textarea, not written as HTML. Replies go to the support inbox, so when the
+ * person answers, the answer lands where the team reads it rather than in an
+ * unwatched no-reply box. A lead reply quotes what they wrote, because "re:
+ * your message" three days later means nothing without it.
+ */
+export async function sendAdminMessage(params: {
+  to: string
+  name: string
+  subject: string
+  body: string
+  kind: 'admin_message' | 'lead_reply'
+  /** The lead's own message, quoted under the reply. */
+  quote?: string | null
+  userId?: number
+  actorId?: number
+}): Promise<DeliveryResult> {
+  const paras = params.body.trim().split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean)
+  const bodyHtml = paras
+    .map((p) => `<p style="margin:0 0 14px">${esc(p).replace(/\n/g, '<br>')}</p>`)
+    .join('')
+  const quote = params.quote?.trim()
+  const quoteHtml = quote
+    ? `<div style="margin:22px 0 0;padding:12px 16px;border-left:3px solid #d1d5db;color:#6b7280;font-size:13px">
+         <div style="font-weight:700;margin:0 0 6px">You wrote:</div>
+         <div style="white-space:pre-wrap">${esc(quote.slice(0, 2000))}</div>
+       </div>`
+    : ''
+  const quoteText = quote ? `\n\n---\nYou wrote:\n${quote.slice(0, 2000)}` : ''
+  try {
+    await sendMail({
+      to: params.to,
+      subject: params.subject.trim(),
+      text: `${params.body.trim()}\n\nThe TactiCoach team${quoteText}`,
+      html: layout(
+        esc(paras[0]?.slice(0, 90) ?? params.subject),
+        `${bodyHtml}<p style="margin:0;color:#6b7280;font-size:13px">The TactiCoach team</p>${quoteHtml}`,
+        params.kind === 'lead_reply'
+          ? 'You&#39;re receiving this because you wrote to us through tacticoach.co.uk.'
+          : undefined,
+      ),
+      // Written by a person, so it comes from the team address (info@ once it
+      // exists); replies go to the team inbox via sendMail.
+      from: env.TEAM_MAIL_FROM ?? env.MAIL_FROM,
+      kind: params.kind,
+      userId: params.userId,
+      actorId: params.actorId,
+    })
+  } catch (err) {
+    captureError(err, { source: 'email', tags: { email_kind: params.kind }, extra: { userId: params.userId } })
+    return 'failed'
+  }
+  return isMailConfigured() ? 'sent' : 'skipped'
 }

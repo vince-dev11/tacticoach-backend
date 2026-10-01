@@ -40,13 +40,14 @@ function squad(team: 'blue' | 'red', n: number): CleanItem[] {
 }
 
 describe('the age rules are real football', () => {
-  it('maps each age to the format it actually plays', () => {
-    // English FA youth formats: 5v5 at U7/U8, 7v7 at U9/U10, 9v9 at U11/U12,
-    // 11v11 from U13. Getting these wrong would make everything downstream wrong.
+  it('FR-I9 · suggests England\'s 2026/27 (FutureFit) format for each age — a suggestion only', () => {
+    // 3v3 U7 (drawn on our smallest pitch, 5v5), 5v5 U8–U9, 7v7 U10–U11,
+    // 9v9 U12–U13, 11v11 from U14. The coach's own format always wins.
     expect(AGE_PROFILES.u7.format).toBe('5v5')
-    expect(AGE_PROFILES.u9.format).toBe('7v7')
-    expect(AGE_PROFILES.u11.format).toBe('9v9')
-    expect(AGE_PROFILES.u13.format).toBe('11v11')
+    expect(AGE_PROFILES.u9.format).toBe('5v5')
+    expect(AGE_PROFILES.u11.format).toBe('7v7')
+    expect(AGE_PROFILES.u13.format).toBe('9v9')
+    expect(AGE_PROFILES.u15.format).toBe('11v11')
     expect(AGE_PROFILES.senior.format).toBe('11v11')
   })
 
@@ -96,8 +97,22 @@ describe('choosing the context for a generation', () => {
   it('uses the saved profile when the request says nothing', () => {
     const ctx = resolveContext(undefined, { age: 'u11', level: 'academy' })
     expect(ctx.age).toBe('u11')
-    expect(ctx.format).toBe('9v9') // follows the age
+    expect(ctx.format).toBe('7v7') // suggested by the age…
+    expect(ctx.formatSource).toBe('age') // …and marked as assumed
     expect(ctx.level).toBe('academy')
+  })
+
+  it("FR-I9 · the coach's saved format beats the age's suggestion", () => {
+    const ctx = resolveContext(undefined, { age: 'u11', format: '9v9' })
+    expect(ctx.format).toBe('9v9')
+    expect(ctx.formatSource).toBe('coach')
+    // Same age tonight: the saved format still applies.
+    expect(resolveContext({ age: 'u11' }, { age: 'u11', format: '9v9' }).format).toBe('9v9')
+  })
+
+  it('FR-I9 · the summary says when the format was assumed', () => {
+    expect(describeContext(resolveContext({ age: 'u9' }, undefined))).toContain('assumed from age')
+    expect(describeContext(resolveContext({ age: 'u9', format: '7v7' }, undefined))).not.toContain('assumed')
   })
 
   it('lets tonight override the profile', () => {
@@ -108,8 +123,8 @@ describe('choosing the context for a generation', () => {
     expect(ctx.format).toBe('11v11')
   })
 
-  it('the format follows the age unless stated, so picking an age is one decision', () => {
-    expect(resolveContext({ age: 'u9' }, undefined).format).toBe('7v7')
+  it('with no format stated, the age suggests one', () => {
+    expect(resolveContext({ age: 'u9' }, undefined).format).toBe('5v5')
   })
 
   it('but a coach running an unusual format can still say so', () => {
@@ -121,7 +136,8 @@ describe('choosing the context for a generation', () => {
     // Profile says senior/11v11; tonight is under-9. The format must follow the
     // NEW age, not carry 11v11 across from the profile.
     const ctx = resolveContext({ age: 'u9' }, { age: 'senior', format: '11v11' })
-    expect(ctx.format).toBe('7v7')
+    expect(ctx.format).toBe('5v5')
+    expect(ctx.formatSource).toBe('age')
   })
 
   it('ignores rubbish instead of failing the generation', () => {
@@ -222,15 +238,15 @@ describe('formations belong to a format', () => {
   })
 
   it('keeps a formation that fits the resolved format', () => {
-    const ctx = resolveContext({ age: 'u9', formation: '2-3-1' }, undefined)
+    const ctx = resolveContext({ age: 'u9', format: '7v7', formation: '2-3-1' }, undefined)
     expect(ctx.formation).toBe('2-3-1')
   })
 
   it('drops a profile formation that does not exist in tonight\'s format', () => {
-    // Profile: senior 4-3-3. Tonight: under-9 (7v7). A 7v7 team has never
-    // lined up in a 4-3-3, so no formation beats a wrong one.
+    // Profile: senior 4-3-3. Tonight: under-9 (5v5 suggested). A small-sided
+    // team has never lined up in a 4-3-3, so no formation beats a wrong one.
     const ctx = resolveContext({ age: 'u9' }, { age: 'senior', formation: '4-3-3' })
-    expect(ctx.format).toBe('7v7')
+    expect(ctx.format).toBe('5v5')
     expect(ctx.formation).toBeUndefined()
   })
 

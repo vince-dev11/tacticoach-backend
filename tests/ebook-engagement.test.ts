@@ -16,7 +16,7 @@ const COVER = { template: 'ball', bg: '#0b3d2e', art: '#ffffff', font: 'sans', w
 const BROWSER = { 'user-agent': 'Mozilla/5.0 (Macintosh) Safari/605' }
 
 function caller(id = 1, accountType = 'coach') {
-  dbMock.user.findUnique.mockImplementation((() => Promise.resolve({ id, role: 'user', accountType } as never)) as never)
+  dbMock.user.findUnique.mockImplementation((() => Promise.resolve({ id, role: 'user', accountType, freeTrialEndsAt: new Date(Date.now() + 5 * 86_400_000) } as never)) as never)
 }
 
 async function req(method: 'GET' | 'PUT' | 'DELETE' | 'POST', url: string, opts: { auth?: boolean; payload?: unknown; headers?: Record<string, string> } = {}) {

@@ -232,6 +232,16 @@ describe('getWeek', () => {
 })
 
 describe('copyWeek', () => {
+  // A paid coach: these are about what is copied; FT-3 tests the quota.
+  beforeEach(() => {
+    mock.user.findUnique.mockResolvedValue({ role: 'user', accountType: 'coach' } as never)
+    mock.userSubscription.findUnique.mockResolvedValue({ status: 'active', expiresAt: null, plan: { id: 3, name: 'Pro', slug: 'pro' } } as never)
+    mock.clubMember.findUnique.mockResolvedValue(null as never)
+    mock.club.findUnique.mockResolvedValue(null as never)
+    mock.collaborator.findUnique.mockResolvedValue(null as never)
+    mock.squadPlayer.findFirst.mockResolvedValue(null as never)
+  })
+
   function weeks(sessions: Record<string, unknown>[]) {
     mock.planWeek.findFirst
       .mockResolvedValueOnce({

@@ -9,6 +9,11 @@ function noClubData() {
   dbMock.club.findUnique.mockResolvedValue(null)
 }
 
+/** A coach still inside their 14-day free trial (FT-2). */
+function inFreeTrial() {
+  dbMock.user.findUnique.mockResolvedValue({ role: 'user', accountType: 'coach', freeTrialEndsAt: new Date(Date.now() + 5 * 86_400_000) } as never)
+}
+
 describe('getEntitlements', () => {
   it('grants editor access for an active subscription', async () => {
     dbMock.userSubscription.findUnique.mockResolvedValue(activeSubscription() as never)
@@ -31,10 +36,8 @@ describe('getEntitlements', () => {
     expect(ent.subscriptionStatus).toBe('trial')
   })
 
-  it('drops an expired trial onto the FREE tier, not onto a wall', async () => {
-    // The whole reason the free tier exists. A coach who hits a paywall on
-    // day 8 leaves and takes eighteen players with them, and those players
-    // were the only free distribution we have.
+  it('drops an expired paid trial onto the free plan while the free trial lasts', async () => {
+    inFreeTrial()
     dbMock.userSubscription.findUnique.mockResolvedValue(
       activeSubscription({ status: 'trial', expiresAt: new Date(Date.now() - 1000) }) as never,
     )
@@ -46,6 +49,7 @@ describe('getEntitlements', () => {
   })
 
   it('drops cancelled and expired subscriptions onto free too', async () => {
+    inFreeTrial()
     for (const status of ['cancelled', 'expired']) {
       dbMock.userSubscription.findUnique.mockResolvedValue(activeSubscription({ status }) as never)
       noClubData()
@@ -58,18 +62,24 @@ describe('getEntitlements', () => {
     }
   })
 
-  it('leaves a lapsed coach their work, capped rather than locked', async () => {
-    // Five boards, not zero. Locking a coach out of boards they already made
-    // would be holding their own work hostage, and it is the single fastest
-    // way to make someone delete their account rather than subscribe.
+  it('gives a lapsed coach inside the free trial the trial limits', async () => {
+    inFreeTrial()
     dbMock.userSubscription.findUnique.mockResolvedValue(
       activeSubscription({ status: 'expired' }) as never,
     )
     noClubData()
 
     const limits = limitsFor(await getEntitlements(1))
-    expect(limits.boards).toBe(5)
+    expect(limits.boards).toBe(3)
     expect(limits.videoExports).toBe(3)
+  })
+
+  it('closes the editor once the free trial is over — library only (FT-2)', async () => {
+    dbMock.user.findUnique.mockResolvedValue({ role: 'user', accountType: 'coach', freeTrialEndsAt: new Date(Date.now() - 1000) } as never)
+    dbMock.userSubscription.findUnique.mockResolvedValue(activeSubscription({ status: 'expired' }) as never)
+    noClubData()
+    const ent = await getEntitlements(1)
+    expect(ent).toMatchObject({ editorAccess: false, subscriptionStatus: 'free_expired', plan: { slug: 'free' } })
   })
 
   it('the company owner has full access whatever their subscription row says', async () => {
@@ -94,6 +104,7 @@ describe('getEntitlements', () => {
   })
 
   it('gives a coach who never subscribed the free tier', async () => {
+    inFreeTrial()
     dbMock.userSubscription.findUnique.mockResolvedValue(null)
     noClubData()
 
@@ -101,7 +112,7 @@ describe('getEntitlements', () => {
     expect(ent.editorAccess).toBe(true)
     expect(ent.plan?.slug).toBe('free')
     // No row exists, and none is created. `free` is synthetic.
-    expect(ent.subscriptionStatus).toBeNull()
+    expect(ent.subscriptionStatus).toBe('free_trial')
     expect(dbMock.userSubscription.create).not.toHaveBeenCalled()
   })
 

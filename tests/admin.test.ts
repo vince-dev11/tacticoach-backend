@@ -273,6 +273,43 @@ describe('CRM', () => {
     expect(newExpiry.getTime()).toBeCloseTo(expiresAt.getTime() + 14 * 86400_000, -4)
   })
 
+  it('FT-4 · extends the FREE trial on the user when there is no live subscription', async () => {
+    const app = await getApp()
+    ownerRole()
+    dbMock.userSubscription.findUnique.mockResolvedValue(null)
+    dbMock.user.update.mockResolvedValue({ id: 5, freeTrialEndsAt: new Date() } as never)
+    const before = Date.now()
+    const res = await app.inject({
+      method: 'PATCH', url: '/api/admin/users/5/trial',
+      headers: authHeaders(await accessToken()), payload: { days: 7 },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(dbMock.userSubscription.create).not.toHaveBeenCalled()
+    const call = dbMock.user.update.mock.calls[0][0] as { where: { id: number }; data: { freeTrialEndsAt: Date; freeTrialReminderSentAt: null } }
+    expect(call.where.id).toBe(5)
+    expect(call.data.freeTrialReminderSentAt).toBeNull()
+    expect(call.data.freeTrialEndsAt.getTime() - before).toBeGreaterThanOrEqual(7 * 86400_000 - 1000)
+  })
+
+  it('FT-4 · sets the free-trial end exactly (owner only)', async () => {
+    const app = await getApp()
+    userRole()
+    const denied = await app.inject({
+      method: 'PATCH', url: '/api/admin/users/5/trial-end',
+      headers: authHeaders(await accessToken()), payload: { endsAt: '2026-01-01T00:00:00Z' },
+    })
+    expect(denied.statusCode).toBe(403)
+
+    ownerRole()
+    dbMock.user.update.mockResolvedValue({ id: 5, freeTrialEndsAt: new Date('2026-01-01T00:00:00Z') } as never)
+    const res = await app.inject({
+      method: 'PATCH', url: '/api/admin/users/5/trial-end',
+      headers: authHeaders(await accessToken()), payload: { endsAt: '2026-01-01T00:00:00Z' },
+    })
+    expect(res.statusCode).toBe(200)
+    expect((dbMock.user.update.mock.calls[0][0] as { data: { freeTrialEndsAt: Date } }).data.freeTrialEndsAt.toISOString()).toBe('2026-01-01T00:00:00.000Z')
+  })
+
   it('lists and updates leads', async () => {
     const app = await getApp()
     ownerRole()

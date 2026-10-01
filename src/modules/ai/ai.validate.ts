@@ -44,7 +44,7 @@ function formationOutfielders(prompt: string): number | null {
  *
  * These are the strictest checks in the file, and deliberately so. Most of what
  * this module measures is a matter of degree — spacing could be tighter, width
- * could be better. This one is binary: an under-9 side plays 7v7, so an eleventh
+ * could be better. This one is binary: a 7v7 side (the coach's format) has seven, so an eleventh
  * blue shirt is not a weak animation, it is a picture of a match that cannot
  * happen. Anything a coach would call impossible belongs here rather than in the
  * quality score, because a score of 78 still ships.

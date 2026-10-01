@@ -71,7 +71,23 @@ export async function listSquads(userId: number) {
  * yet". That is the state every account starts in, and making each call site
  * remember it is how half of them forget.
  */
+// One creation per coach at a time. The profile, the editor shelf and the
+// session builder all ask for the default squad on first load — in parallel —
+// and each saw "none yet" and created one, so every new coach started with
+// two squads both called "My squad" (QA B-23). Concurrent callers now share
+// the first call's promise, and any duplicate that still slips through (a
+// second API process) is folded back into the first squad.
+const creating = new Map<number, Promise<SquadRow>>()
+
 export async function defaultSquad(userId: number) {
+  const inFlight = creating.get(userId)
+  if (inFlight) return inFlight
+  const p = defaultSquadUnlocked(userId).finally(() => creating.delete(userId))
+  creating.set(userId, p)
+  return p
+}
+
+async function defaultSquadUnlocked(userId: number) {
   const existing = await squads().findFirst({
     where: { userId, archivedAt: null },
     orderBy: [{ sortOrder: 'asc' }, { id: 'asc' }],
@@ -85,12 +101,22 @@ export async function defaultSquad(userId: number) {
   })
   const ageGroup = coach?.coachAgeGroup?.trim() || null
 
-  return squads().create({
+  const created = await squads().create({
     // Named from the coach's own age group when they set one, so their first
     // squad reads "U13" rather than something generic they have to rename.
     data: { userId, name: ageGroup || DEFAULT_SQUAD_NAME, ageGroup, sortOrder: 0 },
     select: SQUAD_SELECT,
   })
+  // Lost a race with another process? Keep the older squad, drop this one.
+  const all = (await squads().findMany({ where: { userId, archivedAt: null }, orderBy: { id: 'asc' }, select: SQUAD_SELECT })) ?? []
+  if (all.length > 1 && all[0].id !== created.id) {
+    const players = await db.squadPlayer.count({ where: { squadId: created.id } })
+    if (players === 0) {
+      await squads().updateMany({ where: { id: created.id }, data: { archivedAt: new Date() } })
+      return all[0]
+    }
+  }
+  return created
 }
 
 /**

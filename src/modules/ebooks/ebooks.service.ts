@@ -12,6 +12,7 @@ import { presignUrl } from '../../config/s3.js'
 import { authorProfileFor } from '../coach-page/coach-page.service.js'
 import { ratingsFor, authorRating } from './engagement.service.js'
 import { keepOrNewKey, withQuestionIds, stripAnswers, questionsOf, chapterMinutes } from './course.service.js'
+import { accessFor, canReadAll } from './purchases.service.js'
 import { mayOpen } from './club-books.js'
 
 // ---- TEMPORARY: remove once `prisma generate` has run against migration 28 --
@@ -273,9 +274,10 @@ function rankScore(r: { average: number | null; count: number }): number {
  */
 export async function getBook(slug: string, viewer?: number) {
   const book = await ebookDb().findFirst({
-    where: { slug, status: 'published' },
+    // Archived = out of the shop, but a reader who bought it still owns it.
+    where: { slug, status: { in: ['published', 'archived'] } },
     select: {
-      id: true, title: true, subtitle: true, slug: true, blurb: true, category: true,
+      id: true, title: true, subtitle: true, slug: true, blurb: true, category: true, status: true,
       ageBand: true, cover: true, pricePence: true, language: true, publishedAt: true,
       authorId: true, isCourse: true, passPercent: true, studyMinutes: true,
       seriesId: true, clubId: true, clubAudience: true,
@@ -292,6 +294,10 @@ export async function getBook(slug: string, viewer?: number) {
   // A club book does not exist for anyone outside the club — 404, not 403.
   if (!(await mayOpen({ clubId: book.clubId ?? null, clubAudience: book.clubAudience }, viewer))) return null
   const authorId = (book as { authorId?: number }).authorId
+  // Buy once, own forever: what this viewer may do with the book.
+  const access = await accessFor({ id: book.id, authorId: authorId ?? 0, pricePence: book.pricePence ?? 0 }, viewer)
+    .catch(() => null)
+  if ((book as { status?: string }).status === 'archived' && !access?.owned && !access?.isAuthor) return null
   // The author box and "more by" are extras: a failure in either must never
   // take the book page down with it.
   const [authorProfile, moreByAuthor, ratings, authorRated] = await Promise.all([
@@ -319,6 +325,7 @@ export async function getBook(slug: string, viewer?: number) {
     : null
   return {
     ...rest,
+    access,
     chapters,
     course,
     coauthors: coauthorNames(book),
@@ -387,7 +394,7 @@ async function moreBy(authorId: number, excludeId: number) {
  */
 export async function getChapter(slug: string, chapterId: number, opts: { signedIn?: boolean; viewer?: number } = { signedIn: true }) {
   const chapter = await chapterDb().findFirst({
-    where: { id: chapterId, ebook: { slug, status: 'published' } },
+    where: { id: chapterId, ebook: { slug, status: { in: ['published', 'archived'] } } },
     select: {
       id: true, title: true, sortOrder: true, isSample: true, ebookId: true,
       blocks: { orderBy: { sortOrder: 'asc' }, select: { id: true, kind: true, sortOrder: true, data: true } },
@@ -397,7 +404,7 @@ export async function getChapter(slug: string, chapterId: number, opts: { signed
 
   const book = await ebookDb().findFirst({
     where: { id: chapter.ebookId },
-    select: { pricePence: true, title: true, slug: true, isCourse: true, clubId: true, clubAudience: true },
+    select: { pricePence: true, title: true, slug: true, isCourse: true, clubId: true, clubAudience: true, authorId: true, status: true },
   })
   if (book?.clubId && !(await mayOpen({ clubId: book.clubId, clubAudience: book.clubAudience }, opts.viewer))) return null
   // A course's quiz goes out without its answers: the reader chooses, the
@@ -410,11 +417,19 @@ export async function getChapter(slug: string, chapterId: number, opts: { signed
   // Signed out: the sample only. It is the shop window — enough to judge the
   // book by, and a reason to make an account for the rest.
   if (opts.signedIn === false) {
+    if ((book as { status?: string } | null)?.status === 'archived') return null
     if (!sample) return { locked: true as const, reason: 'signin' as const, title: chapter.title, ebookId: chapter.ebookId, sample }
     return { locked: false as const, ...chapter, course: !!book?.isCourse, sample }
   }
 
-  const readable = (book?.pricePence ?? 0) === 0 || chapter.isSample
+  // Free, the sample, or a reader who owns it (bought, wrote it, or reviews it).
+  const readAll = await canReadAll(
+    { id: chapter.ebookId, authorId: (book as { authorId?: number } | null)?.authorId ?? 0, pricePence: book?.pricePence ?? 0 },
+    opts.viewer,
+  ).catch(() => false)
+  // An archived book is only there for the people who own it.
+  if ((book as { status?: string } | null)?.status === 'archived' && !readAll) return null
+  const readable = readAll || chapter.isSample
   if (!readable) return { locked: true as const, reason: 'purchase' as const, title: chapter.title, ebookId: chapter.ebookId, sample }
 
   return { locked: false as const, ...chapter, course: !!book?.isCourse, sample }
@@ -463,10 +478,15 @@ export async function booksByAuthor(authorId: number) {
 
 /** Every chapter of a book, titles only — the reader's own contents list. */
 export async function getContents(slug: string, viewer?: number) {
-  const book = await ebookDb().findFirst({ where: { slug, status: 'published' }, select: { clubId: true, clubAudience: true } })
+  const book = await ebookDb().findFirst({
+    where: { slug, status: { in: ['published', 'archived'] } },
+    select: { id: true, clubId: true, clubAudience: true, status: true, authorId: true, pricePence: true },
+  })
   if (!book || !(await mayOpen({ clubId: book.clubId ?? null, clubAudience: book.clubAudience }, viewer))) return []
+  const b = book as { id: number; status?: string; authorId?: number; pricePence?: number }
+  if (b.status === 'archived' && !(await canReadAll({ id: b.id, authorId: b.authorId ?? 0, pricePence: b.pricePence ?? 0 }, viewer).catch(() => false))) return []
   return chapterDb().findMany({
-    where: { ebook: { slug, status: 'published' } },
+    where: { ebook: { slug, status: { in: ['published', 'archived'] } } },
     orderBy: { sortOrder: 'asc' },
     select: { id: true, title: true, sortOrder: true, isSample: true },
   })
@@ -491,10 +511,14 @@ export async function saveProgress(
 // ---- Authoring (admin only, for now) ----------------------------------------
 
 /** URL-safe, unique. Two books called "Scanning" must not fight over a slug. */
+/** Paths under /books/ the app uses itself; a book called "Library" must not take one. */
+export const RESERVED_BOOK_SLUGS = new Set(['mine', 'library', 'co-author'])
+
 export async function uniqueSlug(title: string, excludeId?: number): Promise<string> {
-  const base =
+  const cleaned =
     title.toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '')
       .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 150) || 'book'
+  const base = RESERVED_BOOK_SLUGS.has(cleaned) ? `${cleaned}-book` : cleaned
   // Bounded. An unbounded `for (;;)` here is one bad query away from a request
   // that never returns and a process that runs out of memory building strings —
   // which is exactly what it did, under a test whose mock answered "taken" to

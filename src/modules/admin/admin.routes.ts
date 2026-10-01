@@ -3,6 +3,7 @@
 
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
+import { subIsActive } from '../../lib/entitlements.js'
 import type { Prisma } from '@prisma/client'
 import { authGuard } from '../../middleware/auth-guard.js'
 import { requireOwner } from '../../middleware/owner-guard.js'
@@ -18,6 +19,8 @@ import {
   sendPasswordResetEmail,
 } from '../../lib/emails.js'
 import { isMailConfigured } from '../../config/mailer.js'
+import { grantBook, refundPurchase, listOrders, PurchaseError } from '../ebooks/purchases.service.js'
+import { boxWhere, CONTACT_TOPICS, SUPPORT_TOPICS, type ContactBox } from '../contact/topics.js'
 import { createAccountSetupToken, createPasswordResetTokenFor } from '../auth/auth.service.js'
 import { latinOnly } from '../../lib/latin-only.js'
 import { isClubPlan } from '../../lib/capabilities.js'
@@ -43,7 +46,7 @@ import {
   rejectApplication,
   type ApplicationStatus,
 } from '../collaborations/applications.service.js'
-import { sendCollaborationInviteEmail } from '../../lib/emails.js'
+import { sendCollaborationInviteEmail, sendAdminMessage, sendVerificationEmail, sendTrialReminderEmail } from '../../lib/emails.js'
 
 // ---- TEMPORARY: remove once `prisma generate` has run against migration 23 --
 // The generated client has no `emailLog` delegate until then. Narrow on
@@ -76,6 +79,7 @@ interface LeadRow {
   email: string
   source: 'web' | 'direct' | 'import'
   kind: 'unknown' | 'coach' | 'club'
+  topic: string | null
   message: string | null
   note: string | null
   status: 'new' | 'replied' | 'closed'
@@ -283,7 +287,7 @@ export async function adminRoutes(app: FastifyInstance) {
           where: { status: 'active', paymentProvider: 'stripe' },
           include: { plan: { select: { monthlyPrice: true, annualPrice: true } } },
         }),
-        db.contactMessage.count({ where: { status: 'new' } }),
+        db.contactMessage.count({ where: { status: 'new', ...boxWhere('leads') } }),
         db.user.findMany({
           where: { createdAt: { gte: eightWeeksAgo } },
           select: { createdAt: true },
@@ -316,6 +320,9 @@ export async function adminRoutes(app: FastifyInstance) {
       payingSubscribers: paidSubs.length,
       mrr: Math.round(mrr * 100) / 100,
       newLeads,
+      // Support, apart from sales: the complaints are the ones to answer first.
+      newSupport: await db.contactMessage.count({ where: { status: 'new', topic: { in: [...SUPPORT_TOPICS] } } }),
+      openComplaints: await db.contactMessage.count({ where: { status: { not: 'closed' }, topic: 'complaint' } }),
       signupsByWeek: weeks,
     })
   })
@@ -523,18 +530,39 @@ export async function adminRoutes(app: FastifyInstance) {
   app.post('/users/:id/email/:kind', async (request, reply) => {
     const id = Number((request.params as { id: string }).id)
     const { kind } = z
-      .object({ kind: z.enum(['setup', 'reset']) })
+      .object({ kind: z.enum(['setup', 'reset', 'verify', 'trial_reminder']) })
       .parse(request.params)
 
     const user = await db.user.findUnique({
       where: { id },
-      select: { id: true, name: true, surname: true, email: true },
+      select: { id: true, name: true, surname: true, email: true, emailVerifiedAt: true },
     })
     if (!user) {
       return reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'User not found' })
     }
 
     const actorId = (request.user as { sub?: number } | undefined)?.sub
+
+    // Resend the verification link — the same 24h signed link signup sends.
+    if (kind === 'verify') {
+      if (user.emailVerifiedAt) {
+        return reply.status(409).send({ statusCode: 409, error: 'already_verified', message: 'This address is already verified.' })
+      }
+      const token = app.jwt.sign({ sub: user.id, email: user.email, type: 'verify-email' }, { expiresIn: '24h' })
+      const url = `${env.FRONTEND_URL}/verify-email?token=${token}`
+      await sendVerificationEmail(user, url)
+      return reply.send({ sent: true, url, mailConfigured: isMailConfigured() })
+    }
+
+    // The "your trial ends soon" mail, now — only while they are on a trial.
+    if (kind === 'trial_reminder') {
+      const sub = await db.userSubscription.findUnique({ where: { userId: id }, select: { status: true, expiresAt: true } })
+      if (sub?.status !== 'trial' || !sub.expiresAt || sub.expiresAt < new Date()) {
+        return reply.status(409).send({ statusCode: 409, error: 'no_trial', message: 'They are not on a running trial.' })
+      }
+      await sendTrialReminderEmail(user, sub.expiresAt)
+      return reply.send({ sent: true, mailConfigured: isMailConfigured() })
+    }
     const token =
       kind === 'setup'
         ? await createAccountSetupToken(user.id)
@@ -548,6 +576,27 @@ export async function adminRoutes(app: FastifyInstance) {
     else await sendPasswordResetEmail(user, url, actorId)
 
     return reply.send({ sent: true, url, mailConfigured: isMailConfigured() })
+  })
+
+  // POST /admin/users/:id/message { subject, body } — a message written here,
+  // sent in the branded layout. Awaited: the admin sees whether it went.
+  const MessageInput = z.object({
+    subject: z.string().trim().min(2).max(200),
+    body: z.string().trim().min(2).max(10_000),
+  })
+  app.post('/users/:id/message', { config: { rateLimit: { max: 60, timeWindow: '1 hour' } } }, async (request, reply) => {
+    const id = Number((request.params as { id: string }).id)
+    const input = MessageInput.parse(request.body)
+    const user = await db.user.findUnique({ where: { id }, select: { id: true, name: true, email: true } })
+    if (!user) {
+      return reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'User not found' })
+    }
+    const status = await sendAdminMessage({
+      to: user.email, name: user.name, subject: input.subject, body: input.body,
+      kind: 'admin_message', userId: user.id,
+      actorId: (request.user as { sub?: number } | undefined)?.sub,
+    })
+    return reply.send({ status })
   })
 
   // GET /admin/users/:id/emails — what this account has been sent.
@@ -571,20 +620,19 @@ export async function adminRoutes(app: FastifyInstance) {
     const { days } = z.object({ days: z.number().int().min(1).max(90) }).parse(request.body)
 
     const sub = await db.userSubscription.findUnique({ where: { userId: id } })
-    if (!sub) {
-      const trialPlan = await db.membershipPlan.findUnique({ where: { slug: 'pro-ai' } })
-      if (!trialPlan) {
-        return reply.status(422).send({ statusCode: 422, error: 'Unprocessable Entity', message: 'Trial plan not seeded' })
-      }
-      const created = await db.userSubscription.create({
-        data: {
-          userId: id,
-          planId: trialPlan.id,
-          status: 'trial',
-          expiresAt: new Date(Date.now() + days * 86400_000),
-        },
+    // No live subscription → the coach is on the free plan, whose trial lives
+    // on the user (lib/free-trial.ts). Extend that, from its end or from now.
+    if (!sub || !subIsActive(sub)) {
+      const u = await db.user.findUnique({ where: { id }, select: { freeTrialEndsAt: true } })
+      const current = u?.freeTrialEndsAt ?? null
+      const base = current && current > new Date() ? current : new Date()
+      const updated = await db.user.update({
+        where: { id },
+        data: { freeTrialEndsAt: new Date(base.getTime() + days * 86400_000), freeTrialReminderSentAt: null },
+        select: { id: true, freeTrialEndsAt: true },
       })
-      return reply.send(created)
+      // `expiresAt` too, so the admin screen's existing field shows the new date.
+      return reply.send({ ...updated, expiresAt: updated.freeTrialEndsAt })
     }
 
     const base = sub.expiresAt && sub.expiresAt > new Date() ? sub.expiresAt : new Date()
@@ -596,6 +644,20 @@ export async function adminRoutes(app: FastifyInstance) {
         // Re-arm the trial reminder for the new expiry window.
         trialReminderSentAt: null,
       },
+    })
+    return reply.send(updated)
+  })
+
+  // PATCH /admin/users/:id/trial-end { endsAt } — set the free-trial end
+  // exactly; a past date ends it. For support (a duplicate account) and for
+  // the live test suite, which needs a coach whose trial is over.
+  app.patch('/users/:id/trial-end', async (request, reply) => {
+    const id = Number((request.params as { id: string }).id)
+    const { endsAt } = z.object({ endsAt: z.coerce.date() }).parse(request.body)
+    const updated = await db.user.update({
+      where: { id },
+      data: { freeTrialEndsAt: endsAt, freeTrialReminderSentAt: null },
+      select: { id: true, freeTrialEndsAt: true },
     })
     return reply.send(updated)
   })
@@ -743,10 +805,16 @@ export async function adminRoutes(app: FastifyInstance) {
   })
 
   // GET /admin/leads?status=&source=&kind=&q=
+  // `box` = leads (default) | support — which inbox; `topic` narrows within it.
   app.get('/leads', async (request, reply) => {
-    const { status, source, kind, q } = request.query as Record<string, string>
+    const { status, source, kind, q, box, topic } = request.query as Record<string, string>
+    const inbox: ContactBox = box === 'support' ? 'support' : 'leads'
     const leads = await leadDb().findMany({
       where: {
+        AND: [
+          boxWhere(inbox),
+          ...((CONTACT_TOPICS as readonly string[]).includes(topic) ? [{ topic }] : []),
+        ],
         ...(LeadStatus.safeParse(status).success ? { status: status as 'new' } : {}),
         ...(LeadSource.safeParse(source).success ? { source: source as 'web' } : {}),
         ...(LeadKind.safeParse(kind).success ? { kind: kind as 'coach' } : {}),
@@ -769,17 +837,26 @@ export async function adminRoutes(app: FastifyInstance) {
   })
 
   // GET /admin/leads/stats — the counts the list header shows.
-  app.get('/leads/stats', async (_request, reply) => {
-    const [total, bySource, byKind] = await Promise.all([
-      db.contactMessage.count(),
-      leadDb().groupBy({ by: ['source'], _count: { _all: true } }),
-      leadDb().groupBy({ by: ['kind'], _count: { _all: true } }),
+  app.get('/leads/stats', async (request, reply) => {
+    const inbox: ContactBox = (request.query as Record<string, string>).box === 'support' ? 'support' : 'leads'
+    const where = boxWhere(inbox)
+    const [total, bySource, byKind, byTopic] = await Promise.all([
+      db.contactMessage.count({ where }),
+      leadDb().groupBy({ by: ['source'], where, _count: { _all: true } }),
+      leadDb().groupBy({ by: ['kind'], where, _count: { _all: true } }),
+      leadDb().groupBy({ by: ['topic'], where: { ...where, status: 'new' }, _count: { _all: true } }),
     ])
     const tally = (rows: { _count: { _all: number } }[], key: string) =>
       Object.fromEntries(
         (rows as unknown as Record<string, unknown>[]).map((r) => [r[key], (r._count as { _all: number })._all]),
       )
-    return reply.send({ total, source: tally(bySource, 'source'), kind: tally(byKind, 'kind') })
+    return reply.send({
+      total,
+      source: tally(bySource, 'source'),
+      kind: tally(byKind, 'kind'),
+      /** NEW messages per topic — the badge on each topic filter. */
+      newByTopic: tally(byTopic, 'topic'),
+    })
   })
 
   // POST /admin/leads — add one by hand.
@@ -892,6 +969,9 @@ export async function adminRoutes(app: FastifyInstance) {
         status: LeadStatus.optional(),
         kind: LeadKind.optional(),
         note: z.string().max(500).optional().nullable(),
+        // Moving a message between Leads and Support: the person picked the
+        // wrong topic, or a complaint turned out to be a sales question.
+        topic: z.enum(CONTACT_TOPICS).optional(),
       })
       .parse(request.body)
     if (Object.keys(input).length === 0) {
@@ -903,9 +983,90 @@ export async function adminRoutes(app: FastifyInstance) {
         ...(input.status ? { status: input.status } : {}),
         ...(input.kind ? { kind: input.kind } : {}),
         ...(input.note !== undefined ? { note: input.note?.trim() || null } : {}),
+        ...(input.topic ? { topic: input.topic } : {}),
       },
     })
     return reply.send(lead)
+  })
+
+  // POST /admin/leads/:id/reply { subject, body } — answer them by email.
+  //
+  // Their own message is quoted underneath, replies come back to the support
+  // inbox, and a `new` lead becomes `replied` — the status the team was
+  // setting by hand after answering from Gmail.
+  app.post('/leads/:id/reply', { config: { rateLimit: { max: 60, timeWindow: '1 hour' } } }, async (request, reply) => {
+    const id = Number((request.params as { id: string }).id)
+    const input = MessageInput.parse(request.body)
+    const lead = await leadDb().findFirst({ where: { id } })
+    if (!lead) {
+      return reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'Lead not found' })
+    }
+    const status = await sendAdminMessage({
+      to: lead.email, name: lead.firstName, subject: input.subject, body: input.body,
+      kind: 'lead_reply', quote: lead.message,
+      actorId: (request.user as { sub?: number } | undefined)?.sub,
+    })
+    // Only a mail that actually left changes the status: `skipped` (no SMTP)
+    // and `failed` mean they have not heard from us.
+    const updated = status !== 'sent' || lead.status !== 'new'
+      ? lead
+      : await leadDb().update({ where: { id }, data: { status: 'replied' } })
+    return reply.send({ status, lead: updated })
+  })
+
+  // GET /admin/leads/:id/replies — what we have sent this person from here.
+  app.get('/leads/:id/replies', async (request, reply) => {
+    const id = Number((request.params as { id: string }).id)
+    const lead = await leadDb().findFirst({ where: { id } })
+    if (!lead) {
+      return reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'Lead not found' })
+    }
+    const rows = await emailLogDb().findMany({
+      where: { to: lead.email, kind: 'lead_reply' },
+      orderBy: { createdAt: 'desc' },
+      take: 20,
+      select: { id: true, to: true, kind: true, subject: true, status: true, error: true, createdAt: true },
+    })
+    return reply.send(rows)
+  })
+
+  // ---- Book orders ----------------------------------------------------------
+
+  const orderError = (reply: import('fastify').FastifyReply, err: unknown) => {
+    if (err instanceof PurchaseError) return reply.status(err.statusCode).send({ statusCode: err.statusCode, error: err.code, message: err.message })
+    throw err
+  }
+
+  // GET /admin/book-orders?status=&q=&page= — purchases, with real-sales totals.
+  app.get('/book-orders', async (request, reply) => {
+    const { status, q, page } = request.query as Record<string, string>
+    return reply.send(await listOrders({ status, q, page: Number(page) || 1 }))
+  })
+
+  // POST /admin/book-orders/grant { slug, email, note? } — give a book free.
+  app.post('/book-orders/grant', async (request, reply) => {
+    const input = z.object({
+      slug: z.string().min(1).max(180),
+      email: z.string().trim().email().max(255),
+      note: z.string().max(255).optional().nullable(),
+    }).parse(request.body)
+    try {
+      const actor = (request.user as { sub: number }).sub
+      return reply.send(await grantBook(actor, input))
+    } catch (err) {
+      return orderError(reply, err)
+    }
+  })
+
+  // POST /admin/book-orders/:id/refund { note? } — access stops at once.
+  app.post('/book-orders/:id/refund', async (request, reply) => {
+    const id = Number((request.params as { id: string }).id)
+    const { note } = z.object({ note: z.string().max(255).optional().nullable() }).parse(request.body ?? {})
+    try {
+      return reply.send(await refundPurchase(id, note))
+    } catch (err) {
+      return orderError(reply, err)
+    }
   })
 
   // DELETE /admin/leads/:id — for a typo'd import or a row added twice.

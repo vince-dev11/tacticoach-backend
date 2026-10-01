@@ -20,6 +20,8 @@ export type Capability =
   | 'editor'
   /** Export an animation as video. Both paid tiers; the QUALITY differs. */
   | 'video_export'
+  /** Squad roster and written feedback to players. Paid plans only (1 Oct 2026). */
+  | 'player_feedback'
   /** Export at HD rather than 720p, and without our watermark. */
   | 'video_hd'
   /** Square/story renders for social. */
@@ -58,23 +60,17 @@ export type Capability =
  * — so the gate is finish (HD, no watermark, unlimited) rather than access.
  */
 /**
- * Free, forever, for a coach who never pays.
+ * Free: a 14-day trial (decided 1 Oct 2026), not a permanent tier.
  *
- * Not a trial and not a crippled demo — a real, permanent account, because the
- * players are the distribution and the players arrive through a coach. A coach
- * who hits a wall on day 8 and leaves takes eighteen players with them, and
- * those players were the only free channel we have.
+ * For fourteen days a coach gets the board with animation, three badged
+ * videos, and small counts of boards, sheets, sessions, a season and a book
+ * (see LIMITS.free). Squads and player feedback are paid. After the trial
+ * the coach keeps read access to their work through the library and nothing
+ * else — entitlements.ts closes the editor (editorAccess false), which every
+ * write route already checks.
  *
- * So the free tier is shaped to keep the loop alive rather than to be
- * annoying: the whole board, real animation, video export (watermarked), and
- * writing to players — all of it unlimited in KIND and limited in COUNT. Five
- * boards is a fortnight of work for a real coach, which is long enough to
- * build a habit and short enough to matter.
- *
- * What it deliberately does not include is everything that makes a coach look
- * professional to someone else: HD video, their own badge, a public page,
- * publishing a book. Free coaches carry OUR brand. That is the trade, and it
- * is the honest one — they are paying in marketing instead of money.
+ * What stays paid for good is what makes a coach look professional to
+ * someone else: HD video, their own badge, a public page, publishing a book.
  */
 const FREE: Capability[] = ['editor', 'video_export', 'planner', 'draft_ebooks']
 
@@ -93,7 +89,7 @@ const FREE: Capability[] = ['editor', 'video_export', 'planner', 'draft_ebooks']
  * sentence a coach can act on, where "no session builder" just sends them
  * looking for a competitor who has one.
  */
-const BASIC: Capability[] = ['editor', 'video_export', 'planner', 'draft_ebooks']
+const BASIC: Capability[] = ['editor', 'video_export', 'planner', 'draft_ebooks', 'player_feedback']
 
 const PRO: Capability[] = [
   ...BASIC,
@@ -163,6 +159,8 @@ export interface PlanLimits {
   books: number | null
   /** Training sessions in the builder and planner. */
   sessions: number | null
+  /** Season plans in the planner. */
+  seasons: number | null
   /** Coach seats, for club plans. */
   seats: number | null
 }
@@ -170,20 +168,16 @@ export interface PlanLimits {
 /** Paid tiers that count nothing. Spelled out so adding a field can't miss one. */
 const UNCOUNTED = {
   squads: null, videoExports: null, boards: null,
-  drillSheets: null, books: null, sessions: null,
+  drillSheets: null, books: null, sessions: null, seasons: null,
 } as const
 
 const LIMITS: Record<string, PlanLimits> = {
-  // Free. Generous in kind, small in number — see FREE above.
-  //
-  // The numbers are chosen to be a fortnight of real work, not a demo: five
-  // boards and five drill sheets is a couple of weeks of sessions, and a coach
-  // who has filled them has already built the habit we want to charge for.
-  // Three videos a month is enough to post one a week and run out, which is
-  // the moment Basic sells itself.
+  // Free: a 14-day trial (decided 1 Oct 2026). Small counts, counted by
+  // CREATION rather than by rows kept — see lib/free-trial.ts. Animation and
+  // three badged videos are in; squads (and so player feedback) are not.
   free: {
-    squads: 1, videoExports: 3, boards: 5,
-    drillSheets: 5, books: 1, sessions: 1, seats: null,
+    squads: 0, videoExports: 3, boards: 3,
+    drillSheets: 3, books: 1, sessions: 3, seasons: 1, seats: null,
   },
   basic: {
     squads: 1, videoExports: 10, boards: null,
@@ -191,6 +185,7 @@ const LIMITS: Record<string, PlanLimits> = {
     // About a term. Enough that a coach plans a real block of work; short of
     // the full season the planner is built for.
     sessions: 12,
+    seasons: null,
     seats: null,
   },
   pro: { ...UNCOUNTED, seats: null },
@@ -203,7 +198,7 @@ const LIMITS: Record<string, PlanLimits> = {
   'club-pro': { ...UNCOUNTED, seats: 15 },
   player: {
     squads: 0, videoExports: 0, boards: 0,
-    drillSheets: 0, books: 0, sessions: 0, seats: null,
+    drillSheets: 0, books: 0, sessions: 0, seasons: 0, seats: null,
   },
   owner: { ...UNCOUNTED, seats: null },
 }
@@ -211,7 +206,7 @@ const LIMITS: Record<string, PlanLimits> = {
 const UNRESTRICTED: PlanLimits = { ...UNCOUNTED, seats: null }
 const NOTHING: PlanLimits = {
   squads: 0, videoExports: 0, boards: 0,
-  drillSheets: 0, books: 0, sessions: 0, seats: null,
+  drillSheets: 0, books: 0, sessions: 0, seasons: 0, seats: null,
 }
 
 /**

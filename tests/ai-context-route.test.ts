@@ -58,7 +58,7 @@ beforeEach(() => {
 describe('the model is told who the session is for', () => {
   it('uses the saved profile', async () => {
     const app = await getApp()
-    grant({ coachAgeGroup: 'u9', coachFormat: null, coachLevel: 'grassroots' })
+    grant({ coachAgeGroup: 'u9', coachFormat: '7v7', coachLevel: 'grassroots' })
     await app.inject({
       method: 'POST',
       url: '/api/canvas/ai-layout',
@@ -67,9 +67,26 @@ describe('the model is told who the session is for', () => {
     })
     const system = systemPrompt()
     expect(system).toContain('Under 9')
+    // FR-I9: the coach's own format, not the age's.
     expect(system).toContain('7-a-side')
+    expect(system).not.toContain('assumed from age')
     // The hard limit must be stated as a number, not implied.
     expect(system).toContain('at most 7 players per team')
+  })
+
+  it('FR-I9 · no saved format: the age only suggests one, and the model is told it was assumed', async () => {
+    const app = await getApp()
+    grant({ coachAgeGroup: 'u9', coachFormat: null, coachLevel: 'grassroots' })
+    await app.inject({
+      method: 'POST',
+      url: '/api/canvas/ai-layout',
+      headers: authHeaders(await accessToken()),
+      payload: { prompt: 'passing drill' },
+    })
+    const system = systemPrompt()
+    // England FutureFit 2026/27: under-9s play 5v5.
+    expect(system).toContain('5-a-side (assumed from age — not confirmed by the coach)')
+    expect(system).toContain('at most 5 players per team')
   })
 
   it('tells it what is NOT appropriate, with the reason', async () => {
@@ -156,7 +173,7 @@ describe('the model is told who the session is for', () => {
 describe('formation, squad and the stated problem reach the model', () => {
   it('teaches the model which formations exist in this format', async () => {
     const app = await getApp()
-    grant({ coachAgeGroup: 'u9', coachFormat: null, coachLevel: null })
+    grant({ coachAgeGroup: 'u9', coachFormat: '7v7', coachLevel: null })
     await app.inject({
       method: 'POST',
       url: '/api/canvas/ai-layout',
@@ -171,7 +188,7 @@ describe('formation, squad and the stated problem reach the model', () => {
   it('carries the saved formation and squad size', async () => {
     const app = await getApp()
     grant({
-      coachAgeGroup: 'u9', coachFormat: null, coachLevel: null,
+      coachAgeGroup: 'u9', coachFormat: '7v7', coachLevel: null,
       coachFormation: '2-3-1', coachSquadSize: 14,
     } as never)
     await app.inject({

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import type { FastifyInstance } from 'fastify'
 import {
   RegisterSchema,
@@ -29,9 +30,42 @@ import { db } from '../../config/database.js'
  * unauthenticated and guard credentials (brute force) or send email (spam).
  * Relaxed under test so suites can hammer them.
  */
+// Outside production the limits are 50× looser: a local end-to-end run
+// registers dozens of accounts an hour and locked itself out for 48 minutes
+// (1 Oct). Production keeps the real numbers.
 const limit = (max: number, timeWindow: string) => ({
-  config: { rateLimit: { max: env.NODE_ENV === 'test' ? 10_000 : max, timeWindow } },
+  config: { rateLimit: { max: env.NODE_ENV === 'test' ? 10_000 : env.NODE_ENV === 'production' ? max : max * 50, timeWindow } },
 })
+
+/**
+ * Failed-login throttle PER ACCOUNT, on top of the per-IP limit. Ten wrong
+ * passwords for one email lock that email for a while; a clubhouse or school
+ * on one connection no longer locks everyone out because a colleague
+ * mistyped (QA B-10 — the IP limit is now looser and this is the brute-force
+ * guard). In memory: fine for one API process, and a restart simply forgives.
+ */
+const LOGIN_FAILS_MAX = 10
+const LOGIN_FAILS_WINDOW_MS = 15 * 60 * 1000
+const loginFails = new Map<string, { count: number; until: number }>()
+function loginLocked(email: string): boolean {
+  const f = loginFails.get(email)
+  if (!f) return false
+  if (Date.now() > f.until) {
+    loginFails.delete(email)
+    return false
+  }
+  return f.count >= LOGIN_FAILS_MAX
+}
+function noteLoginFail(email: string): void {
+  const now = Date.now()
+  const f = loginFails.get(email)
+  if (!f || now > f.until) loginFails.set(email, { count: 1, until: now + LOGIN_FAILS_WINDOW_MS })
+  else f.count += 1
+}
+/** Test hook: forget every lock. */
+export function resetLoginThrottle(): void {
+  loginFails.clear()
+}
 
 export async function authRoutes(app: FastifyInstance) {
   /**
@@ -44,8 +78,11 @@ export async function authRoutes(app: FastifyInstance) {
    */
   const signAccess = (userId: number, email: string) =>
     app.jwt.sign({ sub: userId, email }, { expiresIn: env.JWT_ACCESS_EXPIRES_IN })
+  // `jti` makes every refresh token distinct. Without it, two tokens minted
+  // for the same user in the same second (register, then log in) were
+  // byte-identical, and the second insert hit the unique index → 500.
   const signRefresh = (userId: number) =>
-    app.jwt.refresh.sign({ sub: userId, type: 'refresh' }, { expiresIn: env.JWT_REFRESH_EXPIRES_IN })
+    app.jwt.refresh.sign({ sub: userId, type: 'refresh', jti: randomUUID() }, { expiresIn: env.JWT_REFRESH_EXPIRES_IN })
 
   /** Stateless email-verification link: a 24h signed JWT, no DB table needed. */
   const verifyUrlFor = (userId: number, email: string) => {
@@ -108,12 +145,18 @@ export async function authRoutes(app: FastifyInstance) {
 
   // POST /auth/login — 10/min/IP keeps online password guessing impractical
   // while never bothering a real coach with a forgotten password.
-  app.post('/login', limit(10, '1 minute'), async (request, reply) => {
+  app.post('/login', limit(30, '1 minute'), async (request, reply) => {
     const input = LoginSchema.parse(request.body)
+    const key = input.email.trim().toLowerCase()
+    if (loginLocked(key)) {
+      return reply.status(429).send({ statusCode: 429, error: 'Too Many Requests', message: 'Too many failed logins for this account. Try again in 15 minutes, or reset your password.' })
+    }
     const user = await validateCredentials(input)
     if (!user) {
+      noteLoginFail(key)
       return reply.status(401).send({ statusCode: 401, error: 'Unauthorized', message: 'Invalid email or password' })
     }
+    loginFails.delete(key)
     const accessToken = signAccess(user.id, user.email)
     const refreshToken = signRefresh(user.id)
     await saveRefreshToken(user.id, refreshToken)

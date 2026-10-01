@@ -131,7 +131,8 @@ describe('reading a chapter', () => {
     // be read by guessing.
     const where = mock.ebookChapter.findFirst.mock.calls[0][0]!.where
     expect(where.id).toBe(5)
-    expect(where.ebook).toEqual({ slug: 'playing-out', status: 'published' })
+    // Archived too: a reader who bought a book keeps it after it leaves the shop.
+    expect(where.ebook).toEqual({ slug: 'playing-out', status: { in: ['published', 'archived'] } })
   })
 
   it('locks a paid book past the sample, with 402 not 403', async () => {

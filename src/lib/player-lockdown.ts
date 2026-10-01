@@ -17,7 +17,7 @@
 //      an editor guard; challenges, clubs, the coach page and a good number of
 //      canvas and planner reads carry none.
 //   2. Until now it would not have helped anyway. Every signup is given a
-//      7-day full-access trial, players included, so a new player account had
+//      14-day full-access trial, players included, so a new player account had
 //      `editorAccess: true` for its first week and the whole coach product was
 //      open to it. That is fixed in entitlements and at register, and this
 //      list is the belt to that pair of braces.
@@ -35,6 +35,12 @@
 const ALLOWED_EXACT: readonly string[] = [
   '/api/users/me',
   '/api/users/me/tours',
+  // "I signed up as a player by mistake": the one way out of a player account
+  // that does not need an email to us (account.service refuses linked players).
+  '/api/users/me/become-coach',
+  '/api/users/me/password',
+  '/api/users/me/password/check',
+  '/api/users/me/guardian',
   // Read-only billing. A player has nothing to buy — /checkout is deliberately
   // absent — but /entitlements is what the client uses to decide where to send
   // them, so refusing it would break their own screens.

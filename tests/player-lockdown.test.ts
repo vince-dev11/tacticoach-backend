@@ -151,7 +151,7 @@ describe('coaches are unaffected', () => {
 
 describe('entitlements refuse a player regardless of what they hold', () => {
   it('gives no editor access to a player on an active trial', async () => {
-    // The hole this closes: registerUser gives EVERY new account a 7-day
+    // The hole this closes: registerUser gives EVERY new account a 14-day
     // full-access trial. A player's first week therefore had an active
     // subscription and `editorAccess: true`, and the whole coach product was
     // open to a child's account until it lapsed.

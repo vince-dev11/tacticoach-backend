@@ -67,9 +67,21 @@ const schema = z.object({
   SMTP_PASS: z.string().optional(),
   // true for port 465 (TLS from the first byte), false for 587 (STARTTLS).
   SMTP_SECURE: envBool(false),
+  // Three addresses, all set on the server. Today all three are the Gmail
+  // account (tacticoach.co.uk@gmail.com), because Gmail SMTP only sends as
+  // itself. Later: MAIL_FROM = no-reply@, SUPPORT_EMAIL and TEAM_MAIL_FROM =
+  // info@ — a change to .env, not to code.
+  //
+  // MAIL_FROM — the sender of every automatic email (welcome, reset,
+  //   verification, trial reminder, receipts…).
   MAIL_FROM: z.string().default('TactiCoach <no-reply@tacticoach.co.uk>'),
-  // Where contact-form submissions are delivered. Defaults to MAIL_FROM.
+  // SUPPORT_EMAIL — the team inbox. Contact-form messages are delivered here,
+  //   and it is the Reply-To on everything we send, so answering even a
+  //   no-reply email reaches a person. Defaults to MAIL_FROM.
   SUPPORT_EMAIL: z.string().optional(),
+  // TEAM_MAIL_FROM — the sender of emails a person writes in Admin (messages
+  //   to users, replies to leads and support). Defaults to MAIL_FROM.
+  TEAM_MAIL_FROM: z.string().optional(),
 
   // The account with this email is promoted to the 'owner' role at boot and
   // on registration — it unlocks the /admin area (blog CMS + CRM).

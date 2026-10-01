@@ -99,3 +99,6 @@ export function mockUserFindUnique(
     return Promise.resolve(picked)
   })
 }
+
+/** A coach inside the 14-day free trial (FT-2): the default state of a new coach. */
+export const IN_TRIAL = () => new Date(Date.now() + 5 * 86_400_000)

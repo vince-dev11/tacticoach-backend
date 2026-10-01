@@ -11,13 +11,14 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { dbMock } from './setup.js'
-import { quotaState, assertQuota, allQuotas } from '../src/lib/plan-quota.js'
+import { quotaState, assertQuota, allQuotas, claimQuota } from '../src/lib/plan-quota.js'
 
 const mock = dbMock as unknown as Record<string, Record<string, ReturnType<typeof vi.fn>>>
 
 /** Put user 1 on a plan, by giving or withholding a subscription. */
 function onPlan(slug: string | null) {
-  mock.user.findUnique.mockResolvedValue({ role: 'user', accountType: 'coach' } as never)
+  // No plan = a coach inside the 14-day free trial.
+  mock.user.findUnique.mockResolvedValue({ role: 'user', accountType: 'coach', freeTrialEndsAt: new Date(Date.now() + 5 * 86_400_000) } as never)
   mock.userSubscription.findUnique.mockResolvedValue(
     slug
       ? {
@@ -39,76 +40,59 @@ beforeEach(() => {
   mock.drillSheet.count.mockResolvedValue(0 as never)
   mock.trainingSession.count.mockResolvedValue(0 as never)
   mock.ebook.count.mockResolvedValue(0 as never)
+  mock.seasonPlan.count.mockResolvedValue(0 as never)
+  mock.freeUsage.findUnique.mockResolvedValue(null as never)
 })
 
-describe('a free coach', () => {
+describe('a free coach (14-day trial, FT-3)', () => {
   beforeEach(() => onPlan(null))
 
-  it('gets five boards, five sheets, one book and one session', () => {
-    // The numbers the whole tier is specified by. If these drift, the pricing
-    // page and the product stop agreeing and nothing else would say so.
+  it('gets three boards, three sheets, three sessions, one season and one book', () => {
     return expect(allQuotas(1)).resolves.toMatchObject({
-      boards: { limit: 5 },
-      drillSheets: { limit: 5 },
+      boards: { limit: 3, lifetime: true },
+      drillSheets: { limit: 3 },
+      sessions: { limit: 3 },
+      seasons: { limit: 1 },
       books: { limit: 1 },
-      sessions: { limit: 1 },
     })
   })
 
-  it('reports what is left, not just whether they are full', async () => {
-    // "4 of 5 boards" while there is still time to act on it. A tier whose
-    // only signal is the refusal at number six feels broken; one that shows
-    // the count feels like a plan.
-    mock.canvasBoard.count.mockResolvedValue(3 as never)
+  it('counts creations from free_usage, not live rows — deleting does not free a slot', async () => {
+    mock.freeUsage.findUnique.mockResolvedValue({ boards: 3 } as never)
+    mock.canvasBoard.count.mockResolvedValue(0 as never) // all three deleted
+    expect(await quotaState(1, 'boards')).toMatchObject({ limit: 3, used: 3, remaining: 0, allowed: false, lifetime: true })
+    expect(mock.canvasBoard.count).not.toHaveBeenCalled()
+  })
 
-    expect(await quotaState(1, 'boards')).toMatchObject({
-      limit: 5, used: 3, remaining: 2, allowed: true,
+  it('reserves atomically: the conditional update is the gate', async () => {
+    mock.freeUsage.upsert.mockResolvedValue({} as never)
+    mock.$executeRaw.mockResolvedValueOnce(1 as never).mockResolvedValueOnce(0 as never)
+    await expect(claimQuota(1, 'boards')).resolves.toBeTypeOf('function')
+    await expect(claimQuota(1, 'boards')).rejects.toMatchObject({
+      statusCode: 402, code: 'QUOTA_REACHED', quota: 'boards', limit: 3, lifetime: true,
     })
   })
 
-  it('allows the fifth board and refuses the sixth', async () => {
-    mock.canvasBoard.count.mockResolvedValue(4 as never)
-    expect((await quotaState(1, 'boards')).allowed).toBe(true)
-
-    mock.canvasBoard.count.mockResolvedValue(5 as never)
-    expect((await quotaState(1, 'boards')).allowed).toBe(false)
+  it('says deleted items still count when it refuses', async () => {
+    mock.freeUsage.upsert.mockResolvedValue({} as never)
+    mock.$executeRaw.mockResolvedValue(0 as never)
+    await expect(claimQuota(1, 'boards')).rejects.toThrow(/deleted boards still count/i)
   })
 
-  it('throws a 402, never a 403', async () => {
-    // The distinction the whole upgrade flow rests on: not forbidden,
-    // un-upgraded. A 403 renders as "something went wrong".
-    mock.canvasBoard.count.mockResolvedValue(5 as never)
-    await expect(assertQuota(1, 'boards')).rejects.toMatchObject({ statusCode: 402 })
-  })
-
-  it('tells them how to get unstuck without paying', async () => {
-    // Every one of these walls names the escape hatch. A coach who cannot
-    // find one assumes their work is gone.
-    mock.canvasBoard.count.mockResolvedValue(5 as never)
-    await expect(assertQuota(1, 'boards')).rejects.toThrow(/delete one to make room/i)
-  })
-
-  it('frees the slot when something is deleted', async () => {
-    // All four tables hard-delete, so a plain count is right. If any of them
-    // ever gains a soft-delete column and the counter is not updated, this is
-    // the test that notices — a coach who tidied up would still be full.
-    mock.canvasBoard.count.mockResolvedValue(5 as never)
-    await expect(assertQuota(1, 'boards')).rejects.toThrow()
-
-    mock.canvasBoard.count.mockResolvedValue(4 as never)
-    await expect(assertQuota(1, 'boards')).resolves.toBeUndefined()
-  })
-
-  it('counts only this coach’s rows', async () => {
-    await quotaState(1, 'boards')
-    expect(mock.canvasBoard.count).toHaveBeenCalledWith({ where: { userId: 1 } })
+  it('release gives the slot back when the create fails', async () => {
+    mock.freeUsage.upsert.mockResolvedValue({} as never)
+    mock.$executeRaw.mockResolvedValue(1 as never)
+    const release = await claimQuota(1, 'seasons')
+    await release()
+    const call = mock.$executeRaw.mock.calls.at(-1)! as unknown[]
+    expect((call[0] as TemplateStringsArray).join('?')).toMatch(/GREATEST\(\? - \?, 0\)/)
+    expect(call[3]).toBe(1) // params: col, col, count, userId — one slot back
   })
 
   it('mentions publishing when it refuses the second book', async () => {
-    // The free book exists so a coach finds out what the feature IS. The
-    // refusal is the right place to say that publishing is the paid half.
-    mock.ebook.count.mockResolvedValue(1 as never)
-    await expect(assertQuota(1, 'books')).rejects.toThrow(/publish/i)
+    mock.freeUsage.upsert.mockResolvedValue({} as never)
+    mock.$executeRaw.mockResolvedValue(0 as never)
+    await expect(claimQuota(1, 'books')).rejects.toThrow(/publish/i)
   })
 })
 
@@ -147,11 +131,9 @@ describe('a Pro coach', () => {
 
 describe('the edges', () => {
   it('never reports negative remaining', async () => {
-    // Reachable: two creates racing, or a limit lowered under an existing
-    // account. "-2 remaining" is worse than a wrong number, it looks broken.
+    // Reachable: an account backfilled over the new limit at release.
     onPlan(null)
-    mock.canvasBoard.count.mockResolvedValue(9 as never)
-
+    mock.freeUsage.findUnique.mockResolvedValue({ boards: 9 } as never)
     expect((await quotaState(1, 'boards')).remaining).toBe(0)
   })
 
@@ -165,17 +147,13 @@ describe('the edges', () => {
     expect((await quotaState(1, 'boards')).allowed).toBe(false)
   })
 
-  it('keeps a lapsed coach’s existing work visible, just capped', async () => {
-    // Five boards, not zero. A coach whose card expired still owns what they
-    // made — locking them out of their own boards is the fastest way to turn
-    // a lapsed subscriber into a deleted account rather than a renewal.
+  it('keeps an over-the-limit coach’s existing work, just refuses a new one', async () => {
+    // Backfilled at release with 40 boards: none is deleted or hidden.
     onPlan(null)
-    mock.canvasBoard.count.mockResolvedValue(40 as never)
-
+    mock.freeUsage.findUnique.mockResolvedValue({ boards: 40 } as never)
     const state = await quotaState(1, 'boards')
-    expect(state.allowed).toBe(false) // cannot make a 41st
-    expect(state.limit).toBe(5)
-    // Nothing here deletes or hides the other 40.
+    expect(state.allowed).toBe(false)
+    expect(state.limit).toBe(3)
     expect(mock.canvasBoard.deleteMany).not.toHaveBeenCalled()
   })
 })

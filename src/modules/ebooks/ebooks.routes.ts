@@ -29,6 +29,7 @@ import {
   myCertificates, CourseError,
 } from './course.service.js'
 import { mayOpen, clubLibrary, clubReaders } from './club-books.js'
+import { startCheckout, joinWaitlist, library, PurchaseError } from './purchases.service.js'
 
 const userId = (r: { user: unknown }) => (r.user as { sub: number }).sub
 
@@ -94,6 +95,38 @@ export async function ebooksRoutes(app: FastifyInstance) {
 
   app.get('/me/certificates', { preHandler: authGuard }, async (request, reply) =>
     reply.send(await myCertificates(userId(request))))
+
+  // GET /api/ebooks/me/library — the books this reader owns.
+  app.get('/me/library', { preHandler: authGuard }, async (request, reply) =>
+    reply.send(await library(userId(request))))
+
+  // POST /api/ebooks/:slug/checkout { consent: true } — buy the book.
+  // → { status: 'paid' } (owner test purchase) | { status: 'redirect', url }
+  // Refusals carry a code: coming_soon, owned, free, own_book, consent.
+  app.post('/:slug/checkout', {
+    preHandler: authGuard,
+    config: { rateLimit: { max: process.env.NODE_ENV === 'test' ? 10_000 : 20, timeWindow: '1 hour' } },
+  }, async (request, reply) => {
+    const { slug } = request.params as { slug: string }
+    const { consent } = z.object({ consent: z.boolean().default(false) }).parse(request.body ?? {})
+    try {
+      return reply.send(await startCheckout(userId(request), slug, consent))
+    } catch (err) {
+      if (err instanceof PurchaseError) return reply.status(err.statusCode).send({ statusCode: err.statusCode, error: err.code, message: err.message })
+      throw err
+    }
+  })
+
+  // POST /api/ebooks/:slug/waitlist — "email me when I can buy this".
+  app.post('/:slug/waitlist', { preHandler: authGuard }, async (request, reply) => {
+    const { slug } = request.params as { slug: string }
+    try {
+      return reply.send(await joinWaitlist(userId(request), slug))
+    } catch (err) {
+      if (err instanceof PurchaseError) return reply.status(err.statusCode).send({ statusCode: err.statusCode, error: err.code, message: err.message })
+      throw err
+    }
+  })
 
   app.get('/club/library', { preHandler: authGuard }, async (request, reply) =>
     reply.send(await clubLibrary(userId(request))))

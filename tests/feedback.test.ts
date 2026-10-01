@@ -13,6 +13,7 @@ import {
   requestLink,
   answerLink,
   playerAccountExists,
+  acknowledgeNote,
   writeNote,
 } from '../src/modules/feedback/feedback.service.js'
 import { coachIdsFor, clubStandingFor } from '../src/lib/club-staff.js'
@@ -366,5 +367,21 @@ describe('saveSquad — the destructive-save regression', () => {
     await saveSquad(7, [])
     const reads = mock.squadPlayer.findMany.mock.calls.map((c) => c[0].where)
     expect(reads.every((w) => w.archivedAt === null)).toBe(true)
+  })
+})
+
+describe('PR-6 · acknowledgeNote ("got it, coach")', () => {
+  it('ticks only a sent note that belongs to this player, and marks it read too', async () => {
+    mock.playerNote.updateMany.mockResolvedValue({ count: 1 })
+    expect(await acknowledgeNote(99, 7)).toBe(true)
+    const { where, data } = mock.playerNote.updateMany.mock.calls[0][0]
+    expect(where).toMatchObject({ id: 7, acknowledgedAt: null, sentAt: { not: null }, squadPlayer: { playerUserId: 99, linkStatus: 'active' } })
+    expect(data.acknowledgedAt).toBeInstanceOf(Date)
+    expect(data.readAt).toBeInstanceOf(Date)
+  })
+
+  it('reports false when nothing matched — a stranger’s note or a second tap', async () => {
+    mock.playerNote.updateMany.mockResolvedValue({ count: 0 })
+    expect(await acknowledgeNote(99, 7)).toBe(false)
   })
 })

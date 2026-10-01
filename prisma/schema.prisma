@@ -19,6 +19,9 @@ model User {
   /// a club later still says `coach`, and someone who picks `club` and never
   /// takes the plan is a sales lead, not a club.
   accountType      AccountType @default(coach) @map("account_type")
+  /// End of the 14-day free trial. Null for players. See lib/free-trial.ts.
+  freeTrialEndsAt         DateTime? @map("free_trial_ends_at")
+  freeTrialReminderSentAt DateTime? @map("free_trial_reminder_sent_at")
   name             String    @db.VarChar(100)
   surname          String    @db.VarChar(100)
   email            String    @unique @db.VarChar(191)
@@ -74,6 +77,7 @@ model User {
   updatedAt        DateTime  @updatedAt @map("updated_at")
 
   subscription        UserSubscription?
+  freeUsage           FreeUsage?
   boards              CanvasBoard[]
   refreshTokens       RefreshToken[]
   passwordResetTokens PasswordResetToken[]
@@ -125,6 +129,8 @@ model User {
   ebookQuizAnswers  EbookQuizAnswer[]
   ebookChapterReads EbookChapterRead[]
   ebookCertificates EbookCertificate[]
+  ebookPurchases    EbookPurchase[]
+  ebookWaitlist     EbookWaitlist[]
 
   @@map("users")
 }
@@ -771,6 +777,9 @@ model PlanWeek {
   startDate DateTime     @map("start_date")
   /// "Build-up play against a mid block — match Saturday".
   theme     String?      @db.VarChar(255)
+  /// SEASON-5: a title and description per day of this week, keyed by ISO
+  /// date — { "2026-09-28": { "title": "Recovery", "description": "…" } }.
+  dayNotes  Json?        @map("day_notes")
   phase     SeasonPhase  @default(in_season)
   createdAt DateTime     @default(now()) @map("created_at")
   updatedAt DateTime     @updatedAt @map("updated_at")
@@ -804,6 +813,9 @@ model TrainingSession {
   id          Int       @id @default(autoincrement())
   userId      Int       @map("user_id")
   title       String    @db.VarChar(255)
+  /// One line under the title on the season and week screens: what the
+  /// session is about ("Pressing triggers — wide areas"). Migration 43.
+  description String?   @db.VarChar(300)
   sessionDate DateTime? @map("session_date")
   ageGroup    String?   @map("age_group") @db.VarChar(16)
   /// Which team this session is for. Null means the coach's default squad, so
@@ -1059,6 +1071,10 @@ model PlayerNote {
   /// When the player first opened it. Drives a "seen" tick for the coach and
   /// nothing else — nobody is judged on it.
   readAt    DateTime? @map("read_at")
+  /// "Got it, coach" — the one reply a player can give. A tick, never text:
+  /// a child answering an adult in free text is a safeguarding surface this
+  /// app does not want. Shown to the coach as acknowledged; nothing else.
+  acknowledgedAt DateTime? @map("acknowledged_at")
   createdAt DateTime  @default(now()) @map("created_at")
   updatedAt DateTime  @updatedAt @map("updated_at")
 
@@ -1165,6 +1181,10 @@ model ContactMessage {
   /// contact form does not ask, and guessing from a message body would put a
   /// wrong label on a real person.
   kind      LeadKind      @default(unknown)
+  /// What the person said it is about (contact form). Decides the admin
+  /// inbox: sales/club → Leads, the rest → Support. NULL = a lead (hand-added,
+  /// imported, or from before topics existed). See modules/contact/topics.ts.
+  topic     String?       @db.VarChar(20)
   /// The lead's OWN words. Null for anyone who has not written to us — a hand
   /// -added lead has no message, and '' would read as an empty one.
   message   String?       @db.Text
@@ -1177,6 +1197,7 @@ model ContactMessage {
 
   @@index([status, createdAt])
   @@index([source, kind])
+  @@index([topic, status])
   /// Not unique — the same person may use the contact form twice. Dedupe on
   /// import is the importer's job; see admin.routes.
   @@index([email])
@@ -1337,6 +1358,8 @@ model Ebook {
   quizAnswers  EbookQuizAnswer[]
   chapterReads EbookChapterRead[]
   certificates EbookCertificate[]
+  purchases    EbookPurchase[]
+  waitlist     EbookWaitlist[]
 
   @@index([status, category, ageBand])
   @@index([authorId])
@@ -1653,4 +1676,81 @@ model EbookDailyStat {
 
   @@id([ebookId, day])
   @@map("ebook_daily_stats")
+}
+
+/// Owning a book. One row per reader per book (see migration 40): pending
+/// while checking out, paid once the money has cleared (or granted by us),
+/// refunded to take it back. Money in pence; the split is fixed at payment.
+model EbookPurchase {
+  id                 Int                 @id @default(autoincrement())
+  ebookId            Int                 @map("ebook_id")
+  userId             Int                 @map("user_id")
+  status             EbookPurchaseStatus @default(pending)
+  source             EbookPurchaseSource @default(checkout)
+  pricePence         Int                 @map("price_pence")
+  currency           String              @default("GBP") @db.VarChar(3)
+  authorSharePercent Int                 @default(70) @map("author_share_percent") @db.TinyInt
+  authorSharePence   Int                 @default(0) @map("author_share_pence")
+  platformSharePence Int                 @default(0) @map("platform_share_pence")
+  /// 'test' today (owner test purchases); 'stripe' / 'paddle' once connected.
+  provider           String?             @db.VarChar(20)
+  providerRef        String?             @unique @map("provider_ref") @db.VarChar(255)
+  /// They agreed that access starts now and the 14-day cancellation right ends
+  /// when they start reading (Consumer Contracts Regulations 2013, reg. 37).
+  consentAt          DateTime?           @map("consent_at")
+  paidAt             DateTime?           @map("paid_at")
+  refundedAt         DateTime?           @map("refunded_at")
+  grantedById        Int?                @map("granted_by_id")
+  note               String?             @db.VarChar(255)
+  createdAt          DateTime            @default(now()) @map("created_at")
+  updatedAt          DateTime            @updatedAt @map("updated_at")
+
+  ebook Ebook @relation(fields: [ebookId], references: [id], onDelete: Restrict)
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([ebookId, userId])
+  @@index([userId, status])
+  @@index([status, paidAt])
+  @@map("ebook_purchases")
+}
+
+enum EbookPurchaseStatus {
+  pending
+  paid
+  refunded
+}
+
+enum EbookPurchaseSource {
+  checkout
+  grant
+}
+
+/// "Tell me when I can buy this", while the payment gateway is not live.
+model EbookWaitlist {
+  id         Int       @id @default(autoincrement())
+  ebookId    Int       @map("ebook_id")
+  userId     Int       @map("user_id")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  notifiedAt DateTime? @map("notified_at")
+
+  ebook Ebook @relation(fields: [ebookId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([ebookId, userId])
+  @@index([notifiedAt])
+  @@map("ebook_waitlist")
+}
+
+/// Lifetime creations during the free trial. Never decremented on delete —
+/// "3 boards" means three made, not three kept. See lib/free-trial.ts.
+model FreeUsage {
+  userId      Int  @id @map("user_id")
+  boards      Int  @default(0)
+  drillSheets Int  @default(0) @map("drill_sheets")
+  sessions    Int  @default(0)
+  seasons     Int  @default(0)
+  books       Int  @default(0)
+  user        User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("free_usage")
 }

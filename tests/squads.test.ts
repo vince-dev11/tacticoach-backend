@@ -154,3 +154,29 @@ describe('getSquad', () => {
     expect(mock.squadPlayer.findMany.mock.calls[0][0].where.archivedAt).toBeNull()
   })
 })
+
+describe('defaultSquad under concurrent first calls (B-23)', () => {
+  it('two parallel callers share one creation and get the same squad', async () => {
+    mock.squad.findFirst.mockResolvedValue(null)
+    mock.user.findUnique.mockResolvedValue({ coachAgeGroup: null })
+    mock.squad.create.mockResolvedValue(TEST_SQUAD)
+    mock.squad.findMany.mockResolvedValue([TEST_SQUAD])
+    const [a, b] = await Promise.all([defaultSquad(7), defaultSquad(7)])
+    expect(a.id).toBe(b.id)
+    expect(mock.squad.create).toHaveBeenCalledTimes(1)
+  })
+
+  it('a duplicate made by another process is folded back into the older squad', async () => {
+    mock.squad.findFirst.mockResolvedValue(null)
+    mock.user.findUnique.mockResolvedValue({ coachAgeGroup: null })
+    const older = { ...TEST_SQUAD, id: 40 }
+    const newer = { ...TEST_SQUAD, id: 41 }
+    mock.squad.create.mockResolvedValue(newer)
+    mock.squad.findMany.mockResolvedValue([older, newer])
+    mock.squadPlayer.count.mockResolvedValue(0)
+    mock.squad.updateMany.mockResolvedValue({ count: 1 })
+    const squad = await defaultSquad(8)
+    expect(squad.id).toBe(40)
+    expect(mock.squad.updateMany).toHaveBeenCalledWith(expect.objectContaining({ where: { id: 41 } }))
+  })
+})
