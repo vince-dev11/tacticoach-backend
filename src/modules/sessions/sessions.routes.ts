@@ -206,6 +206,8 @@ export async function sessionsRoutes(app: FastifyInstance) {
         blocks: true,
         updatedAt: true,
         planWeekId: true,
+        // A copy from a book's session pack (migration 47) — the list labels it.
+        sourceEbookId: true,
         sessionType: true,
         intensityRpe: true,
         startTime: true,

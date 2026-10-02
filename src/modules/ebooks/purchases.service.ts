@@ -12,6 +12,7 @@ import { db } from '../../config/database.js'
 import { env } from '../../config/env.js'
 import { sendBookReceiptEmail } from '../../lib/emails.js'
 import { bookCheckoutProvider } from './payment-provider.js'
+import { removePackCopies } from './session-pack.service.js'
 
 export const AUTHOR_SHARE_PERCENT = 70
 
@@ -255,10 +256,15 @@ export async function refundPurchase(id: number, note?: string | null) {
   const row = await db.ebookPurchase.findUnique({ where: { id } })
   if (!row) throw new PurchaseError(404, 'not_found', 'Order not found.')
   if (row.status !== 'paid') throw new PurchaseError(409, 'not_paid', 'Only a paid order can be refunded.')
-  return db.ebookPurchase.update({
+  const updated = await db.ebookPurchase.update({
     where: { id },
     data: { status: 'refunded', refundedAt: new Date(), ...(note ? { note: note.slice(0, 255) } : {}) },
   })
+  // The book's sessions came with the purchase; a refund takes the copies back
+  // (Admin → Book orders warns before refunding). Best effort: a failure here
+  // must not undo the refund itself.
+  await removePackCopies(row.ebookId, row.userId).catch(() => 0)
+  return updated
 }
 
 export async function listOrders(params: { status?: string; q?: string; page?: number; limit?: number }) {
@@ -302,4 +308,51 @@ export async function listOrders(params: { status?: string; q?: string; page?: n
     /** Readers waiting to be told buying is open. */
     waitlist,
   }
+}
+
+/**
+ * What an author has earned (author dashboard, 2 Oct 2026).
+ *
+ * Real money only: checkout purchases through a gateway. Grants (books we gave
+ * away) and the owner's test purchases are not sales and never appear. The
+ * author side is the 70% split stored on each purchase at payment time, so a
+ * later change of rate never restates history. Co-authors share the author side
+ * at payout time; the dashboard shows the author side as a whole.
+ *
+ * No buyer is identified: counts and sums only.
+ */
+export async function authorEarnings(bookIds: number[]) {
+  const empty = { live: !!bookCheckoutProvider(), sales: 0, refunds: 0, grossPence: 0, refundedPence: 0, authorSidePence: 0, paidOutPence: 0, owedPence: 0, perBook: new Map<number, { sales: number; refunds: number; authorSidePence: number }>() }
+  if (!bookIds.length) return empty
+  type Row = { ebookId: number; status: string; pricePence: number; authorSharePence: number }
+  // Earnings are an extra on the dashboard: a failure here must not take the
+  // rest of it down, so it reads as "nothing sold" instead.
+  let rows: Row[] = []
+  try {
+    rows = (await db.ebookPurchase.findMany({
+      where: { ebookId: { in: bookIds }, source: 'checkout', status: { in: ['paid', 'refunded'] }, provider: { notIn: ['test'] }, NOT: { provider: null } },
+      select: { ebookId: true, status: true, pricePence: true, authorSharePence: true },
+    })) ?? []
+  } catch {
+    rows = []
+  }
+  const out = { ...empty, perBook: new Map<number, { sales: number; refunds: number; authorSidePence: number }>() }
+  for (const r of rows) {
+    const b = out.perBook.get(r.ebookId) ?? { sales: 0, refunds: 0, authorSidePence: 0 }
+    b.sales++
+    out.sales++
+    if (r.status === 'refunded') {
+      b.refunds++
+      out.refunds++
+      out.refundedPence += r.pricePence
+    } else {
+      out.grossPence += r.pricePence
+      out.authorSidePence += r.authorSharePence
+      b.authorSidePence += r.authorSharePence
+    }
+    out.perBook.set(r.ebookId, b)
+  }
+  // Payouts are not recorded yet (no gateway): everything earned is owed.
+  out.owedPence = out.authorSidePence - out.paidOutPence
+  return out
 }

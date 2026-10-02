@@ -6,6 +6,7 @@
 // a user id (one review per reader), and show only a first name + initial.
 
 import { db } from '../../config/database.js'
+import { authorEarnings, AUTHOR_SHARE_PERCENT } from './purchases.service.js'
 
 /** A reader must have got this far through a book before rating it. */
 export const REVIEW_MIN_PERCENT = 50
@@ -262,6 +263,7 @@ export async function authorDashboard(authorId: number) {
   const ids = books.map((b) => b.id)
   const since = dayOf(new Date(Date.now() - (DASHBOARD_DAYS - 1) * 86_400_000))
 
+  const earnings = await authorEarnings(ids)
   const [stats, progress, ratings, recent] = ids.length
     ? await Promise.all([
         statDb().findMany({ where: { ebookId: { in: ids }, day: { gte: since } } }).catch(() => []),
@@ -314,6 +316,7 @@ export async function authorDashboard(authorId: number) {
       finished: r?.finished ?? 0,
       avgPercent: r && r.readers ? Math.round(r.percentSum / r.readers) : 0,
       rating: ratings.get(b.id) ?? { average: null, count: 0 },
+      sales: earnings.perBook.get(b.id) ?? { sales: 0, refunds: 0, authorSidePence: 0 },
     }
   })
 
@@ -327,9 +330,20 @@ export async function authorDashboard(authorId: number) {
       readers: rows.reduce((n, b) => n + b.readers, 0),
       finished: rows.reduce((n, b) => n + b.finished, 0),
       rating: { average: totalReviews ? round1(weighted / totalReviews) : null, count: totalReviews },
-      // Sales do not exist yet. Present and honest rather than absent, so the
-      // dashboard's shape does not change the day they do.
-      earningsPence: 0,
+      earningsPence: earnings.authorSidePence,
+    },
+    // Sales, refunds and what is owed. All zero until a gateway is live
+    // (`live: false`) — present and honest rather than absent.
+    earnings: {
+      live: earnings.live,
+      sales: earnings.sales,
+      refunds: earnings.refunds,
+      grossPence: earnings.grossPence,
+      refundedPence: earnings.refundedPence,
+      authorSidePence: earnings.authorSidePence,
+      paidOutPence: earnings.paidOutPence,
+      owedPence: earnings.owedPence,
+      sharePercent: AUTHOR_SHARE_PERCENT,
     },
     series,
     books: rows,

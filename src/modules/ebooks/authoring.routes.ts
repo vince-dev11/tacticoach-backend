@@ -31,13 +31,17 @@ import { latinOnly } from '../../lib/latin-only.js'
 import { sentOnly, touchesMoreThan } from '../../lib/sent-only.js'
 import {
   adminList, adminGet, uniqueSlug, replaceChapters, hasContent, removeBook,
-  CATEGORIES, AGE_BANDS, BLOCK_KINDS, ebookDelegate, type ChapterInput,
+  CATEGORIES, AGE_BANDS, BLOCK_KINDS, FORMATS, COUNTRIES, TOPICS, encodeTopics, ebookDelegate, type ChapterInput,
 } from './ebooks.service.js'
 import { transition, isFrozenToAuthor, type EbookStatus } from './ebook-review.js'
 import { authorDashboard, replyToReview, ReviewError } from './engagement.service.js'
 import { AUDIENCES, writableClub } from './club-books.js'
 import { inviteToken } from './course.service.js'
 import { db } from '../../config/database.js'
+import { refineVideoBlock } from '../../lib/video-link.js'
+import { listPack, setPack, PackError, PACK_MAX } from './session-pack.service.js'
+import { readUpload } from '../../lib/multipart.js'
+import { uploadToS3, deleteFromS3 } from '../../config/s3.js'
 import { env } from '../../config/env.js'
 import { sendCoauthorInviteEmail } from '../../lib/emails.js'
 
@@ -59,6 +63,10 @@ const BookInput = z.object({
   blurb: z.string().max(4000).optional().nullable(),
   category: z.enum(CATEGORIES),
   ageBand: z.enum(AGE_BANDS),
+  // Who it is for beyond age (migration 46). null = not set / any country.
+  format: z.enum(FORMATS).nullable().optional(),
+  country: z.enum(COUNTRIES).nullable().optional(),
+  topics: z.array(z.enum(TOPICS)).max(3, { message: 'Pick up to three topics' }).transform(encodeTopics).optional(),
   cover: Cover,
   language: z.string().min(2).max(8).default('en'),
   // Course mode (course.service). The pass mark is ours, not the author's:
@@ -90,7 +98,7 @@ const Chapters = z.object({
     blocks: z.array(z.object({
       kind: z.enum(BLOCK_KINDS),
       data: z.record(z.string(), z.unknown()),
-    })).max(200),
+    }).superRefine(refineVideoBlock)).max(200),
   })).max(60),
 })
 
@@ -296,6 +304,60 @@ export async function authoringRoutes(app: FastifyInstance) {
     // string Zod validated.
     await replaceChapters(id, chapters as ChapterInput[])
     return reply.send(await adminGet(id, uid))
+  })
+
+  // ---- Share image (2 Oct 2026) -------------------------------------------
+  // POST /api/my-books/:id/share-image — the cover as a 1200×630 card, made in
+  // the author's browser on save. Author or co-author; PNG/JPEG up to 1.5 MB.
+  app.post('/:id/share-image', async (request, reply) => {
+    const id = Number((request.params as { id: string }).id)
+    const existing = await adminGet(id, userId(request))
+    if (!existing) return reply.status(404).send(notFound)
+    const file = await readUpload(request, { maxBytes: 1.5 * 1024 * 1024, allowedTypes: ['image/png', 'image/jpeg'] })
+    const old = (existing as { shareImageKey?: string | null }).shareImageKey
+    const key = `ebooks/${id}/share-${Date.now()}.${file.mimetype === 'image/png' ? 'png' : 'jpg'}`
+    await uploadToS3(key, file.buffer, file.mimetype)
+    await ebookDelegate().update({ where: { id }, data: { shareImageKey: key } })
+    if (old) await deleteFromS3(old).catch(() => {})
+    return reply.send({ ok: true })
+  })
+
+  // ---- Session pack (2 Oct 2026) ------------------------------------------
+  // GET /api/my-books/:id/pack — the frozen sessions this book carries.
+  app.get('/:id/pack', async (request, reply) => {
+    const id = Number((request.params as { id: string }).id)
+    const existing = await adminGet(id, userId(request))
+    if (!existing) return reply.status(404).send(notFound)
+    return reply.send(await listPack(id))
+  })
+
+  // PUT /api/my-books/:id/pack { sessionIds } — re-freeze the pack from the
+  // author's own sessions. Author only (a co-author's sessions are not the
+  // book's author's to sell), under the same freeze as the chapters.
+  app.put('/:id/pack', async (request, reply) => {
+    const id = Number((request.params as { id: string }).id)
+    const uid = userId(request)
+    const existing = await adminGet(id, uid)
+    if (!existing) return reply.status(404).send(notFound)
+    if (existing.authorId !== uid) {
+      return reply.status(403).send({ statusCode: 403, error: 'Forbidden', message: 'Only the book\'s author can choose its sessions.' })
+    }
+    if (isFrozenToAuthor(existing.status as EbookStatus) && !existing.clubId) {
+      return reply.status(409).send({
+        statusCode: 409,
+        error: 'Conflict',
+        message: existing.status === 'in_review'
+          ? 'This book is being reviewed. Withdraw it to change its sessions.'
+          : 'This book is in the shop. Ask us to unpublish it before changing its sessions.',
+      })
+    }
+    const { sessionIds } = z.object({ sessionIds: z.array(z.number().int().positive()).max(PACK_MAX, { message: `A pack holds up to ${PACK_MAX} sessions.` }) }).parse(request.body)
+    try {
+      return reply.send(await setPack(id, uid, sessionIds))
+    } catch (err) {
+      if (err instanceof PackError) return reply.status(err.statusCode).send({ statusCode: err.statusCode, error: 'Error', message: err.message })
+      throw err
+    }
   })
 
   app.delete('/:id', async (request, reply) => {

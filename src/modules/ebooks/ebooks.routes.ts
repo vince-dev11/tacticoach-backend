@@ -29,7 +29,10 @@ import {
   myCertificates, CourseError,
 } from './course.service.js'
 import { mayOpen, clubLibrary, clubReaders } from './club-books.js'
-import { startCheckout, joinWaitlist, library, PurchaseError } from './purchases.service.js'
+import { startCheckout, joinWaitlist, library, PurchaseError, canReadAll } from './purchases.service.js'
+import { deliverPack, PackError } from './session-pack.service.js'
+import { db } from '../../config/database.js'
+import { presignUrl } from '../../config/s3.js'
 
 const userId = (r: { user: unknown }) => (r.user as { sub: number }).sub
 
@@ -84,7 +87,10 @@ export async function ebooksRoutes(app: FastifyInstance) {
   app.get('/', async (request, reply) => {
     const q = request.query as Record<string, string>
     return reply.send(
-      await listBooks({ category: q.category, ageBand: q.age, sort: q.sort as 'new', q: q.q }),
+      await listBooks({
+        category: q.category, ageBand: q.age, sort: q.sort as 'new', q: q.q,
+        format: q.format, country: q.country, topic: q.topic, kind: q.kind,
+      }),
     )
   })
 
@@ -124,6 +130,53 @@ export async function ebooksRoutes(app: FastifyInstance) {
       return reply.send(await joinWaitlist(userId(request), slug))
     } catch (err) {
       if (err instanceof PurchaseError) return reply.status(err.statusCode).send({ statusCode: err.statusCode, error: err.code, message: err.message })
+      throw err
+    }
+  })
+
+  // GET /api/ebooks/:slug/share.png — the book's share card, for og:image.
+  // A STABLE url (crawlers fetch it days after the page was built) that
+  // redirects to a fresh presigned link; the site's own image when the book
+  // has none yet. Club books are private: 404.
+  app.get('/:slug/share.png', async (request, reply) => {
+    const { slug } = request.params as { slug: string }
+    const book = await db.ebook.findFirst({
+      where: { slug, status: 'published', clubId: null },
+      select: { shareImageKey: true } as never,
+    }) as { shareImageKey?: string | null } | null
+    if (!book) return reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'Book not found' })
+    const target = book.shareImageKey
+      ? await presignUrl(book.shareImageKey).catch(() => null)
+      : null
+    reply.header('Cache-Control', 'public, max-age=3600')
+    return reply.redirect(target ?? `${env.FRONTEND_URL.replace(/\/$/, '')}/og-image.png`, 302)
+  })
+
+  // POST /api/ebooks/:slug/pack — add the book's sessions to my library, once.
+  // Anyone who can read the whole book (bought, free, written, co-written);
+  // never a player — players have no sessions.
+  app.post('/:slug/pack', { preHandler: authGuard, config: { rateLimit: { max: 20, timeWindow: '1 hour' } } }, async (request, reply) => {
+    const { slug } = request.params as { slug: string }
+    const uid = userId(request)
+    const viewer = await db.user.findUnique({ where: { id: uid }, select: { accountType: true } })
+    if (viewer?.accountType === 'player') {
+      return reply.status(403).send({ statusCode: 403, error: 'Forbidden', message: 'Sessions are for coach accounts.' })
+    }
+    const book = await db.ebook.findFirst({
+      where: { slug, status: { in: ['published', 'archived'] } },
+      select: { id: true, authorId: true, pricePence: true, clubId: true, clubAudience: true },
+    })
+    // A club book does not exist outside its club: 404, as on the book page.
+    if (!book || !(await mayOpen({ clubId: book.clubId ?? null, clubAudience: book.clubAudience }, uid))) {
+      return reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'Book not found' })
+    }
+    if (!(await canReadAll(book, uid))) {
+      return reply.status(403).send({ statusCode: 403, error: 'Forbidden', message: 'Get the book first to add its sessions.' })
+    }
+    try {
+      return reply.send(await deliverPack(book.id, uid))
+    } catch (err) {
+      if (err instanceof PackError) return reply.status(err.statusCode).send({ statusCode: err.statusCode, error: 'Error', message: err.message })
       throw err
     }
   })

@@ -860,6 +860,9 @@ model TrainingSession {
   /// Names of the session's parts, in order: ["Warm-up","Main part",…].
   /// Between 3 and 5. Empty means the default set.
   parts        Json         @default("[]")
+  /// A reader's copy from a book's session pack (migration 47). Never counts
+  /// against session limits; removed if the purchase is refunded.
+  sourceEbookId Int?        @map("source_ebook_id")
 
   createdAt   DateTime  @default(now()) @map("created_at")
   updatedAt   DateTime  @updatedAt @map("updated_at")
@@ -876,6 +879,7 @@ model TrainingSession {
   @@index([squadId])
   @@index([planWeekId])
   @@index([userId, sessionDate])
+  @@index([userId, sourceEbookId])
   playerNotes PlayerNote[]
 
   @@map("training_sessions")
@@ -1328,6 +1332,14 @@ model Ebook {
   /// COURSE MODE: chapter quizzes are marked on the server, progress is kept,
   /// and a reader who reads every chapter and scores `passPercent` or more
   /// across the quizzes earns a certificate (EbookCertificate).
+  /// Who it is for, beyond the age band (migration 46). Never derived from age.
+  format  String? @db.VarChar(8)
+  country String? @db.VarChar(4)
+  /// Up to three topic slugs, stored ",pressing,finishing," for LIKE filtering.
+  topics  String? @db.VarChar(200)
+  /// The 1200×630 share card (S3 key), rendered by the author's browser (migration 48).
+  shareImageKey String? @map("share_image_key") @db.VarChar(500)
+
   isCourse     Boolean @default(false) @map("is_course")
   passPercent  Int     @default(80) @map("pass_percent") @db.TinyInt
   /// The author's estimate, printed on the certificate as such.
@@ -1360,6 +1372,7 @@ model Ebook {
   certificates EbookCertificate[]
   purchases    EbookPurchase[]
   waitlist     EbookWaitlist[]
+  sessionPack  EbookSessionPack[]
 
   @@index([status, category, ageBand])
   @@index([authorId])
@@ -1570,6 +1583,8 @@ enum EbookBlockKind {
   decision
   /// A bar / line / pie / radar chart from a small table, in the cover's colours.
   chart
+  /// A YouTube or Vimeo link (no uploads): provider + id, embedded by the reader.
+  video
 }
 
 /// A reader's own highlight or note.
@@ -1753,4 +1768,22 @@ model FreeUsage {
   user        User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("free_usage")
+}
+
+/// A session a book carries, frozen when the author attached it (migration 47).
+/// `snapshot` is the session's content with library references inlined, so the
+/// author editing or deleting the original never changes what readers get.
+model EbookSessionPack {
+  id              Int      @id @default(autoincrement())
+  ebookId         Int      @map("ebook_id")
+  sourceSessionId Int?     @map("source_session_id")
+  title           String   @db.VarChar(255)
+  snapshot        Json
+  sortOrder       Int      @default(0) @map("sort_order")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  ebook Ebook @relation(fields: [ebookId], references: [id], onDelete: Cascade)
+
+  @@index([ebookId, sortOrder])
+  @@map("ebook_session_packs")
 }

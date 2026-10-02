@@ -9,6 +9,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { dbMock } from './setup.js'
 import { getApp, accessToken, authHeaders } from './helpers.js'
 import { playerMayCall } from '../src/lib/player-lockdown.js'
+import { encodeTopics as _enc, decodeTopics as _dec } from '../src/modules/ebooks/ebooks.service.js'
 
 const mock = dbMock as unknown as Record<string, Record<string, ReturnType<typeof vi.fn>>>
 
@@ -436,5 +437,48 @@ describe('the author box', () => {
     const res = await get('/api/ebooks/playing-out')
     expect(res.statusCode).toBe(200)
     expect(res.json().authorProfile).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// COURSE-DETAILS (2 Oct 2026): format, country, topics — and the shop filters.
+// Format is the author's choice and never derived from the age band.
+// ---------------------------------------------------------------------------
+
+describe('COURSE-DETAILS · shop filters', () => {
+  const whereOf = () => (dbMock.ebook.findMany.mock.calls.at(-1)?.[0] as { where: Record<string, unknown> }).where
+  const shop = async (qs: string) => {
+    const app = await getApp()
+    dbMock.ebook.findMany.mockResolvedValue([] as never)
+    return app.inject({ method: 'GET', url: `/api/ebooks?${qs}` })
+  }
+  it('topics round-trip as ",a,b," and unknown slugs are dropped', () => {
+    expect(_enc(['pressing', 'finishing'])).toBe(',pressing,finishing,')
+    expect(_enc([])).toBeNull()
+    expect(_dec(',pressing,nonsense,finishing,')).toEqual(['pressing', 'finishing'])
+  })
+  it('format keeps that format and "mixed"; never derived from age', async () => {
+    await shop('format=7v7&age=u9_11')
+    expect(whereOf().format).toEqual({ in: ['7v7', 'mixed'] })
+    await shop('age=u9_11')
+    expect(whereOf().format).toBeUndefined()
+  })
+  it('country keeps that country and books for any country', async () => {
+    await shop('country=eng')
+    expect(whereOf().OR).toEqual([{ country: 'eng' }, { country: null }])
+  })
+  it('topic and the Courses tab', async () => {
+    await shop('topic=pressing&kind=course')
+    expect(whereOf().topics).toEqual({ contains: ',pressing,' })
+    expect(whereOf().isCourse).toBe(true)
+  })
+  it('ignores values that are not on the lists', async () => {
+    await shop("format=futsal&country=xx&topic=%25&kind=zzz")
+    const w = whereOf()
+    expect(w.format).toBeUndefined()
+    expect(w.OR).toBeUndefined()
+    expect(w.topics).toBeUndefined()
+    expect(w.isCourse).toBeUndefined()
+    expect(w.status).toBe('published')
   })
 })

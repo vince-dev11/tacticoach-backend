@@ -50,7 +50,9 @@ const COUNTERS: Record<Quota, (userId: number) => Promise<number>> = {
       .ebook.count({ where: { authorId: userId } }),
   // Matches are fixtures, not training content, and never count (see the
   // sessions route, which lets a coach at the limit still add a match).
-  sessions: (userId) => db.trainingSession.count({ where: { userId, isMatch: false } }),
+  // A copy from a book's session pack is not the coach's own work: it never
+  // fills a plan's session allowance (migration 47).
+  sessions: (userId) => db.trainingSession.count({ where: { userId, isMatch: false, sourceEbookId: null } as never }),
   seasons: (userId) => db.seasonPlan.count({ where: { userId } }),
 }
 

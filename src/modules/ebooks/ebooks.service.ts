@@ -13,6 +13,8 @@ import { authorProfileFor } from '../coach-page/coach-page.service.js'
 import { ratingsFor, authorRating } from './engagement.service.js'
 import { keepOrNewKey, withQuestionIds, stripAnswers, questionsOf, chapterMinutes } from './course.service.js'
 import { accessFor, canReadAll } from './purchases.service.js'
+import { normaliseVideoBlock } from '../../lib/video-link.js'
+import { packSummary } from './session-pack.service.js'
 import { mayOpen } from './club-books.js'
 
 // ---- TEMPORARY: remove once `prisma generate` has run against migration 28 --
@@ -68,6 +70,10 @@ interface EbookRow {
   seriesOrder?: number | null
   clubId?: number | null
   clubAudience?: string | null
+  format?: string | null
+  country?: string | null
+  topics?: string | null
+  shareImageKey?: string | null
   createdAt: Date
   updatedAt: Date
   author?: {
@@ -130,11 +136,25 @@ const progressDb = () =>
   }>('ebookProgress')
 
 export const CATEGORIES = ['tactics', 'technique', 'mindset', 'goalkeeping', 'fitness', 'set_pieces'] as const
+/** The match format a book is written for. The author picks it; nothing infers it from age. */
+export const FORMATS = ['3v3', '5v5', '7v7', '9v9', '11v11', 'mixed'] as const
+/** Governing-body context. NULL on the row means "any country". */
+export const COUNTRIES = ['eng', 'sco', 'wal', 'nir', 'irl', 'usa'] as const
+export const TOPICS = [
+  'playing_out', 'pressing', 'attacking', 'defending', 'transitions', 'finishing', 'possession',
+  'one_v_one', 'set_pieces', 'goalkeeping', 'technique', 'fitness', 'mindset', 'coaching_skills', 'season_plans',
+] as const
+/** ",pressing,finishing," → ['pressing', 'finishing'] */
+export const decodeTopics = (raw: string | null | undefined): string[] =>
+  (raw ?? '').split(',').filter((t) => (TOPICS as readonly string[]).includes(t))
+/** ['pressing'] → ",pressing," (null when empty) */
+export const encodeTopics = (list: readonly string[]): string | null =>
+  list.length ? `,${[...new Set(list)].join(',')},` : null
 export const AGE_BANDS = ['u9_11', 'u12_14', 'u15_18', 'adult', 'all'] as const
 export const BLOCK_KINDS = [
   'text', 'board', 'board_compare', 'board_sequence', 'drill',
   'character', 'your_turn', 'quiz', 'image', 'quote',
-  'animation', 'decision', 'chart',
+  'animation', 'decision', 'chart', 'video',
 ] as const
 
 const authorName = (a?: { name: string; surname: string | null }) =>
@@ -175,6 +195,11 @@ async function photosFor(
 export interface ShopFilters {
   category?: string
   ageBand?: string
+  format?: string
+  country?: string
+  topic?: string
+  /** 'course' = courses only, 'book' = books that are not courses. */
+  kind?: string
   sort?: 'best' | 'new' | 'rated'
   q?: string
 }
@@ -201,12 +226,26 @@ export async function listBooks(filters: ShopFilters) {
         ? { ageBand: { in: [filters.ageBand, 'all'] } }
         : {}),
       ...(filters.q?.trim() ? { title: { contains: filters.q.trim() } } : {}),
+      // A format filter shows books for that format and books for "mixed"
+      // formats; a book with no format set is not claimed for any.
+      ...(filters.format && (FORMATS as readonly string[]).includes(filters.format)
+        ? { format: { in: [filters.format, 'mixed'] } }
+        : {}),
+      // A country filter keeps books for that country AND books for any country.
+      ...(filters.country && (COUNTRIES as readonly string[]).includes(filters.country)
+        ? { OR: [{ country: filters.country }, { country: null }] }
+        : {}),
+      ...(filters.topic && (TOPICS as readonly string[]).includes(filters.topic)
+        ? { topics: { contains: `,${filters.topic},` } }
+        : {}),
+      ...(filters.kind === 'course' ? { isCourse: true } : filters.kind === 'book' ? { isCourse: false } : {}),
     },
     orderBy: filters.sort === 'new' ? { publishedAt: 'desc' } : { publishedAt: 'desc' },
     take: 120,
     select: {
       id: true, title: true, subtitle: true, slug: true, category: true, ageBand: true,
       cover: true, pricePence: true, publishedAt: true, isCourse: true,
+      format: true, country: true, topics: true,
       author: {
         select: {
           name: true, surname: true, clubName: true, clubLogoKey: true,
@@ -235,6 +274,9 @@ export async function listBooks(filters: ShopFilters) {
     author: authorName(b.author),
     coauthors: coauthorNames(b),
     isCourse: !!b.isCourse,
+    format: b.format ?? null,
+    country: b.country ?? null,
+    topics: decodeTopics(b.topics),
     authorLogoUrl: b.author?.clubLogoKey ? logos.get(b.author.clubLogoKey) ?? null : null,
     // Avatar and role line under the title — only for coaches whose public
     // page is switched on (same rule as the author box on the book page).
@@ -281,6 +323,7 @@ export async function getBook(slug: string, viewer?: number) {
       ageBand: true, cover: true, pricePence: true, language: true, publishedAt: true,
       authorId: true, isCourse: true, passPercent: true, studyMinutes: true,
       seriesId: true, clubId: true, clubAudience: true,
+      format: true, country: true, topics: true,
       author: { select: { name: true, surname: true, clubName: true, clubLogoKey: true } },
       coauthors: { where: { acceptedAt: { not: null } }, orderBy: { createdAt: 'asc' }, select: { user: { select: { name: true, surname: true } } } },
       club: { select: { name: true } },
@@ -325,9 +368,13 @@ export async function getBook(slug: string, viewer?: number) {
     : null
   return {
     ...rest,
+    topics: decodeTopics(book.topics),
     access,
     chapters,
     course,
+    // "You get: 12 sessions" — titles only; the sessions themselves arrive in
+    // the reader's library when they add them.
+    pack: await packSummary(book.id).catch(() => ({ count: 0, titles: [] as string[] })),
     coauthors: coauthorNames(book),
     clubName: book.clubId ? (_club?.name ?? null) : null,
     series: seriesId ? await seriesStrip(seriesId).catch(() => null) : null,
@@ -620,6 +667,7 @@ export async function adminGet(id: number, authorId?: number) {
       authorId: true, submittedAt: true, reviewNote: true,
       isCourse: true, passPercent: true, studyMinutes: true, seriesId: true, seriesOrder: true,
       clubId: true, clubAudience: true,
+      format: true, country: true, topics: true, shareImageKey: true,
       // Selected because PATCH /admin/ebooks/:id reads it to decide whether
       // this is the FIRST publish. Omitted, it arrived undefined and the route
       // restamped publishedAt on every save — making an edited book look new in
@@ -641,6 +689,7 @@ export async function adminGet(id: number, authorId?: number) {
   if (!book) return null
   return {
     ...book,
+    topics: decodeTopics(book.topics),
     author: authorName(book.author),
     authorLogoUrl: await authorLogo(book.author),
     // A co-author opens the same book; the author arranges its series and
@@ -697,7 +746,7 @@ export async function replaceChapters(ebookId: number, chapters: ChapterInput[])
       })
       for (const [bi, b] of ch.blocks.entries()) {
         await blockDb().create({
-          data: { chapterId: made.id, kind: b.kind, sortOrder: bi, data: withQuestionIds(b.kind, b.data) as object },
+          data: { chapterId: made.id, kind: b.kind, sortOrder: bi, data: (b.kind === 'video' ? normaliseVideoBlock(b.data) ?? {} : withQuestionIds(b.kind, b.data)) as object },
         })
       }
     }

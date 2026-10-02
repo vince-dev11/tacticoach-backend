@@ -8,6 +8,7 @@ import type { Prisma } from '@prisma/client'
 import { authGuard } from '../../middleware/auth-guard.js'
 import { requireOwner } from '../../middleware/owner-guard.js'
 import { db } from '../../config/database.js'
+import { refineVideoBlock } from '../../lib/video-link.js'
 import { uploadToS3, deleteFromS3, presignUrl } from '../../config/s3.js'
 import { readUpload } from '../../lib/multipart.js'
 import { presignUrl as presign } from '../../config/s3.js'
@@ -33,6 +34,7 @@ import {
   ebookDelegate, replaceChapters, type ChapterInput,
   ebookDb,
   CATEGORIES as EBOOK_CATEGORIES, AGE_BANDS as EBOOK_AGE_BANDS, BLOCK_KINDS as EBOOK_BLOCK_KINDS,
+  FORMATS as EBOOK_FORMATS, COUNTRIES as EBOOK_COUNTRIES, TOPICS as EBOOK_TOPICS, encodeTopics,
 } from '../ebooks/ebooks.service.js'
 // One state machine for both callers — the author's PATCH and this review
 // action. See ebook-review.ts for why they must not each have their own.
@@ -1110,6 +1112,9 @@ export async function adminRoutes(app: FastifyInstance) {
     language: z.string().min(2).max(8).default('en'),
     isCourse: z.boolean().optional(),
     studyMinutes: z.number().int().min(0).max(6000).nullable().optional(),
+    format: z.enum(EBOOK_FORMATS).nullable().optional(),
+    country: z.enum(EBOOK_COUNTRIES).nullable().optional(),
+    topics: z.array(z.enum(EBOOK_TOPICS)).max(3).transform(encodeTopics).optional(),
   })
 
   // The owner sees EVERY author's books. `adminList()` with no argument is
@@ -1236,7 +1241,7 @@ export async function adminRoutes(app: FastifyInstance) {
           blocks: z.array(z.object({
             kind: z.enum(EBOOK_BLOCK_KINDS),
             data: z.record(z.string(), z.unknown()),
-          })).max(200),
+          }).superRefine(refineVideoBlock)).max(200),
         })).max(60),
       })
       .parse(request.body)
