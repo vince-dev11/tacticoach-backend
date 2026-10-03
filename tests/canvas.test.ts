@@ -320,6 +320,38 @@ describe('GET /api/canvas/library', () => {
   })
 })
 
+describe('COACH-PAGE-OPTIN · library cards follow the coach page switch', () => {
+  it('a coach whose page is off: no link to their page and no photo on the card', async () => {
+    const app = await getApp()
+    dbMock.canvasBoard.findMany.mockResolvedValue([
+      boardRow({
+        user: { id: 2, name: 'Olivia', surname: 'Owner', clubName: null, coachSlug: 'olivia-owner', coachPhotoKey: 'coaches/2/p.jpg', coachColor: '#00c985', coachPageEnabled: false },
+        _count: { likes: 0 }, likes: [],
+      }),
+      boardRow({
+        id: 11,
+        user: { id: 3, name: 'Sam', surname: 'Hill', clubName: null, coachSlug: 'sam-hill', coachPhotoKey: 'coaches/3/p.jpg', coachColor: null, coachPageEnabled: true },
+        _count: { likes: 0 }, likes: [],
+      }),
+    ] as never)
+    dbMock.canvasBoard.count.mockResolvedValue(2 as never)
+    const res = await app.inject({ method: 'GET', url: '/api/canvas/library', headers: authHeaders(await accessToken()) })
+    const [off, on] = res.json().boards
+    expect(off.user).toMatchObject({ name: 'Olivia', coachSlug: null, coachPhotoUrl: null })
+    expect(off.user).not.toHaveProperty('coachPageEnabled')
+    expect(on.user.coachSlug).toBe('sam-hill')
+    expect(on.user.coachPhotoUrl).toBeTruthy()
+  })
+
+  it('the page is off unless the coach switches it on: schema default and migration 49', async () => {
+    const { readFileSync } = await import('fs')
+    expect(readFileSync('prisma/schema.prisma', 'utf8')).toMatch(/coachPageEnabled Boolean\s+@default\(false\)/)
+    const sql = readFileSync('prisma/migrations/49_coach_page_opt_in/migration.sql', 'utf8')
+    expect(sql).toContain('ALTER COLUMN `coach_page_enabled` SET DEFAULT false')
+    expect(sql).toContain('UPDATE `users` SET `coach_page_enabled` = false')
+  })
+})
+
 describe('DELETE /api/canvas/boards/:id', () => {
   it('deletes own board and its S3 media', async () => {
     const app = await getApp()

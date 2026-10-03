@@ -48,15 +48,17 @@ model User {
   coachSquadSize   Int?      @map("coach_squad_size")
   // ---- Coach branding: the coach's own public page (/coach/:slug) ----
   // Solo coaches have no Club row, so this is the only branded presence most
-  // users get. Auto-live (no review) once the slug is set, the page is
-  // enabled, the plan is active and something is published.
+  // users get. Live (no review) once the coach has switched it ON (opt-in,
+  // off by default), set a slug, has an active plan and published something.
   coachSlug        String?   @unique @map("coach_slug") @db.VarChar(60)
   coachPhotoKey    String?   @map("coach_photo_key") @db.VarChar(500)
   coachColor       String?   @map("coach_color") @db.VarChar(9)
   coachBio         String?   @map("coach_bio") @db.Text
   /// Role / qualification line under the name ("UEFA B · Head coach U13").
   coachTitle       String?   @map("coach_title") @db.VarChar(80)
-  coachPageEnabled Boolean   @default(true) @map("coach_page_enabled")
+  /// Opt-in (3 Oct 2026): off until the coach switches "Show my public page"
+  /// on. Off also hides their photo and bio on book pages and library cards.
+  coachPageEnabled Boolean   @default(false) @map("coach_page_enabled")
   /// Public-page facts a parent or club reads before they trust a coach.
   /// All optional; the page simply omits what is blank.
   coachingSince        Int?     @map("coaching_since")
