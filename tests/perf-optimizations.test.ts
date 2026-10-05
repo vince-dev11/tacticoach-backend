@@ -45,6 +45,30 @@ describe('PERF · paging is clamped', () => {
   })
 })
 
+describe('PAGING · the community library searches on the server', () => {
+  it('?q= filters by title, coach or club — and the count uses the same filter', async () => {
+    const app = await getApp()
+    dbMock.canvasBoard.findMany.mockResolvedValue([] as never)
+    dbMock.canvasBoard.count.mockResolvedValue(0 as never)
+    await app.inject({ method: 'GET', url: '/api/canvas/library?page=2&limit=12&q=press', headers: authHeaders(await accessToken()) })
+    const args = dbMock.canvasBoard.findMany.mock.calls.at(-1)?.[0]
+    expect(args?.skip).toBe(12)
+    expect(args?.take).toBe(12)
+    expect(args?.where).toMatchObject({ published: true })
+    expect(JSON.stringify(args?.where)).toContain('"title":{"contains":"press"}')
+    expect(JSON.stringify(args?.where)).toContain('"clubName":{"contains":"press"}')
+    expect(dbMock.canvasBoard.count.mock.calls.at(-1)?.[0]).toEqual({ where: args?.where })
+  })
+
+  it('no search: every published board', async () => {
+    const app = await getApp()
+    dbMock.canvasBoard.findMany.mockResolvedValue([] as never)
+    dbMock.canvasBoard.count.mockResolvedValue(0 as never)
+    await app.inject({ method: 'GET', url: '/api/canvas/library', headers: authHeaders(await accessToken()) })
+    expect(dbMock.canvasBoard.findMany.mock.calls.at(-1)?.[0]?.where).toEqual({ published: true })
+  })
+})
+
 describe('PERF · JSON is compressed', () => {
   it('a large list comes back gzipped when the browser accepts it — and decodes to the same JSON', async () => {
     const app = await getApp()

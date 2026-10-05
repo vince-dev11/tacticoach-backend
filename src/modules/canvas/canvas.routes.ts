@@ -146,9 +146,25 @@ export async function canvasRoutes(app: FastifyInstance) {
   app.get('/library', async (request, reply) => {
     const userId = (request.user as any).sub as number
     const { page, limit, skip } = pageParams(request.query)
+    // Search runs on the server (5 Oct 2026): the library is paged here, so a
+    // search in the browser would only ever look through the page it has.
+    // Title, or the coach's name or club. MySQL's default collation makes
+    // `contains` case-insensitive.
+    const q = String((request.query as Record<string, unknown>).q ?? '').trim().slice(0, 80)
+    const where: Prisma.CanvasBoardWhereInput = {
+      published: true,
+      ...(q && {
+        OR: [
+          { title: { contains: q } },
+          { user: { name: { contains: q } } },
+          { user: { surname: { contains: q } } },
+          { user: { clubName: { contains: q } } },
+        ],
+      }),
+    }
     const [boards, total] = await Promise.all([
       db.canvasBoard.findMany({
-        where: { published: true },
+        where,
         orderBy: { publishedAt: 'desc' },
         skip,
         take: limit,
@@ -163,7 +179,7 @@ export async function canvasRoutes(app: FastifyInstance) {
           likes: { where: { userId }, select: { id: true } },
         },
       }),
-      db.canvasBoard.count({ where: { published: true } }),
+      db.canvasBoard.count({ where }),
     ])
     const items = await Promise.all(
       boards.map(async (b) => {
