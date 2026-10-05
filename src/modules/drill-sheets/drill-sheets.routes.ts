@@ -12,6 +12,7 @@ import { db } from '../../config/database.js'
 import { uploadToS3, deleteFromS3, presignUrl } from '../../config/s3.js'
 import { readUpload } from '../../lib/multipart.js'
 import { latinOnly } from '../../lib/latin-only.js'
+import { pageParams } from '../../lib/paging.js'
 
 const IMAGE_TYPES = ['image/webp', 'image/png', 'image/jpeg']
 const IMAGE_MAX = 6 * 1024 * 1024 // 6 MB — a scale-2 capture of a full A4 sheet
@@ -51,14 +52,13 @@ export async function drillSheetsRoutes(app: FastifyInstance) {
   // GET /drill-sheets/gallery — published sheets from all users, with likes
   app.get('/gallery', async (request, reply) => {
     const userId = (request.user as any).sub as number
-    const { page = '1', limit = '20' } = request.query as Record<string, string>
-    const skip = (Number(page) - 1) * Number(limit)
+    const { page, limit, skip } = pageParams(request.query)
     const [sheets, total] = await Promise.all([
       db.drillSheet.findMany({
         where: { published: true },
         orderBy: { publishedAt: 'desc' },
         skip,
-        take: Number(limit),
+        take: limit,
         include: {
           user: { select: { id: true, name: true, surname: true, clubName: true } },
           _count: { select: { likes: true } },
@@ -74,7 +74,7 @@ export async function drillSheetsRoutes(app: FastifyInstance) {
         likedByMe: likes.length > 0,
       })),
     )
-    return reply.send({ sheets: items, total, page: Number(page), limit: Number(limit) })
+    return reply.send({ sheets: items, total, page, limit })
   })
 
   // POST /drill-sheets — editor access required (trial or paid)

@@ -10,6 +10,7 @@ import { db } from '../../config/database.js'
 import { uploadToS3, deleteFromS3, presignUrl } from '../../config/s3.js'
 import { readUpload } from '../../lib/multipart.js'
 import { latinOnly } from '../../lib/latin-only.js'
+import { pageParams } from '../../lib/paging.js'
 
 /** Coach-chosen category tags — an enum so a client bug can't grow junk labels. */
 export const BOARD_TAGS = [
@@ -121,14 +122,13 @@ export async function canvasRoutes(app: FastifyInstance) {
   // GET /canvas/boards — the current user's boards
   app.get('/boards', async (request, reply) => {
     const userId = (request.user as any).sub as number
-    const { page = '1', limit = '20' } = request.query as Record<string, string>
-    const skip = (Number(page) - 1) * Number(limit)
+    const { page, limit, skip } = pageParams(request.query)
     const [boards, total] = await Promise.all([
       db.canvasBoard.findMany({
         where: { userId },
         orderBy: { updatedAt: 'desc' },
         skip,
-        take: Number(limit),
+        take: limit,
         select: { ...BOARD_CARD_SELECT, _count: { select: { likes: true } } },
       }),
       db.canvasBoard.count({ where: { userId } }),
@@ -136,8 +136,8 @@ export async function canvasRoutes(app: FastifyInstance) {
     return reply.send({
       boards: await Promise.all(boards.map(withMediaUrls)),
       total,
-      page: Number(page),
-      limit: Number(limit),
+      page,
+      limit,
     })
   })
 
@@ -145,14 +145,13 @@ export async function canvasRoutes(app: FastifyInstance) {
   // with like counts and whether the current user liked each one.
   app.get('/library', async (request, reply) => {
     const userId = (request.user as any).sub as number
-    const { page = '1', limit = '20' } = request.query as Record<string, string>
-    const skip = (Number(page) - 1) * Number(limit)
+    const { page, limit, skip } = pageParams(request.query)
     const [boards, total] = await Promise.all([
       db.canvasBoard.findMany({
         where: { published: true },
         orderBy: { publishedAt: 'desc' },
         skip,
-        take: Number(limit),
+        take: limit,
         select: {
           ...BOARD_CARD_SELECT,
           // coachSlug links the card to the coach's page; the page itself
@@ -182,7 +181,7 @@ export async function canvasRoutes(app: FastifyInstance) {
         }
       }),
     )
-    return reply.send({ boards: items, total, page: Number(page), limit: Number(limit) })
+    return reply.send({ boards: items, total, page, limit })
   })
 
   // POST /canvas/boards — editor access required (trial or paid)

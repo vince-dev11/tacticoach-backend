@@ -7,6 +7,7 @@ import fastifyJwt from '@fastify/jwt'
 import fastifyMultipart from '@fastify/multipart'
 import fastifyRateLimit from '@fastify/rate-limit'
 import fastifyHelmet from '@fastify/helmet'
+import fastifyCompress from '@fastify/compress'
 
 import { env, corsOrigins } from './config/env.js'
 import { registerLocalUploads } from './config/s3.js'
@@ -94,6 +95,13 @@ export async function buildApp(): Promise<FastifyInstance> {
   // ---- Plugins --------------------------------------------------------------
 
   await app.register(fastifyHelmet)
+
+  // Compress JSON responses (5 Oct 2026). A saved board's state is JSON that
+  // can run to hundreds of KB; gzip cuts it by ~80–90% on the wire. gzip, not
+  // Brotli, to keep CPU low on a small box. Only compressible types above 1 KB
+  // (mime-db), so images and videos stream through untouched. If nginx in front
+  // also compresses, it leaves an already-encoded response alone.
+  await app.register(fastifyCompress, { global: true, encodings: ['gzip', 'deflate'], threshold: 1024 })
 
   await app.register(fastifyCors, {
     origin: corsOrigins,

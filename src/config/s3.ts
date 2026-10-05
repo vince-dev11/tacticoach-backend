@@ -86,7 +86,10 @@ export function registerLocalUploads(app: FastifyInstance) {
     } catch {
       return reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'No such file' })
     }
-    reply.header('Cache-Control', 'public, max-age=3600')
+    // Every stored key is unique (a timestamp in the name; a replaced file
+    // gets a new name), so a file never changes: the browser may keep it for a
+    // year instead of re-downloading it every hour (5 Oct 2026).
+    reply.header('Cache-Control', 'public, max-age=31536000, immutable')
     reply.type(MIME[path.extname(file).toLowerCase()] ?? 'application/octet-stream')
     return reply.send(createReadStream(file))
   })
@@ -129,6 +132,9 @@ export async function uploadToS3(key: string, body: Buffer, contentType: string)
       Key: key,
       Body: body,
       ContentType: contentType,
+      // Every key is unique (a timestamp in the name — a replaced thumbnail
+      // gets a NEW key), so an object never changes: browsers may keep it.
+      CacheControl: MEDIA_CACHE_CONTROL,
     }),
   )
 }
@@ -143,6 +149,38 @@ export async function deleteFromS3(key: string): Promise<void> {
   await getS3Client().send(new DeleteObjectCommand({ Bucket: env.S3_BUCKET!, Key: key }))
 }
 
+// ---- Cacheable media URLs (5 Oct 2026) ----------------------------------------
+//
+// Media URLs used to be signed afresh, for 15 minutes, on every request — so
+// every library visit got a NEW URL for every thumbnail and the browser could
+// never reuse what it had already downloaded: each visit re-fetched every image
+// from S3 (paid egress, slower pages).
+//
+// Now a URL is signed against the start of a fixed window (SIGN_WINDOW_MS), so
+// the same object gets the SAME URL for the whole window and the browser serves
+// it from its cache. Each URL stays valid for at least one window after it is
+// handed out (expiry = window start + 2 windows). The response is told to be
+// cacheable even for objects uploaded before CacheControl was set at upload.
+//
+// Trade-off: a copied media link now works for up to 12 h instead of 15 min.
+// Keys are per-user, unlisted and the bucket stays private; nothing that is not
+// already shown to that user becomes reachable.
+export const MEDIA_CACHE_CONTROL = 'private, max-age=31536000, immutable'
+export const SIGN_WINDOW_MS = 6 * 60 * 60 * 1000
+const SIGN_EXPIRES_S = (2 * SIGN_WINDOW_MS) / 1000
+/** Browser cache for a signed URL: as long as it is certain to stay valid. */
+const RESPONSE_CACHE_CONTROL = `private, max-age=${SIGN_WINDOW_MS / 1000}, immutable`
+
+/** The start of the signing window `now` falls in. */
+export function signWindowStart(now = Date.now()): number {
+  return Math.floor(now / SIGN_WINDOW_MS) * SIGN_WINDOW_MS
+}
+
+// Signing is cheap, but a library page signs ~40 URLs per request; within a
+// window the answer is identical, so it is kept (bounded) instead of redone.
+const signed = new Map<string, string>()
+const SIGNED_MAX = 5000
+
 /** Presigned S3 URL — or the API's own /uploads URL when running on local disk. */
 export async function presignUrl(key: string): Promise<string | null> {
   if (!s3Configured()) {
@@ -155,7 +193,16 @@ export async function presignUrl(key: string): Promise<string | null> {
     }
     return `${publicBase()}/uploads/${key}`
   }
-  return getSignedUrl(getS3Client(), new GetObjectCommand({ Bucket: env.S3_BUCKET!, Key: key }), {
-    expiresIn: 900,
-  })
+  const windowStart = signWindowStart()
+  const memo = `${windowStart}:${key}`
+  const hit = signed.get(memo)
+  if (hit) return hit
+  const url = await getSignedUrl(
+    getS3Client(),
+    new GetObjectCommand({ Bucket: env.S3_BUCKET!, Key: key, ResponseCacheControl: RESPONSE_CACHE_CONTROL }),
+    { expiresIn: SIGN_EXPIRES_S, signingDate: new Date(windowStart) },
+  )
+  if (signed.size >= SIGNED_MAX) signed.clear()
+  signed.set(memo, url)
+  return url
 }
