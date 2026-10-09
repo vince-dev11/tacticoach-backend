@@ -69,13 +69,18 @@ describe('the free tier', () => {
     expect(can(ent('free'), 'video_export')).toBe(true)
   })
 
-  it('carries OUR brand, never the coach\'s', () => {
-    // The trade: a free coach pays in marketing instead of money. Their own
-    // badge, a public page and HD without our watermark are all things that
-    // make them look professional to someone else, and all of them are Pro.
-    expect(can(ent('free'), 'own_branding')).toBe(false)
-    expect(can(ent('free'), 'video_hd')).toBe(false)
-    expect(can(ent('free'), 'social_export')).toBe(false)
+  it('PRO-TRIAL · is a taste of Pro: 3D, Stadium, sounds, connected players, HD and social (6 Oct 2026)', () => {
+    for (const c of ['board_3d', 'ball_sound', 'connected_players', 'video_hd', 'social_export'] as Capability[]) {
+      expect(can(ent('free'), c), `the trial should show ${c}`).toBe(true)
+    }
+  })
+
+  it('PRO-TRIAL · still never the coach\'s own brand, AI or publishing', () => {
+    // What costs us or moves money stays paid, and so does looking like a
+    // club: their badge, AI credits, selling a book, parents' copies.
+    for (const c of ['own_branding', 'ai', 'publish_ebooks', 'guardian_copies', 'multi_squad', 'player_feedback'] as Capability[]) {
+      expect(can(ent('free'), c), `the trial should not grant ${c}`).toBe(false)
+    }
   })
 
   it('can write one book but never publish it', () => {
@@ -94,13 +99,15 @@ describe('the free tier', () => {
     })
   })
 
-  it('is a strict subset of Basic, which is a strict subset of Pro', () => {
-    // The rule that stops a pricing page becoming indefensible. It has been
-    // broken twice already — free got the planner before Basic did, and free
-    // got a book before Basic did — and both times the fix was to move the
-    // feature DOWN, never to take it off free.
+  it('is a subset of Pro; Basic keeps every workflow the trial has', () => {
+    // Since 6 Oct 2026 the trial shows Pro's look (3D, sounds, connected
+    // players, HD, social), so it is no longer inside Basic. What must stay
+    // true: nothing the trial shows is missing from Pro, and Basic never
+    // loses a WORKFLOW the trial had — only Pro's finish.
+    const proLook: Capability[] = ['board_3d', 'ball_sound', 'connected_players', 'video_hd', 'social_export']
     for (const c of capabilitiesOf('free')) {
-      expect(can(ent('basic'), c), `basic must keep ${c} that free has`).toBe(true)
+      expect(can(ent('pro'), c), `pro must keep ${c} that the trial has`).toBe(true)
+      if (!proLook.includes(c)) expect(can(ent('basic'), c), `basic must keep ${c} that free has`).toBe(true)
     }
     for (const c of capabilitiesOf('basic')) {
       expect(can(ent('pro'), c), `pro must keep ${c} that basic has`).toBe(true)
@@ -241,5 +248,20 @@ describe('the edges that would quietly give the product away', () => {
 
   it('refuses a capability for a slug it has never heard of', () => {
     expect(can(ent('enterprise-mega'), 'editor')).toBe(false)
+  })
+})
+
+describe('PRO-GATE · 3D/Stadium, ball sounds and connected players are Pro (6 Oct 2026)', () => {
+  const look: Capability[] = ['board_3d', 'ball_sound', 'connected_players']
+  it('Pro, every Club size and the owner have them', () => {
+    for (const slug of ['pro', 'club-5', 'club-10', 'club-20', 'owner', 'pro-ai']) {
+      for (const c of look) expect(can(ent(slug), c), `${slug} should have ${c}`).toBe(true)
+    }
+  })
+  it('Basic does not', () => {
+    for (const c of look) expect(can(ent('basic'), c)).toBe(false)
+  })
+  it('an ended trial has nothing', () => {
+    for (const c of look) expect(can(ent('free', { editorAccess: false }), c)).toBe(false)
   })
 })

@@ -48,6 +48,8 @@ import {
   rejectApplication,
   type ApplicationStatus,
 } from '../collaborations/applications.service.js'
+import { LEAD_CHANNELS, normaliseChannel } from './lead-channels.js'
+import { UserFilters, userWhere, trialEndingSoon, trialEndsAt, trialEndsWithin } from './user-filters.js'
 import { sendCollaborationInviteEmail, sendAdminMessage, sendVerificationEmail, sendTrialReminderEmail } from '../../lib/emails.js'
 
 // ---- TEMPORARY: remove once `prisma generate` has run against migration 23 --
@@ -81,6 +83,8 @@ interface LeadRow {
   email: string
   source: 'web' | 'direct' | 'import'
   kind: 'unknown' | 'coach' | 'club'
+  /** Where they heard about us — lead-channels.ts. Null = not known. */
+  channel: string | null
   topic: string | null
   message: string | null
   note: string | null
@@ -276,15 +280,18 @@ export async function adminRoutes(app: FastifyInstance) {
   // GET /admin/stats — overview dashboard numbers
   app.get('/stats', async (_request, reply) => {
     const now = new Date()
-    const in7d = new Date(now.getTime() + 7 * 86400_000)
     const eightWeeksAgo = new Date(now.getTime() - 8 * 7 * 86400_000)
 
     const [totalUsers, verifiedUsers, activeTrials, expiringTrials, paidSubs, newLeads, recentUsers] =
       await Promise.all([
         db.user.count(),
         db.user.count({ where: { emailVerifiedAt: { not: null } } }),
-        db.userSubscription.count({ where: { status: 'trial', expiresAt: { gt: now } } }),
-        db.userSubscription.count({ where: { status: 'trial', expiresAt: { gt: now, lte: in7d } } }),
+        // Both kinds of trial — the free 14-day one on the user as well as a
+        // trial subscription row (it used to count only the latter, which
+        // missed every coach who joined after 1 Oct 2026). Same definition as
+        // the Users filter, so the card and the list agree.
+        db.user.count({ where: trialEndsWithin(now) }),
+        db.user.count({ where: trialEndingSoon(now) }),
         db.userSubscription.findMany({
           where: { status: 'active', paymentProvider: 'stripe' },
           include: { plan: { select: { monthlyPrice: true, annualPrice: true } } },
@@ -329,41 +336,55 @@ export async function adminRoutes(app: FastifyInstance) {
     })
   })
 
-  // GET /admin/users?search=&page= — customer list
+  // GET /admin/users?search=&type=&plan=&verified=&joined=&content=&sort=&page=
+  // The customer list. Filters live in user-filters.ts; every unknown value
+  // is ignored rather than refused, so an old bookmark still opens the list.
   app.get('/users', async (request, reply) => {
-    const { search = '', page = '1' } = request.query as Record<string, string>
+    const f = UserFilters.parse(request.query ?? {})
     const take = 25
-    const skip = (Math.max(1, Number(page) || 1) - 1) * take
-    const where: Prisma.UserWhereInput = search
-      ? {
-          OR: [
-            { email: { contains: search } },
-            { name: { contains: search } },
-            { surname: { contains: search } },
-            { clubName: { contains: search } },
-          ],
-        }
-      : {}
-    const [users, total] = await Promise.all([
-      db.user.findMany({
-        where,
-        orderBy: { createdAt: 'desc' },
-        skip,
-        take,
-        select: {
-          id: true, name: true, surname: true, email: true, clubName: true,
-          emailVerifiedAt: true, createdAt: true, role: true, accountType: true,
-          // The derived reality next to the declared type: someone who picked
-          // "club" at signup and never took the plan has no Club row, which
-          // makes them a sales lead rather than a club.
-          ownedClub: { select: { id: true } },
-          subscription: { select: { status: true, expiresAt: true, paymentProvider: true, plan: { select: { name: true, slug: true } } } },
-          _count: { select: { boards: true, drillSheets: true } },
-        },
-      }),
+    const now = new Date()
+    const where = userWhere(f, now)
+    const select = {
+      id: true, name: true, surname: true, email: true, clubName: true,
+      emailVerifiedAt: true, createdAt: true, role: true, accountType: true,
+      freeTrialEndsAt: true,
+      // The derived reality next to the declared type: someone who picked
+      // "club" at signup and never took the plan has no Club row, which
+      // makes them a sales lead rather than a club.
+      ownedClub: { select: { id: true } },
+      clubMembership: { select: { id: true } },
+      subscription: { select: { status: true, expiresAt: true, paymentProvider: true, plan: { select: { name: true, slug: true } } } },
+      _count: { select: { boards: true, drillSheets: true } },
+    } satisfies Prisma.UserSelect
+
+    // "Soonest trial end first": the date sits in one of two columns, so the
+    // database cannot sort it. Only offered on trial filters, which are short.
+    const byTrialEnd = f.sort === 'trial_end' && (f.plan === 'trial' || f.plan === 'trial_ending')
+    const [rows, total, trialEnding] = await Promise.all([
+      byTrialEnd
+        ? db.user.findMany({ where, select, take: 2000 })
+        : db.user.findMany({
+            where,
+            select,
+            orderBy: { createdAt: f.sort === 'oldest' ? 'asc' : 'desc' },
+            skip: (f.page - 1) * take,
+            take,
+          }),
       db.user.count({ where }),
+      // The number on the "Trial ends ≤ 7 days" chip — across everyone, not
+      // just this page, so it is the to-do list.
+      db.user.count({ where: trialEndingSoon(now) }),
     ])
-    return reply.send({ users, total, page: Number(page) || 1, limit: take })
+    let users = rows.map(({ clubMembership, ...u }) => {
+      const ends = trialEndsAt({ ...u, clubMembership }, now)
+      return { ...u, trialEndsAt: ends ? ends.toISOString() : null }
+    })
+    if (byTrialEnd) {
+      users = users
+        .sort((x, y) => (x.trialEndsAt ?? '9').localeCompare(y.trialEndsAt ?? '9'))
+        .slice((f.page - 1) * take, f.page * take)
+    }
+    return reply.send({ users, total, page: f.page, limit: take, counts: { trialEnding } })
   })
 
   /**
@@ -804,12 +825,14 @@ export async function adminRoutes(app: FastifyInstance) {
     email: z.string().trim().toLowerCase().email().max(255),
     kind: LeadKind.default('unknown'),
     note: z.string().max(500).optional().nullable(),
+    // Where they heard about us. Lenient — "Insta", "FB" — see lead-channels.ts.
+    channel: z.unknown().optional().transform(normaliseChannel),
   })
 
   // GET /admin/leads?status=&source=&kind=&q=
   // `box` = leads (default) | support — which inbox; `topic` narrows within it.
   app.get('/leads', async (request, reply) => {
-    const { status, source, kind, q, box, topic } = request.query as Record<string, string>
+    const { status, source, kind, q, box, topic, channel } = request.query as Record<string, string>
     const inbox: ContactBox = box === 'support' ? 'support' : 'leads'
     const leads = await leadDb().findMany({
       where: {
@@ -820,6 +843,10 @@ export async function adminRoutes(app: FastifyInstance) {
         ...(LeadStatus.safeParse(status).success ? { status: status as 'new' } : {}),
         ...(LeadSource.safeParse(source).success ? { source: source as 'web' } : {}),
         ...(LeadKind.safeParse(kind).success ? { kind: kind as 'coach' } : {}),
+        // `none` = not recorded yet, so the gaps can be filled in.
+        ...(channel === 'none'
+          ? { channel: null }
+          : (LEAD_CHANNELS as readonly string[]).includes(channel) ? { channel } : {}),
         // Name or email. Trimmed, because a search box picks up stray spaces
         // and " " would otherwise match every row via contains.
         ...(q?.trim()
@@ -842,11 +869,12 @@ export async function adminRoutes(app: FastifyInstance) {
   app.get('/leads/stats', async (request, reply) => {
     const inbox: ContactBox = (request.query as Record<string, string>).box === 'support' ? 'support' : 'leads'
     const where = boxWhere(inbox)
-    const [total, bySource, byKind, byTopic] = await Promise.all([
+    const [total, bySource, byKind, byTopic, byChannel] = await Promise.all([
       db.contactMessage.count({ where }),
       leadDb().groupBy({ by: ['source'], where, _count: { _all: true } }),
       leadDb().groupBy({ by: ['kind'], where, _count: { _all: true } }),
       leadDb().groupBy({ by: ['topic'], where: { ...where, status: 'new' }, _count: { _all: true } }),
+      leadDb().groupBy({ by: ['channel'], where, _count: { _all: true } }),
     ])
     const tally = (rows: { _count: { _all: number } }[], key: string) =>
       Object.fromEntries(
@@ -858,6 +886,8 @@ export async function adminRoutes(app: FastifyInstance) {
       kind: tally(byKind, 'kind'),
       /** NEW messages per topic — the badge on each topic filter. */
       newByTopic: tally(byTopic, 'topic'),
+      /** Per channel; the `null` key ("null") is leads with none recorded. */
+      channel: tally(byChannel, 'channel'),
     })
   })
 
@@ -882,6 +912,7 @@ export async function adminRoutes(app: FastifyInstance) {
         email,
         source: 'direct',
         kind: input.kind,
+        channel: input.channel,
         // Null, not ''. They have not written to us — see the schema comment.
         message: null,
         note: input.note?.trim() || null,
@@ -907,7 +938,7 @@ export async function adminRoutes(app: FastifyInstance) {
       .parse(request.body)
 
     const seen = new Set<string>()
-    const valid: { firstName: string; lastName: string; email: string; kind: 'unknown' | 'coach' | 'club'; note: string | null }[] = []
+    const valid: { firstName: string; lastName: string; email: string; kind: 'unknown' | 'coach' | 'club'; note: string | null; channel: string | null }[] = []
     const invalid: { row: number; reason: string }[] = []
     const duplicateInFile: string[] = []
 
@@ -932,6 +963,7 @@ export async function adminRoutes(app: FastifyInstance) {
         email,
         kind: parsed.data.kind,
         note: parsed.data.note?.trim() || null,
+        channel: parsed.data.channel,
       })
     })
 
@@ -963,7 +995,7 @@ export async function adminRoutes(app: FastifyInstance) {
     })
   })
 
-  // PATCH /admin/leads/:id { status?, kind?, note? }
+  // PATCH /admin/leads/:id { status?, kind?, note?, channel? }
   app.patch('/leads/:id', async (request, reply) => {
     const id = Number((request.params as { id: string }).id)
     const input = z
@@ -974,6 +1006,8 @@ export async function adminRoutes(app: FastifyInstance) {
         // Moving a message between Leads and Support: the person picked the
         // wrong topic, or a complaint turned out to be a sales question.
         topic: z.enum(CONTACT_TOPICS).optional(),
+        // Strict here (a picker, not a spreadsheet); null clears it.
+        channel: z.enum(LEAD_CHANNELS).nullable().optional(),
       })
       .parse(request.body)
     if (Object.keys(input).length === 0) {
@@ -986,6 +1020,7 @@ export async function adminRoutes(app: FastifyInstance) {
         ...(input.kind ? { kind: input.kind } : {}),
         ...(input.note !== undefined ? { note: input.note?.trim() || null } : {}),
         ...(input.topic ? { topic: input.topic } : {}),
+        ...(input.channel !== undefined ? { channel: input.channel } : {}),
       },
     })
     return reply.send(lead)

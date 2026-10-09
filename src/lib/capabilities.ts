@@ -51,6 +51,16 @@ export type Capability =
   | 'publish_ebooks'
   /** Club-wide: a public club page and shared library. */
   | 'club_page'
+  /**
+   * The 3D and Stadium views of a board, and their video (6 Oct 2026: Pro).
+   * Rendered in the browser, so the gate is the UI's; the API's part is to
+   * say who has it.
+   */
+  | 'board_3d'
+  /** Ball sounds in downloaded videos (6 Oct 2026: Pro). */
+  | 'ball_sound'
+  /** Connected players — linked blocks with distances (6 Oct 2026: Pro). */
+  | 'connected_players'
 
 /**
  * The tiers, by plan slug.
@@ -72,12 +82,32 @@ export type Capability =
  * What stays paid for good is what makes a coach look professional to
  * someone else: HD video, their own badge, a public page, publishing a book.
  */
-const FREE: Capability[] = ['editor', 'video_export', 'planner', 'draft_ebooks']
+/**
+ * The trial is a taste of PRO, not of Basic (owner's decision, 6 Oct 2026).
+ *
+ * For its 14 days a coach gets Pro's look and finish — 3D and Stadium, ball
+ * sounds, connected players, HD video without our badge, social export —
+ * inside the trial's small counts (LIMITS.free). What stays out is what costs
+ * us or moves money (AI credits, publishing a book) and what only matters to
+ * a paying club or a coach with a following (own branding, squads, parents'
+ * copies). A coach who then picks Basic loses the Pro-only parts, and that
+ * is the point: they have seen them.
+ *
+ * This replaced "free ⊆ Basic". The rule that still holds, and is tested, is
+ * free ⊆ Pro: nothing the trial shows is missing from the plan it advertises.
+ */
+const PRO_LOOK: Capability[] = ['board_3d', 'ball_sound', 'connected_players']
+
+const FREE: Capability[] = [
+  'editor', 'video_export', 'planner', 'draft_ebooks',
+  'video_hd', 'social_export', ...PRO_LOOK,
+]
 
 /**
- * Basic must be a SUPERSET of free. Every one of these tiers is, and that is
- * not a style rule — a paid tier missing something the free tier has is
- * indefensible on a pricing page and impossible to explain on a support call.
+ * Basic keeps every WORKFLOW the free trial has (it was a superset of free
+ * until 6 Oct 2026, when the trial became a taste of Pro — see FREE). Pro's
+ * look and finish (3D, sounds, connected players, HD, social) are what a
+ * Basic coach gives up; the tools to plan and run a session never are.
  *
  * Two features moved down here to keep that true, once free was specified:
  *
@@ -95,6 +125,7 @@ const PRO: Capability[] = [
   ...BASIC,
   'video_hd', 'social_export', 'multi_squad',
   'own_branding', 'guardian_copies', 'ai', 'publish_ebooks',
+  ...PRO_LOOK,
 ]
 
 /**

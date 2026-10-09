@@ -61,7 +61,8 @@ export type UpdateProfileInput = z.infer<typeof UpdateProfileSchema>
  * Guided tours a user can complete. An enum (not a free string) so a client
  * bug can never grow the account's tours array with junk.
  */
-export const TOUR_IDS = ['editor', 'sheet', 'session', 'book'] as const
+// 'guided': the editor's guided first board (LEARN, 7 Oct 2026) — done once per account.
+export const TOUR_IDS = ['editor', 'sheet', 'session', 'book', 'guided'] as const
 /**
  * "What's new" pop-ups are recorded the same way, as `release:YYYY-MM-DD` —
  * one entry per release the account has seen, so a coach sees each release

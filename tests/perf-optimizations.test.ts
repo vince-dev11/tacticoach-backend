@@ -146,6 +146,12 @@ describe('PERF · media URLs are cacheable', () => {
     expect(src).not.toContain("'public, max-age=3600'")
   })
 
+  it('E2E-07 · files on the server disk may be shown in an <img> on the web app (Helmet would refuse)', async () => {
+    const src = await import('node:fs').then((fs) => fs.readFileSync('src/config/s3.ts', 'utf8'))
+    const route = src.slice(src.indexOf("app.get('/uploads/*'"))
+    expect(route).toContain("reply.header('Cross-Origin-Resource-Policy', 'cross-origin')")
+  })
+
   it('uploads are stored as immutable (every key is unique, so a file never changes)', async () => {
     const s3 = await realS3()
     expect(s3.MEDIA_CACHE_CONTROL).toContain('immutable')

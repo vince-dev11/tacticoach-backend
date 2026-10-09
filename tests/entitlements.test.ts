@@ -55,8 +55,10 @@ describe('getEntitlements', () => {
       noClubData()
       const ent = await getEntitlements(1)
       expect(ent.plan?.slug, `${status} should fall to free`).toBe('free')
-      // The paid capabilities go, which is the part that matters.
-      expect(can(ent, 'video_hd'), `${status} should lose HD`).toBe(false)
+      // The paid capabilities go, which is the part that matters. (HD is not
+      // one of them while the free trial lasts: since 6 Oct 2026 the trial
+      // shows Pro's finish — see capabilities.ts FREE.)
+      expect(can(ent, 'ai'), `${status} should lose AI`).toBe(false)
       expect(can(ent, 'own_branding'), `${status} should lose branding`).toBe(false)
       expect(can(ent, 'editor'), `${status} should keep the editor`).toBe(true)
     }

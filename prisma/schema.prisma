@@ -1183,6 +1183,10 @@ model ContactMessage {
   /// web = the website's contact form, direct = typed in by an admin,
   /// import = arrived on a spreadsheet.
   source    LeadSource    @default(web)
+  /// Where they heard about us: facebook, instagram, tiktok… (see
+  /// modules/admin/lead-channels.ts). Null = not known. Not `source`, which
+  /// is how the row got here.
+  channel   String?       @db.VarChar(20)
   /// Set by an admin when they know. `unknown` is the honest default: the
   /// contact form does not ask, and guessing from a message body would put a
   /// wrong label on a real person.
@@ -1204,6 +1208,7 @@ model ContactMessage {
   @@index([status, createdAt])
   @@index([source, kind])
   @@index([topic, status])
+  @@index([channel])
   /// Not unique — the same person may use the contact form twice. Dedupe on
   /// import is the importer's job; see admin.routes.
   @@index([email])

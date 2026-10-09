@@ -90,6 +90,13 @@ export function registerLocalUploads(app: FastifyInstance) {
     // gets a new name), so a file never changes: the browser may keep it for a
     // year instead of re-downloading it every hour (5 Oct 2026).
     reply.header('Cache-Control', 'public, max-age=31536000, immutable')
+    // Helmet answers every response with Cross-Origin-Resource-Policy:
+    // same-origin, which makes a browser REFUSE to show these files in an
+    // <img> or <video> on the web app's origin (app at tacticoach.co.uk, API
+    // at app.tacticoach.co.uk; locally :5280 vs :3001): the library drew its
+    // fallback pitch instead of every saved thumbnail (E2E, 7 Oct 2026). These
+    // are the coach's own uploads, served by key, meant to be embedded.
+    reply.header('Cross-Origin-Resource-Policy', 'cross-origin')
     reply.type(MIME[path.extname(file).toLowerCase()] ?? 'application/octet-stream')
     return reply.send(createReadStream(file))
   })
