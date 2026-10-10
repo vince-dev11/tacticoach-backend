@@ -1,6 +1,6 @@
 # TactiCoach — working rules (API)
 
-Fastify + Prisma (MySQL) API behind `app.tacticoach.co.uk`. Serves the coaching product: auth/accounts, canvas boards, drill sheets, sessions & season planner, player feedback, ebooks marketplace, clubs, referrals/collaboration, admin, and the football AI (`src/modules/ai`). The frontend repo's `CLAUDE.md` and `.claude/skills/` hold the product and football knowledge; the same skills are mirrored here.
+Fastify + Prisma (MySQL) API behind `api.tacticoach.co.uk`, serving the app at `tacticoach.co.uk`. Serves the coaching product: auth/accounts, canvas boards, drill sheets, sessions & season planner, player feedback, ebooks marketplace, clubs, referrals/collaboration, admin, and the football AI (`src/modules/ai`). The frontend repo's `CLAUDE.md` and `.claude/skills/` hold the product and football knowledge; the same skills are mirrored here.
 
 ## Rules
 

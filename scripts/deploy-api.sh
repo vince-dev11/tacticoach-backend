@@ -68,8 +68,10 @@ for i in 1 2 3 4 5; do
 done
 curl -fsS -m 5 "http://127.0.0.1:${PORT:-3001}/health" || die "/health not answering — check: pm2 logs $APP --lines 60"
 echo
+# The app's own origin, from .env (DOMAIN, 10 Oct 2026: was app.tacticoach.co.uk).
+APP_ORIGIN=$(grep -E '^FRONTEND_URL=' .env | tail -1 | cut -d= -f2- | tr -d '"' | sed 's#/*$##')
 curl -s -o /dev/null -w "preflight max-age: %{http_code}\n" -X OPTIONS "http://127.0.0.1:${PORT:-3001}/api/users/me" \
-  -H "Origin: https://app.tacticoach.co.uk" -H "Access-Control-Request-Method: GET" -H "Access-Control-Request-Headers: authorization" -D - | grep -i "access-control-max-age" || echo "(max-age header not seen — CORS_ORIGINS may not include the app origin)"
+  -H "Origin: ${APP_ORIGIN:-https://tacticoach.co.uk}" -H "Access-Control-Request-Method: GET" -H "Access-Control-Request-Headers: authorization" -D - | grep -i "access-control-max-age" || echo "(max-age header not seen — CORS_ORIGINS may not include the app origin)"
 pm2 logs "$APP" --lines 25 --nostream | tail -25
 
 say "Done. API at $AFTER. Boot line should read 'Error tracking: Sentry on' once SENTRY_DSN is in .env."

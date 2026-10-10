@@ -174,7 +174,7 @@ if (parsed.data.NODE_ENV === 'production') {
   if (LOCALHOST_HOSTNAMES.has(host)) {
     console.error(`❌  FRONTEND_URL is ${parsed.data.FRONTEND_URL} in production.`)
     console.error('   Every link and image in every email would point at localhost.')
-    console.error('   Set it in .env, e.g. FRONTEND_URL=https://app.tacticoach.co.uk')
+    console.error('   Set it in .env, e.g. FRONTEND_URL=https://tacticoach.co.uk')
     process.exit(1)
   }
 }

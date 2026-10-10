@@ -15,6 +15,7 @@ import PDFDocument from 'pdfkit'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import type { SignedRecord } from './agreements.js'
+import { env } from '../config/env.js'
 
 interface AgreementSection {
   heading: string
@@ -231,7 +232,9 @@ export async function renderSignedAgreement(
 
     const y = pdf.page.height - PAGE.margin + 16
     pdf.font('body').fontSize(8).fillColor(MUTED)
-    pdf.text('TactiCoach · app.tacticoach.co.uk', left, y, { width: width / 2, lineBreak: false })
+    // DOMAIN (10 Oct 2026): the site's own address (FRONTEND_URL), not a
+    // hard-coded one — it moved from app.tacticoach.co.uk to tacticoach.co.uk.
+    pdf.text(`TactiCoach · ${siteHost()}`, left, y, { width: width / 2, lineBreak: false })
     pdf.text(`Page ${i + 1} of ${range.count}`, left + width / 2, y, {
       width: width / 2,
       align: 'right',
@@ -264,4 +267,13 @@ function formatStamp(at: Date): string {
     hour: '2-digit', minute: '2-digit', timeZone: 'UTC',
   })
   return `${date} at ${time} UTC`
+}
+
+/** The site's host for printed footers ("tacticoach.co.uk"). */
+function siteHost(): string {
+  try {
+    return new URL(env.FRONTEND_URL).host.replace(/^www\./, '')
+  } catch {
+    return 'tacticoach.co.uk'
+  }
 }

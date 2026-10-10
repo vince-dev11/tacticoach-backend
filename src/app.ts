@@ -113,7 +113,7 @@ export async function buildApp(): Promise<FastifyInstance> {
     // Cross-origin JavaScript can only read response headers listed here.
     // Without it the frontend never sees X-Request-Id on API responses.
     exposedHeaders: ['x-request-id'],
-    // Cache the CORS preflight. The app (app.tacticoach.co.uk) calls the API
+    // Cache the CORS preflight. The app (tacticoach.co.uk) calls the API
     // (api.tacticoach.co.uk) with an Authorization header, so every request
     // needs an OPTIONS preflight first — and without max-age Chrome only
     // remembers the answer for 5 seconds. Measured on the live site: every

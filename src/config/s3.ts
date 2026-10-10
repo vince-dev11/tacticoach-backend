@@ -93,7 +93,7 @@ export function registerLocalUploads(app: FastifyInstance) {
     // Helmet answers every response with Cross-Origin-Resource-Policy:
     // same-origin, which makes a browser REFUSE to show these files in an
     // <img> or <video> on the web app's origin (app at tacticoach.co.uk, API
-    // at app.tacticoach.co.uk; locally :5280 vs :3001): the library drew its
+    // at tacticoach.co.uk; locally :5280 vs :3001): the library drew its
     // fallback pitch instead of every saved thumbnail (E2E, 7 Oct 2026). These
     // are the coach's own uploads, served by key, meant to be embedded.
     reply.header('Cross-Origin-Resource-Policy', 'cross-origin')
