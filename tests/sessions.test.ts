@@ -362,3 +362,59 @@ describe('SEASON-2 · a session has a one-line description', () => {
     expect((dbMock.trainingSession.update.mock.calls.at(-1)![0] as { data: { description: string } }).data.description).toBe('New line')
   })
 })
+
+describe('MATCH-DAY · line-up, subs and minutes on a fixture (migration 51)', () => {
+  const md = (over: Record<string, unknown> = {}) => ({
+    v: 1, onPitch: 7, periods: 2, periodMinutes: 25, formation: '2-3-1',
+    players: [
+      { key: 'p1', squadPlayerId: 11, name: 'Sam', number: '1' },
+      { key: 'p2', squadPlayerId: null, name: '', number: '7' },
+    ],
+    slots: ['p1', 'p2', null, null, null, null, null],
+    stints: [{ key: 'p1', from: 0, to: null }, { key: 'p2', from: 0, to: 600 }],
+    events: [{ at: 600, kind: 'sub', off: 'p2', on: null }, { at: 700, kind: 'goal_for', scorer: 'p1' }],
+    clock: { state: 'running', period: 1, elapsed: 700, runningSince: 1791540000000 },
+    board: { positions: { p1: { x: 0.5, y: 0.9 } }, ink: [[[0.1, 0.1], [0.2, 0.2]]] },
+    ...over,
+  })
+
+  it('saves match day on a match, with the score, and touches nothing else', async () => {
+    const app = await getApp()
+    grantEditorAccess()
+    dbMock.trainingSession.findFirst.mockResolvedValue({ id: 1, isMatch: true } as never)
+    dbMock.trainingSession.update.mockResolvedValue(sessionRow({ isMatch: true }) as never)
+    const res = await app.inject({ method: 'PATCH', url: '/api/sessions/1', headers: authHeaders(await accessToken()), payload: { matchDay: md(), goalsFor: 1 } })
+    expect(res.statusCode).toBe(200)
+    const data = (dbMock.trainingSession.update.mock.calls[0][0] as { data: Record<string, unknown> }).data
+    expect(Object.keys(data).sort()).toEqual(['goalsFor', 'matchDay'])
+    expect((data.matchDay as { onPitch: number }).onPitch).toBe(7)
+  })
+
+  it('refuses match day on a training session (422)', async () => {
+    const app = await getApp()
+    grantEditorAccess()
+    dbMock.trainingSession.findFirst.mockResolvedValue({ id: 1, isMatch: false } as never)
+    const res = await app.inject({ method: 'PATCH', url: '/api/sessions/1', headers: authHeaders(await accessToken()), payload: { matchDay: md() } })
+    expect(res.statusCode).toBe(422)
+    expect(dbMock.trainingSession.update).not.toHaveBeenCalled()
+  })
+
+  it('refuses nonsense: 12 a side, a bad player key, a negative match second', async () => {
+    const app = await getApp()
+    grantEditorAccess()
+    dbMock.trainingSession.findFirst.mockResolvedValue({ id: 1, isMatch: true } as never)
+    for (const bad of [md({ onPitch: 12 }), md({ slots: ['../x'] }), md({ stints: [{ key: 'p1', from: -1, to: null }] })]) {
+      const res = await app.inject({ method: 'PATCH', url: '/api/sessions/1', headers: authHeaders(await accessToken()), payload: { matchDay: bad } })
+      expect(res.statusCode).toBe(422)
+    }
+  })
+
+  it('clears match day with null', async () => {
+    const app = await getApp()
+    grantEditorAccess()
+    dbMock.trainingSession.findFirst.mockResolvedValue({ id: 1, isMatch: true } as never)
+    dbMock.trainingSession.update.mockResolvedValue(sessionRow({ isMatch: true }) as never)
+    const res = await app.inject({ method: 'PATCH', url: '/api/sessions/1', headers: authHeaders(await accessToken()), payload: { matchDay: null } })
+    expect(res.statusCode).toBe(200)
+  })
+})

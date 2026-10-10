@@ -7,7 +7,7 @@
 
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
-import type { Prisma } from '@prisma/client'
+import { Prisma } from '@prisma/client'
 import { authGuard } from '../../middleware/auth-guard.js'
 import { requireEditorAccess } from '../../middleware/entitlement-guard.js'
 import { withQuota } from '../../lib/plan-quota.js'
@@ -88,6 +88,64 @@ const BlockSchema = z.object({
   successCriteria: z.string().max(400).optional().nullable(),
 })
 
+// ---- Match-day mode (migration 51) -------------------------------------------
+// One fixture's line-up, bench, substitutions and clock, saved on every action
+// from the touchline. Times are match seconds (paused time never counts);
+// minutes per player are derived from the stints, never stored as totals.
+const MATCH_DAY_MAX_BYTES = 60_000
+const PlayerKey = z.string().regex(/^[A-Za-z0-9_-]{1,24}$/)
+const MatchSecond = z.number().min(0).max(4 * 60 * 60)
+export const MatchDaySchema = z
+  .object({
+    v: z.literal(1),
+    /** Players on the pitch per side: 3v3 … 11v11 — set per match, never inferred from age. */
+    onPitch: z.number().int().min(3).max(11),
+    periods: z.number().int().min(1).max(4),
+    periodMinutes: z.number().int().min(1).max(60),
+    /** A client formation key; only its shape is checked. */
+    formation: z.string().max(24).nullable(),
+    /** The match squad: a snapshot of the roster (or shirt numbers on the trial). */
+    players: z
+      .array(z.object({
+        key: PlayerKey,
+        squadPlayerId: z.number().int().positive().nullable(),
+        name: z.string().max(40),
+        number: z.string().max(3),
+        /** Not available today (injured, away): off the bench and out of the fair share. */
+        out: z.boolean().optional(),
+      }))
+      .max(30),
+    /** Who stands in each shirt of the shape right now (null = empty). */
+    slots: z.array(PlayerKey.nullable()).max(11),
+    /** On-pitch stretches in match seconds; `to` null = still on. */
+    stints: z.array(z.object({ key: PlayerKey, from: MatchSecond, to: MatchSecond.nullable() })).max(400),
+    events: z
+      .array(z.object({
+        at: MatchSecond,
+        kind: z.enum(['sub', 'goal_for', 'goal_against', 'period_end']),
+        off: PlayerKey.nullable().optional(),
+        on: PlayerKey.nullable().optional(),
+        scorer: PlayerKey.nullable().optional(),
+      }))
+      .max(300),
+    clock: z.object({
+      state: z.enum(['setup', 'running', 'paused', 'finished']),
+      period: z.number().int().min(1).max(4),
+      /** Match seconds accrued before `runningSince`. */
+      elapsed: MatchSecond,
+      /** Wall-clock ms when the current running stretch began; null when not running. */
+      runningSince: z.number().int().min(0).nullable(),
+    }),
+    /** The half-time board: tokens moved (0–1 pitch fractions) and pen strokes. */
+    board: z
+      .object({
+        positions: z.record(PlayerKey, z.object({ x: z.number().min(0).max(1), y: z.number().min(0).max(1) })),
+        ink: z.array(z.array(z.tuple([z.number().min(0).max(1), z.number().min(0).max(1)])).max(400)).max(40),
+      })
+      .optional(),
+  })
+  .refine((m) => JSON.stringify(m).length <= MATCH_DAY_MAX_BYTES, { message: 'Match day is too large' })
+
 const BrandSchema = z.object({
   /** Accent colour for the exported PDF (hex). */
   color: z
@@ -149,6 +207,8 @@ const CreateSessionSchema = z.object({
 const UpdateSessionSchema = CreateSessionSchema.extend({
   blocks: z.array(BlockSchema).max(40).optional(),
   brand: BrandSchema.optional(),
+  /** Match-day mode — only on a match (checked in the route). */
+  matchDay: MatchDaySchema.nullable().optional(),
 }).partial()
 
 type MatchInput = Partial<Pick<z.infer<typeof CreateSessionSchema>, 'homeAway' | 'competition' | 'goalsFor' | 'goalsAgainst' | 'matchNote'>>
@@ -271,11 +331,15 @@ export async function sessionsRoutes(app: FastifyInstance) {
   app.patch('/:id', { preHandler: requireEditorAccess, bodyLimit: SESSION_BODY_LIMIT }, async (request, reply) => {
     const userId = (request.user as any).sub as number
     const id = Number((request.params as { id: string }).id)
-    const existing = await db.trainingSession.findFirst({ where: { id, userId }, select: { id: true } })
+    const existing = await db.trainingSession.findFirst({ where: { id, userId }, select: { id: true, isMatch: true } })
     if (!existing) {
       return reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'Session not found' })
     }
     const input = UpdateSessionSchema.parse(request.body)
+    // Match day belongs to a fixture: a training session has no line-up.
+    if (input.matchDay != null && !(input.isMatch ?? existing.isMatch)) {
+      return reply.status(422).send({ statusCode: 422, error: 'Unprocessable Entity', message: 'Match day is only for a match', issues: [{ path: ['matchDay'], message: 'Match day is only for a match' }] })
+    }
     const session = await db.trainingSession.update({
       where: { id },
       data: {
@@ -298,6 +362,8 @@ export async function sessionsRoutes(app: FastifyInstance) {
         ...(input.venue !== undefined && { venue: input.venue }),
         ...(input.parts !== undefined && { parts: input.parts }),
         ...(matchData(input) as object),
+        // (Typed loosely until `prisma generate` runs against migration 51 — the deploy does.)
+        ...(input.matchDay !== undefined && ({ matchDay: input.matchDay ?? Prisma.DbNull } as object)),
       },
     })
     return reply.send(session)

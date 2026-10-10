@@ -32,6 +32,35 @@ async function clubStripFor(userId: number) {
   }
 }
 
+/**
+ * A saved board with every player's name removed (LIVE-3D, 9 Oct 2026).
+ * A player object (`tcType` or `type` "player") carries its squad name in
+ * `tcProps.name` (the editor's saved shape) or `props.name`; both are
+ * dropped wherever a player object appears (the canvas and any frame
+ * snapshot). Everything else — a zone's name, the shirt numbers — stays.
+ */
+export function withoutPlayerNames(state: unknown): unknown {
+  const walk = (o: unknown): unknown => {
+    if (Array.isArray(o)) return o.map(walk)
+    if (!o || typeof o !== 'object') return o
+    const src = o as Record<string, unknown>
+    const out: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(src)) out[k] = walk(v)
+    if (src.tcType === 'player' || src.type === 'player') {
+      for (const key of ['tcProps', 'props']) {
+        const p = out[key]
+        if (p && typeof p === 'object' && !Array.isArray(p) && 'name' in (p as object)) {
+          const { name: _drop, ...rest } = p as Record<string, unknown>
+          void _drop
+          out[key] = rest
+        }
+      }
+    }
+    return out
+  }
+  return walk(state)
+}
+
 export async function shareRoutes(app: FastifyInstance) {
   // GET /share/board/:id — a published board's video/thumbnail + attribution
   app.get('/board/:id', async (request, reply) => {
@@ -45,6 +74,7 @@ export async function shareRoutes(app: FastifyInstance) {
         publishedAt: true,
         thumbnailKey: true,
         videoKey: true,
+        state: true,
         user: { select: { name: true, surname: true, clubName: true } },
         _count: { select: { likes: true } },
       },
@@ -65,6 +95,11 @@ export async function shareRoutes(app: FastifyInstance) {
       likeCount: board._count.likes,
       thumbnailUrl,
       videoUrl,
+      // LIVE-3D: the board itself, played live on the page instead of a
+      // stored video — with the players' names taken out. A shared link can
+      // reach anyone, and a name on a token may be a child's; the shirt
+      // numbers stay.
+      state: withoutPlayerNames(board.state),
       club: await clubStripFor(board.userId),
       coach: await coachStripFor(board.userId),
     })

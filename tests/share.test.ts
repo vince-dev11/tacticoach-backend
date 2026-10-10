@@ -71,3 +71,29 @@ describe('ownership still enforced on writes', () => {
     )
   })
 })
+
+describe('LIVE-3D · the shared board plays live, without players\' names', () => {
+  it('sends the board with every player name removed; zone names and numbers stay', async () => {
+    const app = await getApp()
+    dbMock.canvasBoard.findFirst.mockResolvedValue({
+      id: 7, userId: 1, title: 'High press', publishedAt: new Date(), thumbnailKey: null, videoKey: null,
+      state: {
+        canvas: { objects: [
+          { tcType: 'player', tcKey: 'player_blue', tcProps: { label: '9', name: 'Sam Smith' } },
+          { tcType: 'zone', tcProps: { name: 'Press zone' } },
+        ] },
+        frames: [{ objects: [{ type: 'player', props: { label: '9', name: 'Sam Smith' } }] }],
+      },
+      user: { name: 'Vince', surname: 'Coach', clubName: null },
+      _count: { likes: 0 },
+    } as never)
+    const res = await app.inject({ method: 'GET', url: '/api/share/board/7' })
+    expect(res.statusCode).toBe(200)
+    const text = res.body
+    expect(text).not.toContain('Sam Smith')
+    const state = res.json().state
+    expect(state.canvas.objects[0].tcProps).toEqual({ label: '9' })
+    expect(state.canvas.objects[1].tcProps.name).toBe('Press zone')
+  })
+})
+

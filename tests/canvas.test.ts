@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { dbMock } from './setup.js'
 import { getApp, accessToken, authHeaders, activeSubscription } from './helpers.js'
 
@@ -369,5 +369,33 @@ describe('DELETE /api/canvas/boards/:id', () => {
     expect(res.statusCode).toBe(204)
     expect(deleteFromS3).toHaveBeenCalledWith('boards/1/10/t.webp')
     expect(deleteFromS3).toHaveBeenCalledWith('boards/1/10/v.mp4')
+  })
+})
+
+describe('LIVE-3D · the monthly video limit counts downloads (POST /api/canvas/video-exports)', () => {
+  const vx = () => (dbMock as unknown as { videoExport: { count: ReturnType<typeof vi.fn>; create: ReturnType<typeof vi.fn> } }).videoExport
+
+  it('asks without recording; records with record:true, linked only to the coach\'s own board', async () => {
+    const app = await getApp()
+    onFreeTier()
+    vx().count.mockResolvedValue(1 as never)
+    vx().create.mockResolvedValue({} as never)
+    const ask = await app.inject({ method: 'POST', url: '/api/canvas/video-exports', headers: authHeaders(await accessToken()), payload: {} })
+    expect(ask.statusCode).toBe(200)
+    expect(vx().create).not.toHaveBeenCalled()
+    dbMock.canvasBoard.findFirst.mockResolvedValue({ id: 10 } as never)
+    const rec = await app.inject({ method: 'POST', url: '/api/canvas/video-exports', headers: authHeaders(await accessToken()), payload: { boardId: 10, record: true } })
+    expect(rec.statusCode).toBe(200)
+    expect(vx().create).toHaveBeenCalledTimes(1)
+    expect((vx().create.mock.calls[0][0] as { data: { boardId: number } }).data.boardId).toBe(10)
+  })
+
+  it('refuses a spent month with 402 before the render', async () => {
+    const app = await getApp()
+    onFreeTier()
+    vx().count.mockResolvedValue(3 as never) // the trial's three
+    const res = await app.inject({ method: 'POST', url: '/api/canvas/video-exports', headers: authHeaders(await accessToken()), payload: { record: true } })
+    expect(res.statusCode).toBe(402)
+    expect(vx().create).not.toHaveBeenCalled()
   })
 })

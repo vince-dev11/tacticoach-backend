@@ -859,6 +859,10 @@ model TrainingSession {
   goalsAgainst Int?         @map("goals_against") @db.SmallInt
   /// A few lines after the game: what went well, what to work on.
   matchNote    String?      @map("match_note") @db.VarChar(1000)
+  /// Match-day mode (migration 51): line-up, bench, substitution stints,
+  /// goals log, clock and half-time board for this fixture. Null until the
+  /// coach opens it. Shape validated by MatchDaySchema in sessions.routes.
+  matchDay     Json?        @map("match_day")
   /// Names of the session's parts, in order: ["Warm-up","Main part",…].
   /// Between 3 and 5. Empty means the default set.
   parts        Json         @default("[]")

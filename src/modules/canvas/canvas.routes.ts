@@ -328,6 +328,35 @@ export async function canvasRoutes(app: FastifyInstance) {
     return reply.send({ videoUrl: await presignUrl(key), quota: await videoQuota(userId) })
   })
 
+  // POST /canvas/video-exports — LIVE-3D (9 Oct 2026): the monthly video limit
+  // counts the videos a coach DOWNLOADS. Saves no longer upload a preview
+  // video (the library and the share page play boards live), so the meter
+  // moved to the moment a file is made. The file is made in the coach's
+  // browser, so this is asked before (402 when the month is spent) and the
+  // client records it after the file is ready ({ record: true }).
+  app.post('/video-exports', { preHandler: requireEditorAccess }, async (request, reply) => {
+    const userId = (request.user as any).sub as number
+    const body = z
+      .object({ boardId: z.number().int().positive().nullable().optional(), record: z.boolean().optional() })
+      .parse(request.body ?? {})
+    const quota = await videoQuota(userId)
+    if (!quota.allowed) {
+      return reply.status(402).send({
+        statusCode: 402,
+        error: 'Payment Required',
+        message: `You have used all ${quota.limit} video exports this month. Upgrade to Pro for unlimited HD exports.`,
+        quota,
+      })
+    }
+    if (!body.record) return reply.send({ quota })
+    // Only the coach's own board is linked to the record.
+    const boardId = body.boardId
+      ? (await db.canvasBoard.findFirst({ where: { id: body.boardId, userId }, select: { id: true } }))?.id ?? null
+      : null
+    await recordVideoExport(userId, boardId, (await getEntitlements(userId)).plan?.slug ?? null)
+    return reply.send({ quota: await videoQuota(userId) })
+  })
+
   // ---- Publish + likes -----------------------------------------------------------
 
   // PATCH /canvas/boards/:id/publish  { published: boolean }
