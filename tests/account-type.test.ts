@@ -24,11 +24,12 @@ describe('RegisterSchema.accountType', () => {
     expect(RegisterSchema.parse(base).accountType).toBe('coach')
   })
 
-  it.each(['coach', 'club', 'player'] as const)('accepts %s', (accountType) => {
+  // FAMILY-SIGNUP (12 Oct 2026): a parent signs up too.
+  it.each(['coach', 'club', 'player', 'parent'] as const)('accepts %s', (accountType) => {
     expect(RegisterSchema.parse({ ...base, accountType }).accountType).toBe(accountType)
   })
 
-  it.each(['owner', 'admin', 'parent', '', 'COACH'])('refuses %p', (accountType) => {
+  it.each(['owner', 'admin', '', 'COACH'])('refuses %p', (accountType) => {
     expect(RegisterSchema.safeParse({ ...base, accountType }).success).toBe(false)
   })
 })

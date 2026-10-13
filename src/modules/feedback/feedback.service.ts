@@ -54,7 +54,7 @@ export async function requestLink(
   coachId: number,
   squadPlayerId: number,
   email: string,
-): Promise<{ ok: true } | { ok: false; reason: 'no_account' | 'not_yours' | 'already_linked' | 'in_another_row' }> {
+): Promise<{ ok: true; viaParent?: boolean } | { ok: false; reason: 'no_account' | 'not_yours' | 'already_linked' | 'in_another_row' }> {
   const row = await db.squadPlayer.findFirst({
     where: { id: squadPlayerId, userId: coachId, archivedAt: null },
     select: { id: true, playerUserId: true },
@@ -66,7 +66,22 @@ export async function requestLink(
     where: { email: email.trim().toLowerCase(), accountType: 'player' },
     select: { id: true },
   })
-  if (!player) return { ok: false, reason: 'no_account' }
+  if (!player) {
+    // FAMILY-LINK (12 Oct 2026): a child their parent added has no email of
+    // their own, so the coach may type the PARENT's. The parent then says
+    // which child (or no) on their Family page. Same answer as a player's
+    // address when nothing matches, so this can't be used to find parents.
+    const parent = await db.user.findFirst({
+      where: { email: email.trim().toLowerCase(), childLinks: { some: { status: 'active' } } },
+      select: { id: true },
+    })
+    if (!parent) return { ok: false, reason: 'no_account' }
+    await db.squadPlayer.update({
+      where: { id: row.id },
+      data: { playerUserId: null, requestParentId: parent.id, linkStatus: 'pending', linkedAt: null },
+    })
+    return { ok: true, viaParent: true }
+  }
 
   // This coach may already have the same player on a different row — the
   // @@unique([userId, playerUserId]) would refuse it, so say so plainly
@@ -141,7 +156,7 @@ export async function unlink(squadPlayerId: number, by: { coachId?: number; play
   if (!row) return false
   await db.squadPlayer.update({
     where: { id: row.id },
-    data: { playerUserId: null, linkStatus: null, linkedAt: null },
+    data: { playerUserId: null, requestParentId: null, linkStatus: null, linkedAt: null },
   })
   return true
 }

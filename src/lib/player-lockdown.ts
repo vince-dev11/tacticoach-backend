@@ -61,6 +61,9 @@ const ALLOWED_PREFIXES: readonly string[] = [
   '/api/auth/',
   // Their entire product.
   '/api/feedback/',
+  // FAMILY (12 Oct 2026): the parent's page and the invitation a parent
+  // answers. Each route checks the caller is that child's parent.
+  '/api/family/',
   // Ebooks. Players are the AUDIENCE for these — the whole point of the
   // feature is a teenager reading something their coach recommended, so a
   // deny-by-default list that forgot this would have shipped a shop only

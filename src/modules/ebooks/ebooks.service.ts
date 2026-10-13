@@ -127,6 +127,9 @@ const chapterDb = () =>
 const blockDb = () =>
   delegate<{
     create(a: unknown): Promise<unknown>
+    findMany(a: unknown): Promise<{ id: number; chapterId: number; kind: string; sortOrder: number }[]>
+    update(a: unknown): Promise<unknown>
+    delete(a: unknown): Promise<unknown>
     deleteMany(a: unknown): Promise<{ count: number }>
   }>('ebookBlock')
 const progressDb = () =>
@@ -150,7 +153,8 @@ export const decodeTopics = (raw: string | null | undefined): string[] =>
 /** ['pressing'] → ",pressing," (null when empty) */
 export const encodeTopics = (list: readonly string[]): string | null =>
   list.length ? `,${[...new Set(list)].join(',')},` : null
-export const AGE_BANDS = ['u9_11', 'u12_14', 'u15_18', 'adult', 'all'] as const
+/** BOOK-AGES (12 Oct 2026): u5_8 for the youngest (3v3 / 5v5 in most countries). */
+export const AGE_BANDS = ['u5_8', 'u9_11', 'u12_14', 'u15_18', 'adult', 'all'] as const
 export const BLOCK_KINDS = [
   'text', 'board', 'board_compare', 'board_sequence', 'drill',
   'character', 'your_turn', 'quiz', 'image', 'quote',
@@ -323,7 +327,7 @@ export async function getBook(slug: string, viewer?: number) {
       ageBand: true, cover: true, pricePence: true, language: true, publishedAt: true,
       authorId: true, isCourse: true, passPercent: true, studyMinutes: true,
       seriesId: true, clubId: true, clubAudience: true,
-      format: true, country: true, topics: true,
+      format: true, country: true, topics: true, outcomes: true,
       author: { select: { name: true, surname: true, clubName: true, clubLogoKey: true } },
       coauthors: { where: { acceptedAt: { not: null } }, orderBy: { createdAt: 'asc' }, select: { user: { select: { name: true, surname: true } } } },
       club: { select: { name: true } },
@@ -375,6 +379,10 @@ export async function getBook(slug: string, viewer?: number) {
     // "You get: 12 sessions" — titles only; the sessions themselves arrive in
     // the reader's library when they add them.
     pack: await packSummary(book.id).catch(() => ({ count: 0, titles: [] as string[] })),
+    // BOOK-PAGE (12 Oct 2026): "What's inside" — counts of each kind of block,
+    // never the blocks themselves (the page must not leak the book).
+    inside: await insideCounts(book.id).catch(() => null),
+    outcomes: cleanOutcomes((book as unknown as { outcomes?: unknown }).outcomes),
     coauthors: coauthorNames(book),
     clubName: book.clubId ? (_club?.name ?? null) : null,
     series: seriesId ? await seriesStrip(seriesId).catch(() => null) : null,
@@ -386,6 +394,24 @@ export async function getBook(slug: string, viewer?: number) {
     rating: ratings.get(book.id) ?? { average: null, count: 0 },
     /** Internal: lets the route skip counting the author's own visits. Stripped before sending. */
     _authorId: authorId ?? null,
+  }
+}
+
+/** "What you'll learn": up to six short strings, whatever was stored. */
+export function cleanOutcomes(v: unknown): string[] {
+  return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && x.trim().length > 0).map((x) => x.trim().slice(0, 140)).slice(0, 6) : []
+}
+
+/** BOOK-PAGE: how many drills, animations, pictures, questions and videos a book holds. Counts only. */
+async function insideCounts(ebookId: number) {
+  const rows = await db.ebookBlock.groupBy({ by: ['kind'], where: { chapter: { ebookId } }, _count: { _all: true } })
+  const n = (kinds: string[]) => rows.filter((r) => kinds.includes(r.kind)).reduce((a, r) => a + r._count._all, 0)
+  return {
+    drills: n(['drill']),
+    animations: n(['animation', 'decision']),
+    diagrams: n(['board', 'board_compare', 'board_sequence']),
+    quizzes: n(['quiz']),
+    videos: n(['video']),
   }
 }
 
@@ -667,7 +693,7 @@ export async function adminGet(id: number, authorId?: number) {
       authorId: true, submittedAt: true, reviewNote: true,
       isCourse: true, passPercent: true, studyMinutes: true, seriesId: true, seriesOrder: true,
       clubId: true, clubAudience: true,
-      format: true, country: true, topics: true, shareImageKey: true,
+      format: true, country: true, topics: true, shareImageKey: true, outcomes: true,
       // Selected because PATCH /admin/ebooks/:id reads it to decide whether
       // this is the FIRST publish. Omitted, it arrived undefined and the route
       // restamped publishedAt on every save — making an edited book look new in
@@ -726,7 +752,7 @@ export interface ChapterInput {
  * order wrong.
  */
 export async function replaceChapters(ebookId: number, chapters: ChapterInput[]): Promise<void> {
-  const existing = await chapterDb().findMany({ where: { ebookId }, select: { id: true } })
+  const existing = await chapterDb().findMany({ where: { ebookId }, select: { id: true, key: true } })
   // Stable keys: kept when the editor sent one back, made otherwise, and
   // never shared by two chapters (a duplicated chapter gets its own).
   const seen = new Set<string>()
@@ -736,19 +762,43 @@ export async function replaceChapters(ebookId: number, chapters: ChapterInput[])
     seen.add(k)
     return k
   })
+  // BOOK-KEEP (12 Oct 2026): chapters are UPDATED in place, matched by their
+  // stable key, instead of deleted and recreated on every save. Recreating
+  // gave every chapter a new id, so each save cut loose every reader's place
+  // and the chapter their notes were written on. Blocks keep their row when
+  // the same kind sits at the same position (a typo fix keeps a highlight).
+  const byKey = new Map(existing.filter((c) => !!c.key).map((c) => [c.key as string, c.id]))
+  const blockData = (b: { kind: string; data: Record<string, unknown> }) =>
+    (b.kind === 'video' ? normaliseVideoBlock(b.data) ?? {} : withQuestionIds(b.kind, b.data)) as object
   await db.$transaction(async () => {
-    for (const ch of existing) {
-      await chapterDb().delete({ where: { id: ch.id } })
-    }
+    const kept = new Set<number>()
     for (const [ci, ch] of chapters.entries()) {
-      const made = await chapterDb().create({
-        data: { ebookId, key: keys[ci], title: ch.title, sortOrder: ci, isSample: ch.isSample },
-      })
-      for (const [bi, b] of ch.blocks.entries()) {
-        await blockDb().create({
-          data: { chapterId: made.id, kind: b.kind, sortOrder: bi, data: (b.kind === 'video' ? normaliseVideoBlock(b.data) ?? {} : withQuestionIds(b.kind, b.data)) as object },
+      const id = byKey.get(keys[ci])
+      let chapterId: number
+      if (id != null && !kept.has(id)) {
+        kept.add(id)
+        chapterId = id
+        await chapterDb().update({ where: { id }, data: { title: ch.title, sortOrder: ci, isSample: ch.isSample } })
+      } else {
+        const made = await chapterDb().create({
+          data: { ebookId, key: keys[ci], title: ch.title, sortOrder: ci, isSample: ch.isSample },
         })
+        chapterId = made.id
+        kept.add(made.id)
       }
+      const old = id != null ? await blockDb().findMany({ where: { chapterId }, orderBy: { sortOrder: 'asc' }, select: { id: true, chapterId: true, kind: true, sortOrder: true } }) : []
+      for (const [bi, b] of ch.blocks.entries()) {
+        const same = old[bi]
+        if (same && same.kind === b.kind) await blockDb().update({ where: { id: same.id }, data: { sortOrder: bi, data: blockData(b) } })
+        else {
+          if (same) await blockDb().delete({ where: { id: same.id } })
+          await blockDb().create({ data: { chapterId, kind: b.kind, sortOrder: bi, data: blockData(b) } })
+        }
+      }
+      for (const extra of old.slice(ch.blocks.length)) await blockDb().delete({ where: { id: extra.id } })
+    }
+    for (const ch of existing) {
+      if (!kept.has(ch.id)) await chapterDb().delete({ where: { id: ch.id } })
     }
   })
 }
@@ -780,4 +830,63 @@ export const ebookDelegate = ebookDb
 /** Delete a book. Only ever called after an ownership check. */
 export async function removeBook(id: number): Promise<void> {
   await ebookDb().delete({ where: { id } })
+}
+
+
+// ---- BOOK-SEARCH (12 Oct 2026) ------------------------------------------------
+
+/** Every bit of reader-facing text in a block's data (never a board's internals or a quiz answer key). */
+function blockText(data: unknown): string {
+  const out: string[] = []
+  const walk = (v: unknown, key = '') => {
+    if (typeof v === 'string') { if (!/^(url|provider|id|colour|correct|type|key)$/i.test(key)) out.push(v); return }
+    if (Array.isArray(v)) { v.forEach((x) => walk(x, key)); return }
+    if (v && typeof v === 'object') {
+      for (const [k, x] of Object.entries(v as Record<string, unknown>)) {
+        // A board is drawing data; a teaching layer and wrong-way board likewise.
+        if (/^(board|wrong|left|right|teach|wrongTeach|canvas|frames)$/.test(k)) continue
+        walk(x, k)
+      }
+    }
+  }
+  walk(data)
+  return out.join(' \u2022 ')
+}
+
+/**
+ * Search a book for a reader: the chapters they may read (all of them when
+ * they own it or it is free; the sample otherwise), by title and by text.
+ * Returns where, never more than a short snippet around the match.
+ */
+export async function searchBook(slug: string, q: string, viewer?: number) {
+  const needle = q.trim().toLowerCase()
+  if (needle.length < 2) return []
+  const book = await ebookDb().findFirst({
+    where: { slug, status: 'published' },
+    select: { id: true, pricePence: true, authorId: true, clubId: true, clubAudience: true },
+  } as unknown) as { id: number; pricePence: number; authorId: number; clubId: number | null; clubAudience: string | null } | null
+  if (!book) return []
+  if (book.clubId && !(await mayOpen({ clubId: book.clubId, clubAudience: book.clubAudience as never }, viewer))) return []
+  const readAll = viewer ? await canReadAll({ id: book.id, authorId: book.authorId, pricePence: book.pricePence }, viewer).catch(() => false) : book.pricePence === 0
+  const chapters = await chapterDb().findMany({
+    where: { ebookId: book.id },
+    orderBy: { sortOrder: 'asc' },
+    select: { id: true, title: true, isSample: true, blocks: { orderBy: { sortOrder: 'asc' }, select: { kind: true, data: true } } },
+  }) as unknown as { id: number; title: string; isSample: boolean; blocks: { kind: string; data: unknown }[] }[]
+  const sampleId = chapters.find((c) => c.isSample)?.id ?? chapters[0]?.id
+  const hits: { chapterId: number; title: string; snippet: string; locked: boolean }[] = []
+  for (const c of chapters) {
+    const readable = readAll || c.id === sampleId
+    const text = blockText(c.blocks.filter((b) => b.kind !== 'quiz').map((b) => b.data))
+    const inTitle = c.title.toLowerCase().includes(needle)
+    const at = text.toLowerCase().indexOf(needle)
+    if (!inTitle && at < 0) continue
+    // A chapter they cannot read yet is named (it is in the contents anyway), never quoted.
+    const snippet = readable && at >= 0
+      ? `${at > 40 ? '…' : ''}${text.slice(Math.max(0, at - 40), at + needle.length + 60).trim()}${at + needle.length + 60 < text.length ? '…' : ''}`
+      : ''
+    hits.push({ chapterId: c.id, title: c.title, snippet, locked: !readable })
+    if (hits.length >= 20) break
+  }
+  return hits
 }

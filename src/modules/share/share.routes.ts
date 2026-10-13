@@ -39,6 +39,20 @@ async function clubStripFor(userId: number) {
  * dropped wherever a player object appears (the canvas and any frame
  * snapshot). Everything else — a zone's name, the shirt numbers — stays.
  */
+/** The boards a published sheet shows (names removed) and their captions. */
+export function sheetBoards(data: unknown): { board: unknown; caption: string }[] {
+  if (!data || typeof data !== 'object') return []
+  const d = data as { boards?: unknown; layout?: unknown; captions?: unknown; board?: unknown; board2?: unknown }
+  const list = Array.isArray(d.boards)
+    ? d.boards.slice(0, typeof d.layout === 'number' ? Math.max(0, Math.min(8, d.layout)) : d.boards.length)
+    : [d.board, d.board2]
+  const captions = Array.isArray(d.captions) ? d.captions : []
+  return list
+    .map((b, i) => ({ b, caption: typeof captions[i] === 'string' ? (captions[i] as string).slice(0, 40) : '' }))
+    .filter(({ b }) => !!b && typeof b === 'object')
+    .map(({ b, caption }) => ({ board: withoutPlayerNames(b), caption }))
+}
+
 export function withoutPlayerNames(state: unknown): unknown {
   const walk = (o: unknown): unknown => {
     if (Array.isArray(o)) return o.map(walk)
@@ -117,6 +131,7 @@ export async function shareRoutes(app: FastifyInstance) {
         description: true,
         publishedAt: true,
         imageKey: true,
+        data: true,
         user: { select: { name: true, surname: true, clubName: true } },
       },
     })
@@ -131,6 +146,11 @@ export async function shareRoutes(app: FastifyInstance) {
       author: `${sheet.user.name} ${sheet.user.surname}`.trim(),
       clubName: sheet.user.clubName,
       imageUrl: sheet.imageKey ? await presignUrl(sheet.imageKey) : null,
+      // SHEET-WATCH (12 Oct 2026): the sheet's boards, so the page (and the QR
+      // code printed on the sheet) can PLAY the moves. Names taken out, as on
+      // a shared board; only the boards the sheet shows, with their captions.
+      // Never the rest of `data` — it holds the coach's private notes.
+      boards: sheetBoards(sheet.data),
       club: await clubStripFor(sheet.userId),
       coach: await coachStripFor(sheet.userId),
     })

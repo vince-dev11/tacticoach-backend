@@ -21,7 +21,7 @@ import { z } from 'zod'
 import { authGuard } from '../../middleware/auth-guard.js'
 import { env } from '../../config/env.js'
 import {
-  listBooks, getBook, getChapter, getContents, saveProgress, getProgress, sitemapBooks,
+  listBooks, getBook, getChapter, getContents, saveProgress, getProgress, sitemapBooks, searchBook,
 } from './ebooks.service.js'
 import { bump, isBot, listReviews, saveReview, deleteReview, ReviewError } from './engagement.service.js'
 import {
@@ -32,6 +32,8 @@ import { mayOpen, clubLibrary, clubReaders } from './club-books.js'
 import { startCheckout, joinWaitlist, library, PurchaseError, canReadAll } from './purchases.service.js'
 import { deliverPack, PackError } from './session-pack.service.js'
 import { db } from '../../config/database.js'
+import { FamilyError, askParent } from '../family/family.service.js'
+import { isMinorAccount } from '../../lib/age.js'
 import { presignUrl } from '../../config/s3.js'
 
 const userId = (r: { user: unknown }) => (r.user as { sub: number }).sub
@@ -115,10 +117,27 @@ export async function ebooksRoutes(app: FastifyInstance) {
   }, async (request, reply) => {
     const { slug } = request.params as { slug: string }
     const { consent } = z.object({ consent: z.boolean().default(false) }).parse(request.body ?? {})
+    // FAMILY (12 Oct 2026): a player under 18 never buys anything — their
+    // parent does. The UI never offers it; this is the refusal behind that.
+    const buyer = await db.user.findUnique({ where: { id: userId(request) }, select: { accountType: true, dateOfBirth: true } })
+    if (buyer && isMinorAccount(buyer)) {
+      return reply.status(403).send({ statusCode: 403, error: 'ask_parent', message: 'Ask your parent or guardian: they can get this book for you.' })
+    }
     try {
       return reply.send(await startCheckout(userId(request), slug, consent))
     } catch (err) {
       if (err instanceof PurchaseError) return reply.status(err.statusCode).send({ statusCode: err.statusCode, error: err.code, message: err.message })
+      throw err
+    }
+  })
+
+  // FAMILY: POST /api/ebooks/:slug/ask-parent — a player under 18 asks for a paid book.
+  app.post('/:slug/ask-parent', { preHandler: authGuard, config: { rateLimit: { max: 30, timeWindow: '1 hour' } } }, async (request, reply) => {
+    const { slug } = request.params as { slug: string }
+    try {
+      return reply.send(await askParent(userId(request), slug))
+    } catch (err) {
+      if (err instanceof FamilyError) return reply.status(err.statusCode).send({ statusCode: err.statusCode, error: err.code, message: err.message })
       throw err
     }
   })
@@ -226,6 +245,13 @@ ${urls}
   app.get('/:slug/contents', async (request, reply) => {
     const { slug } = request.params as { slug: string }
     return reply.send(await getContents(slug, await optionalUserId(request)))
+  })
+
+  // BOOK-SEARCH: GET /api/ebooks/:slug/search?q= — where a word appears, in the chapters this reader may read.
+  app.get('/:slug/search', { config: { rateLimit: { max: 120, timeWindow: '1 minute' } } }, async (request, reply) => {
+    const { slug } = request.params as { slug: string }
+    const { q } = z.object({ q: z.string().max(80).default('') }).parse(request.query)
+    return reply.send(await searchBook(slug, q, await optionalUserId(request)))
   })
 
   // The only route that returns readable text. One chapter, by id, always.

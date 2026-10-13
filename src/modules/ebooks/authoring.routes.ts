@@ -61,6 +61,8 @@ const BookInput = z.object({
   title: latinOnly(z.string().trim().min(1).max(160)),
   subtitle: latinOnly(z.string().trim().max(200)).optional().nullable(),
   blurb: z.string().max(4000).optional().nullable(),
+  /** BOOK-PAGE (12 Oct 2026): "What you'll learn" — up to six short lines. */
+  outcomes: z.array(z.string().trim().max(140)).max(6).optional(),
   category: z.enum(CATEGORIES),
   ageBand: z.enum(AGE_BANDS),
   // Who it is for beyond age (migration 46). null = not set / any country.

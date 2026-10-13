@@ -478,3 +478,31 @@ describe('interactive block kinds', () => {
     expect([400, 422]).toContain(res.statusCode)
   })
 })
+
+// ---------------------------------------------------------------------------
+// BOOK-KEEP (12 Oct 2026): saving keeps chapter (and block) rows
+// ---------------------------------------------------------------------------
+
+describe('BOOK-KEEP · a save updates chapters in place', () => {
+  it('a chapter sent back with its key keeps its id; blocks of the same kind are updated, not recreated', async () => {
+    mock.ebook.findFirst.mockResolvedValue(bookRow({ status: 'draft' }) as never)
+    mock.ebookChapter.findMany.mockResolvedValue([{ id: 41, key: 'kone01' }, { id: 42, key: 'kgone01' }] as never)
+    mock.ebookChapter.update.mockResolvedValue({ id: 41 } as never)
+    mock.ebookChapter.create.mockResolvedValue({ id: 99 } as never)
+    mock.ebookBlock.findMany.mockResolvedValue([{ id: 7, chapterId: 41, kind: 'text', sortOrder: 0 }] as never)
+    // The transaction runs its body (the deep mock would otherwise skip it).
+    ;(dbMock.$transaction as unknown as ReturnType<typeof vi.fn>).mockImplementation(async (fn: (tx: unknown) => unknown) => fn(dbMock))
+    const res = await call('PUT', '/api/my-books/5/chapters', {
+      chapters: [
+        { key: 'kone01', title: 'Pressing, fixed', isSample: true, blocks: [{ kind: 'text', data: { text: 'Typo fixed' } }] },
+        { title: 'New one', isSample: false, blocks: [] },
+      ],
+    })
+    expect(res.statusCode).toBeLessThan(300)
+    expect(mock.ebookChapter.update).toHaveBeenCalledWith(expect.objectContaining({ where: { id: 41 } }))
+    expect(mock.ebookBlock.update).toHaveBeenCalledWith(expect.objectContaining({ where: { id: 7 } }))
+    expect(mock.ebookChapter.delete).toHaveBeenCalledWith({ where: { id: 42 } })
+    expect(mock.ebookChapter.delete).not.toHaveBeenCalledWith({ where: { id: 41 } })
+    expect(mock.ebookChapter.create).toHaveBeenCalledTimes(1)
+  })
+})

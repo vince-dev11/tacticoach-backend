@@ -21,6 +21,7 @@ import { requireCapability, requireEditorAccess } from '../../middleware/entitle
 // answer), then the plan.
 const coachFeedback = [requireEditorAccess, requireCapability('player_feedback')]
 import { db } from '../../config/database.js'
+import { FamilyError, addFamilyDetails, createPlayerAccount, resendParentInvite, recommendBook, recommendedFor } from '../family/family.service.js'
 import { sendPlayerNoteEmail } from '../../lib/emails.js'
 import { MAX_TAGS_PER_LIST, cleanTags } from '../../lib/feedback-tags.js'
 import {
@@ -141,10 +142,60 @@ export async function feedbackRoutes(app: FastifyInstance) {
       const id = Number((request.params as { id: string }).id)
       const { email } = z.object({ email: z.string().email() }).parse(request.body)
       const result = await requestLink(userId(request), id, email)
-      if (result.ok) return reply.send({ requested: true })
+      if (result.ok) return reply.send({ requested: true, viaParent: result.viaParent ?? false })
 
       const status = result.reason === 'not_yours' ? 404 : result.reason === 'no_account' ? 422 : 409
       return reply.status(status).send({ statusCode: status, error: 'Link failed', message: result.reason })
+    })
+
+    // ---- FAMILY (12 Oct 2026): the coach creates the player's account -------
+    const Parent = z.object({
+      name: z.string().trim().min(1).max(100),
+      surname: z.string().trim().max(100).default(''),
+      email: z.string().trim().email().max(191),
+    })
+    const familyFail = (reply: import('fastify').FastifyReply, err: unknown) => {
+      if (err instanceof FamilyError) return reply.status(err.statusCode).send({ statusCode: err.statusCode, error: err.code, message: err.message })
+      throw err
+    }
+
+    // POST /feedback/squad/:id/account { dateOfBirth, email?, parent? }
+    secure.post('/squad/:id/account', { preHandler: coachFeedback, config: { rateLimit: { max: 60, timeWindow: '1 hour' } } }, async (request, reply) => {
+      const id = Number((request.params as { id: string }).id)
+      const input = z.object({
+        name: z.string().trim().max(100).optional(),
+        surname: z.string().trim().max(100).optional(),
+        dateOfBirth: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+        email: z.string().trim().email().max(191).optional().nullable(),
+        parent: Parent.optional().nullable(),
+      }).parse(request.body)
+      try { return reply.status(201).send(await createPlayerAccount(userId(request), id, input)) } catch (err) { return familyFail(reply, err) }
+    })
+
+    // POST /feedback/squad/:id/family { dateOfBirth, parent? } — for a player who
+    // signed up before coaches created accounts.
+    secure.post('/squad/:id/family', { preHandler: coachFeedback }, async (request, reply) => {
+      const id = Number((request.params as { id: string }).id)
+      const input = z.object({ dateOfBirth: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), parent: Parent.optional().nullable() }).parse(request.body)
+      try { return reply.send(await addFamilyDetails(userId(request), id, input)) } catch (err) { return familyFail(reply, err) }
+    })
+
+    // FAMILY-RESEND: POST /feedback/squad/:id/parent-invite { parent? } — send the
+    // parent's invitation again, or to a corrected address.
+    secure.post('/squad/:id/parent-invite', { preHandler: coachFeedback, config: { rateLimit: { max: 20, timeWindow: '1 hour' } } }, async (request, reply) => {
+      const id = Number((request.params as { id: string }).id)
+      const input = z.object({ parent: Parent.optional().nullable() }).parse(request.body ?? {})
+      try { return reply.send(await resendParentInvite(userId(request), id, input)) } catch (err) { return familyFail(reply, err) }
+    })
+
+    // BOOK-RECOMMEND: POST /feedback/recommend { slug, squadPlayerIds, note? }
+    secure.post('/recommend', { preHandler: coachFeedback, config: { rateLimit: { max: 60, timeWindow: '1 hour' } } }, async (request, reply) => {
+      const input = z.object({
+        slug: z.string().min(1).max(180),
+        squadPlayerIds: z.array(z.number().int().positive()).min(1).max(60),
+        note: z.string().trim().max(200).optional().nullable(),
+      }).parse(request.body)
+      try { return reply.send(await recommendBook(userId(request), input.slug, input.squadPlayerIds, input.note || null)) } catch (err) { return familyFail(reply, err) }
     })
 
     secure.delete('/squad/:id/link', async (request, reply) => {
@@ -256,6 +307,9 @@ export async function feedbackRoutes(app: FastifyInstance) {
     })
 
     secure.get('/my-notes', async (request, reply) => reply.send(await notesForPlayer(userId(request))))
+
+    // BOOK-RECOMMEND: books my coaches recommended.
+    secure.get('/recommended', async (request, reply) => reply.send(await recommendedFor(userId(request))))
 
     // POST /feedback/my-notes/:id/ack — "got it, coach". Idempotent; a
     // second tap after the first is a 404 the client never shows.

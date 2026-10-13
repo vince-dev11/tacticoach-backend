@@ -9,6 +9,7 @@
 //                   keep charging a card.
 
 import bcrypt from 'bcryptjs'
+import { ADULT_AGE, ageOn } from '../../lib/age.js'
 import { db } from '../../config/database.js'
 
 export class AccountError extends Error {
@@ -30,10 +31,14 @@ import { freeTrialEnd } from '../../lib/free-trial.js'
  * link and change what the guardian signed up for. Those go through us.
  */
 export async function becomeCoach(userId: number) {
-  const user = await db.user.findUnique({ where: { id: userId }, select: { id: true, accountType: true } })
+  const user = await db.user.findUnique({ where: { id: userId }, select: { id: true, accountType: true, dateOfBirth: true } })
   if (!user) throw new AccountError(404, 'not_found', 'Account not found.')
   if (user.accountType !== 'player') {
     throw new AccountError(409, 'not_player', 'This account is already a coach account.')
+  }
+  // FAMILY (12 Oct 2026): a child's account cannot step out of its parent's care.
+  if (user.dateOfBirth && ageOn(user.dateOfBirth) < ADULT_AGE) {
+    throw new AccountError(409, 'minor', 'Player accounts for under-18s stay player accounts.')
   }
   const linked = await db.squadPlayer.count({ where: { playerUserId: userId, linkStatus: { in: ['active', 'pending'] } } })
   if (linked > 0) {

@@ -75,8 +75,25 @@ model User {
   toursDone        Json      @default("[]") @map("tours_done")
   stripeCustomerId String?   @unique @map("stripe_customer_id") @db.VarChar(191)
   emailVerifiedAt  DateTime? @map("email_verified_at")
+  /// FAMILY (12 Oct 2026): a player's date of birth, entered by the coach who
+  /// creates the account. Decides who needs a parent (under 18) and who may
+  /// log in at all (13+). Null for coaches, clubs, parents — and for players
+  /// who signed up before this, until their coach adds it.
+  dateOfBirth             DateTime?   @map("date_of_birth") @db.Date
+  /// False for an under-13: the child exists (their coach writes to them, the
+  /// parent reads it) but has no login of their own. The email on such a row
+  /// is a placeholder that can never receive mail.
+  canLogin                Boolean     @default(true) @map("can_login")
   createdAt        DateTime  @default(now()) @map("created_at")
   updatedAt        DateTime  @updatedAt @map("updated_at")
+
+  /// FAMILY: the children this (parent) account looks after, and the parents
+  /// who look after this (player) account.
+  childLinks                  ParentLink[]         @relation("ParentLinkParent")
+  parentLinks                 ParentLink[]         @relation("ParentLinkChild")
+  bookRequests                BookRequest[]
+  bookRecommendationsSent     BookRecommendation[] @relation("BookRecommendationCoach")
+  bookRecommendationsReceived BookRecommendation[] @relation("BookRecommendationPlayer")
 
   subscription        UserSubscription?
   freeUsage           FreeUsage?
@@ -91,6 +108,7 @@ model User {
   ownedClub       Club?             @relation("ClubOwner")
   /// Roster rows this account is linked to — one per coach who added them.
   squadEntries    SquadPlayer[]     @relation("SquadPlayerAccount")
+  squadParentRequests  SquadPlayer[]         @relation("SquadPlayerParentRequest")
   /// Feedback this user has WRITTEN (as a coach).
   writtenNotes    PlayerNote[]      @relation("CoachNotes")
   clubMembership  ClubMember?
@@ -582,11 +600,10 @@ model CanvasBoard {
   user  User        @relation(fields: [userId], references: [id], onDelete: Cascade)
   likes BoardLike[]
   challengeSubmissions ChallengeSubmission[]
+  playerNotes          PlayerNote[]
 
   @@index([userId])
   @@index([published, publishedAt])
-  playerNotes PlayerNote[]
-
   @@map("canvas_boards")
 }
 
@@ -880,14 +897,13 @@ model TrainingSession {
   /// SetNull, not Cascade: archiving a team must never delete the sessions the
   /// coach ran with it. They fall back to the default squad.
   squad    Squad?    @relation(fields: [squadId], references: [id], onDelete: SetNull)
+  playerNotes PlayerNote[]
 
   @@index([userId])
   @@index([squadId])
   @@index([planWeekId])
   @@index([userId, sessionDate])
   @@index([userId, sourceEbookId])
-  playerNotes PlayerNote[]
-
   @@map("training_sessions")
 }
 
@@ -941,6 +957,86 @@ enum AccountType {
   coach
   club
   player
+  /// FAMILY (12 Oct 2026): a parent or guardian of one or more players under
+  /// 18. Created by the coach who creates the child, or by accepting the
+  /// invitation; sees their children's feedback and books, nothing else.
+  parent
+}
+
+/// FAMILY (12 Oct 2026): a parent looks after a child (a player under 18).
+///
+/// `pending` until the parent accepts the invitation — and until then the
+/// child cannot log in: the consent is the parent's, not the coach's.
+model ParentLink {
+  id              Int              @id @default(autoincrement())
+  parentUserId    Int              @map("parent_user_id")
+  childUserId     Int              @map("child_user_id")
+  status          ParentLinkStatus @default(pending)
+  /// When the parent said yes. Kept as the record of consent.
+  consentAt       DateTime?        @map("consent_at")
+  /// The coach who created the child and asked for the parent.
+  invitedById     Int?             @map("invited_by_id")
+  /// sha256 of the invitation token (the link in the parent's email).
+  inviteTokenHash String?          @unique @map("invite_token_hash") @db.VarChar(64)
+  inviteExpiresAt DateTime?        @map("invite_expires_at")
+  createdAt       DateTime         @default(now()) @map("created_at")
+  updatedAt       DateTime         @updatedAt @map("updated_at")
+
+  parent User @relation("ParentLinkParent", fields: [parentUserId], references: [id], onDelete: Cascade)
+  child  User @relation("ParentLinkChild", fields: [childUserId], references: [id], onDelete: Cascade)
+
+  @@unique([parentUserId, childUserId])
+  @@index([childUserId, status])
+  @@map("parent_links")
+}
+
+enum ParentLinkStatus {
+  pending
+  active
+}
+
+/// FAMILY: "Ask your parent" — a player under 18 asks for a paid book. The
+/// parent sees it on their Family page (and by email) and buys it, or not.
+model BookRequest {
+  id          Int               @id @default(autoincrement())
+  childUserId Int               @map("child_user_id")
+  ebookId     Int               @map("ebook_id")
+  status      BookRequestStatus @default(pending)
+  createdAt   DateTime          @default(now()) @map("created_at")
+  updatedAt   DateTime          @updatedAt @map("updated_at")
+
+  child User  @relation(fields: [childUserId], references: [id], onDelete: Cascade)
+  ebook Ebook @relation(fields: [ebookId], references: [id], onDelete: Cascade)
+
+  @@unique([childUserId, ebookId])
+  @@index([ebookId])
+  @@map("book_requests")
+}
+
+enum BookRequestStatus {
+  pending
+  done
+  dismissed
+}
+
+/// BOOK-RECOMMEND (12 Oct 2026): a coach recommends a book to a player they
+/// coach (a linked squad player). Shown on the player's page; a parent of an
+/// under-18 is told.
+model BookRecommendation {
+  id           Int      @id @default(autoincrement())
+  coachId      Int      @map("coach_id")
+  playerUserId Int      @map("player_user_id")
+  ebookId      Int      @map("ebook_id")
+  note         String?  @db.VarChar(200)
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  coach  User  @relation("BookRecommendationCoach", fields: [coachId], references: [id], onDelete: Cascade)
+  player User  @relation("BookRecommendationPlayer", fields: [playerUserId], references: [id], onDelete: Cascade)
+  ebook  Ebook @relation(fields: [ebookId], references: [id], onDelete: Cascade)
+
+  @@unique([coachId, playerUserId, ebookId])
+  @@index([playerUserId])
+  @@map("book_recommendations")
 }
 
 /// A team the coach works with — "U13", "First team", "Thursday keepers".
@@ -1007,7 +1103,12 @@ model SquadPlayer {
   linkedAt     DateTime?        @map("linked_at")
   /// Where notifications are copied. For an under-16 this is the guardian's
   /// address. Set by the player in their own profile, not by the coach.
-  guardianEmail String?         @db.VarChar(191) @map("guardian_email")
+  guardianEmail   String?          @map("guardian_email") @db.VarChar(191)
+  /// FAMILY-LINK (12 Oct 2026): the coach typed a PARENT's email (a child the
+  /// parent added has no email of their own). The parent picks which child on
+  /// their Family page; until then playerUserId stays null and linkStatus is
+  /// pending.
+  requestParentId Int?             @map("request_parent_id")
 
   /// Removed from the squad but kept because the notes written to this player
   /// are the PLAYER's record, not the coach's. A row with no notes and no link
@@ -1017,10 +1118,9 @@ model SquadPlayer {
   user       User        @relation(fields: [userId], references: [id], onDelete: Cascade)
   squad      Squad?      @relation(fields: [squadId], references: [id], onDelete: Cascade)
   playerUser User?       @relation("SquadPlayerAccount", fields: [playerUserId], references: [id], onDelete: SetNull)
+  requestParent User?        @relation("SquadPlayerParentRequest", fields: [requestParentId], references: [id], onDelete: SetNull)
   notes      PlayerNote[]
 
-  @@index([userId, sortOrder])
-  @@index([squadId, sortOrder])
   /// Unique PER COACH, not per squad, and not globally.
   ///
   /// Not globally: a fourteen-year-old plays for their club on Sunday and
@@ -1034,7 +1134,10 @@ model SquadPlayer {
   /// record at the moment it finally means something. One coach, one player,
   /// one row: moving squads moves the row, and the history follows.
   @@unique([userId, playerUserId])
+  @@index([userId, sortOrder])
+  @@index([squadId, sortOrder])
   @@index([playerUserId, linkStatus])
+  @@index([requestParentId])
   @@map("squad_players")
 }
 
@@ -1206,6 +1309,9 @@ model ContactMessage {
   /// words can never be confused with something we wrote about them.
   note      String?       @db.VarChar(500)
   status    LeadStatus    @default(new)
+  /// How many times this person has written (LEAD-ONCE, 13 Oct 2026): a repeat
+  /// from the same email joins their open lead instead of starting a new one.
+  times     Int           @default(1)
   createdAt DateTime      @default(now()) @map("created_at")
   updatedAt DateTime      @updatedAt @map("updated_at")
 
@@ -1282,7 +1388,7 @@ model AgreementAcceptance {
   /// The name as the SIGNER typed it, which is not always their account name —
   /// a secretary signing for a club, or someone whose account says "Vince" but
   /// who signs "Vincent Okafor". Null only on rows predating migration 27.
-  signerName String?     @db.VarChar(160) @map("signer_name")
+  signerName String?       @map("signer_name") @db.VarChar(160)
   /// The signature as a PNG data URL. In the database rather than S3: a few
   /// kilobytes, read almost never, and it must outlive any bucket. See
   /// migration 27.
@@ -1351,6 +1457,9 @@ model Ebook {
   /// The 1200×630 share card (S3 key), rendered by the author's browser (migration 48).
   shareImageKey String? @map("share_image_key") @db.VarChar(500)
 
+  /// BOOK-PAGE (12 Oct 2026): "What you'll learn" — up to six short lines
+  /// the author writes, shown on the book page. JSON array of strings.
+  outcomes     Json?
   isCourse     Boolean @default(false) @map("is_course")
   passPercent  Int     @default(80) @map("pass_percent") @db.TinyInt
   /// The author's estimate, printed on the certificate as such.
@@ -1384,6 +1493,8 @@ model Ebook {
   purchases    EbookPurchase[]
   waitlist     EbookWaitlist[]
   sessionPack  EbookSessionPack[]
+  bookRequests    BookRequest[]
+  recommendations BookRecommendation[]
 
   @@index([status, category, ageBand])
   @@index([authorId])
@@ -1516,6 +1627,8 @@ enum EbookCategory {
 }
 
 enum EbookAgeBand {
+  /// BOOK-AGES (12 Oct 2026): the youngest players (3v3 / 5v5 in most countries).
+  u5_8
   u9_11
   u12_14
   u15_18

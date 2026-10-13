@@ -24,6 +24,7 @@ import { sendWelcomeEmail, sendVerificationEmail, sendPasswordResetEmail } from 
 import { authGuard } from '../../middleware/auth-guard.js'
 import { getUserProfile } from '../users/users.service.js'
 import { db } from '../../config/database.js'
+import { FamilyError, inviteParentForSignup, loginRefusal, signupAge, type SignupAge } from '../family/family.service.js'
 
 /**
  * Per-route rate limits, tighter than the global 100/min: these endpoints are
@@ -93,7 +94,48 @@ export async function authRoutes(app: FastifyInstance) {
   // POST /auth/register
   app.post('/register', limit(20, '1 hour'), async (request, reply) => {
     const input = RegisterSchema.parse(request.body)
-    const user = await registerUser(input)
+    // FAMILY-SIGNUP (12 Oct 2026): a player signs up with their date of birth
+    // and a tick confirming it. Under 13: no account — a parent signs up and
+    // adds them. 13–17: the account is made but works only once the parent
+    // they named says yes (no tokens here). 18+: an ordinary account.
+    let age: SignupAge | null = null
+    // Same shape as the zod handler: { message, issues: { field: [message] } }.
+    const bad = (issues: Record<string, string>) => reply.status(422).send({
+      statusCode: 422, error: 'Validation Error', message: Object.values(issues)[0],
+      issues: Object.fromEntries(Object.entries(issues).map(([k, v]) => [k, [v]])),
+    })
+    if (input.accountType === 'player') {
+      const missing: Record<string, string> = {}
+      if (!input.dateOfBirth) missing.dateOfBirth = 'Enter your date of birth'
+      if (input.confirmAge !== true) missing.confirmAge = 'Confirm your date of birth is correct'
+      if (Object.keys(missing).length) return bad(missing)
+      try { age = signupAge(input.dateOfBirth!) } catch (err) {
+        if (err instanceof FamilyError) return bad({ dateOfBirth: err.message })
+        throw err
+      }
+      if (age.kind === 'under13') {
+        return reply.status(403).send({ statusCode: 403, error: 'under_13', message: 'Under 13s can\'t have their own account. Ask your parent or guardian to sign up as a parent — they can add you.' })
+      }
+      if (age.kind === 'minor' && !input.parent) return bad({ parent: 'Enter your parent or guardian\'s name and email: they need to say yes.' })
+      if (age.kind === 'minor' && input.parent!.email.trim().toLowerCase() === input.email.trim().toLowerCase()) {
+        return bad({ 'parent.email': 'Your parent needs their own email, not yours.' })
+      }
+    }
+    const user = await registerUser(input, { dateOfBirth: age && 'dob' in age ? age.dob : null })
+    if (age?.kind === 'minor') {
+      try {
+        const { parentEmail } = await inviteParentForSignup(user, input.parent!)
+        void sendWelcomeEmail(user, verifyUrlFor(user.id, user.email))
+        // No tokens: login is refused until the parent says yes (loginRefusal).
+        return reply.status(201).send({ awaitingParent: true, parentEmail })
+      } catch (err) {
+        // The parent can't be asked (their email is a player's): undo, so the
+        // child can try again with the right address.
+        await db.user.delete({ where: { id: user.id } }).catch(() => {})
+        if (err instanceof FamilyError) return reply.status(err.statusCode).send({ statusCode: err.statusCode, error: err.code, message: err.message, issues: { 'parent.email': [err.message] } })
+        throw err
+      }
+    }
     const accessToken = signAccess(user.id, user.email)
     const refreshToken = signRefresh(user.id)
     await saveRefreshToken(user.id, refreshToken)
@@ -157,6 +199,9 @@ export async function authRoutes(app: FastifyInstance) {
       return reply.status(401).send({ statusCode: 401, error: 'Unauthorized', message: 'Invalid email or password' })
     }
     loginFails.delete(key)
+    // FAMILY: an under-13 has no login; a 13–17 waits for their parent's yes.
+    const refusal = await loginRefusal(user)
+    if (refusal) return reply.status(403).send({ statusCode: 403, error: refusal.code, message: refusal.message })
     const accessToken = signAccess(user.id, user.email)
     const refreshToken = signRefresh(user.id)
     await saveRefreshToken(user.id, refreshToken)
@@ -188,6 +233,11 @@ export async function authRoutes(app: FastifyInstance) {
     }
     const stored = await findRefreshToken(refreshToken)
     if (!stored || stored.expiresAt < new Date()) {
+      return reply.status(401).send({ statusCode: 401, error: 'Unauthorized', message: 'Refresh token expired or not found' })
+    }
+    // FAMILY: the same rule on every refresh — a parent closing or not yet
+    // approving a child's account must not be outlived by a session.
+    if (await loginRefusal(stored.user)) {
       return reply.status(401).send({ statusCode: 401, error: 'Unauthorized', message: 'Refresh token expired or not found' })
     }
     const newAccess = signAccess(stored.userId, stored.user.email)

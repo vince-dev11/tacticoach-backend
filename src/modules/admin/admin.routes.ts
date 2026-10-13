@@ -24,6 +24,7 @@ import { grantBook, refundPurchase, listOrders, PurchaseError } from '../ebooks/
 import { boxWhere, CONTACT_TOPICS, SUPPORT_TOPICS, type ContactBox } from '../contact/topics.js'
 import { createAccountSetupToken, createPasswordResetTokenFor } from '../auth/auth.service.js'
 import { latinOnly } from '../../lib/latin-only.js'
+import { parseDob } from '../../lib/age.js'
 import { isClubPlan } from '../../lib/capabilities.js'
 import { getAcceptance, latestAcceptances } from '../../lib/agreements.js'
 import { renderSignedAgreement } from '../../lib/agreement-pdf.js'
@@ -89,6 +90,8 @@ interface LeadRow {
   message: string | null
   note: string | null
   status: 'new' | 'replied' | 'closed'
+  /** How many times this person has written (LEAD-ONCE). */
+  times: number
   createdAt: Date
   updatedAt: Date
 }
@@ -452,8 +455,16 @@ export async function adminRoutes(app: FastifyInstance) {
         /// Send the set-password email. False = the admin passes the returned
         /// link on themselves (on a call, in a DM).
         sendEmail: z.boolean().default(true),
+        /// FAMILY (12 Oct 2026): a player's date of birth. Without one a player
+        /// counts as a child (no prices, no switching to coach) — see lib/age.ts.
+        dateOfBirth: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().nullable(),
       })
       .parse(request.body)
+
+    const dob = input.accountType === 'player' && input.dateOfBirth ? parseDob(input.dateOfBirth) : null
+    if (input.accountType === 'player' && input.dateOfBirth && (!dob || dob > new Date())) {
+      return reply.status(422).send({ statusCode: 422, error: 'Unprocessable Entity', message: 'Enter a real date of birth' })
+    }
 
     const email = input.email.trim().toLowerCase()
     if (await db.user.findUnique({ where: { email }, select: { id: true } })) {
@@ -474,6 +485,7 @@ export async function adminRoutes(app: FastifyInstance) {
         email,
         accountType: input.accountType,
         clubName: input.clubName ?? null,
+        ...(dob ? { dateOfBirth: dob } : {}),
         // Unguessable and never transmitted: the only way in is the setup link.
         passwordHash: await bcrypt.hash(crypto.randomBytes(32).toString('hex'), 12),
         // NOT verified yet. The mailbox is proven the moment the setup link is
@@ -1137,6 +1149,7 @@ export async function adminRoutes(app: FastifyInstance) {
     title: latinOnly(z.string().trim().min(1).max(160)),
     subtitle: latinOnly(z.string().trim().max(200)).optional().nullable(),
     blurb: z.string().max(4000).optional().nullable(),
+    outcomes: z.array(z.string().trim().max(140)).max(6).optional(),
     category: z.enum(EBOOK_CATEGORIES),
     ageBand: z.enum(EBOOK_AGE_BANDS),
     cover: Cover,

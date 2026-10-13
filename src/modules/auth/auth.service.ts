@@ -17,7 +17,7 @@ const sha256 = (v: string) => crypto.createHash('sha256').update(v).digest('hex'
 // user (lib/free-trial.ts) — no subscription row (decided 1 Oct 2026).
 import { freeTrialEnd } from '../../lib/free-trial.js'
 
-export async function registerUser(input: RegisterInput) {
+export async function registerUser(input: RegisterInput, extra: { dateOfBirth?: Date | null } = {}) {
   const exists = await db.user.findUnique({ where: { email: input.email } })
   if (exists) {
     const err = new Error('Email already in use') as Error & { statusCode: number }
@@ -34,8 +34,9 @@ export async function registerUser(input: RegisterInput) {
       phone: input.phone ?? null,
       accountType: input.accountType,
       passwordHash,
-      // Players are never on a trial: their account is free and permanent.
-      freeTrialEndsAt: input.accountType === 'player' ? null : freeTrialEnd(),
+      ...(extra.dateOfBirth ? { dateOfBirth: extra.dateOfBirth } : {}),
+      // Players and parents are never on a trial: their accounts are free.
+      freeTrialEndsAt: input.accountType === 'player' || input.accountType === 'parent' ? null : freeTrialEnd(),
       // The configured company-owner account gets the admin role immediately.
       ...(env.OWNER_EMAIL && input.email === env.OWNER_EMAIL ? { role: 'owner' as const } : {}),
     },
@@ -51,7 +52,7 @@ export async function registerUser(input: RegisterInput) {
   // emailed. Until 30 Sep 2026 nothing redeemed this token: the applicant got
   // an ordinary account and never became a collaborator. Players are skipped
   // (a collaborator sells to coaches and clubs); a failure never blocks signup.
-  if (input.collabToken && user.accountType !== 'player') {
+  if (input.collabToken && user.accountType !== 'player' && user.accountType !== 'parent') {
     await redeemInvite(input.collabToken, user.id).catch(() => false)
   }
 

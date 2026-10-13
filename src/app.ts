@@ -38,6 +38,7 @@ import { ebooksRoutes } from './modules/ebooks/ebooks.routes.js'
 import { authoringRoutes } from './modules/ebooks/authoring.routes.js'
 import { certificatesRoutes } from './modules/certificates/certificates.routes.js'
 import { playerLockdown } from './middleware/player-guard.js'
+import { familyRoutes } from './modules/family/family.routes.js'
 
 export async function buildApp(): Promise<FastifyInstance> {
   const app = Fastify({
@@ -185,6 +186,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(plansRoutes, { prefix: '/api/plans' })
   await app.register(coachPageRoutes, { prefix: '/api/coach' })
   await app.register(feedbackRoutes, { prefix: '/api/feedback' })
+  await app.register(familyRoutes, { prefix: '/api/family' })
   await app.register(ebooksRoutes, { prefix: '/api/ebooks' })
   // Writing books. Separate from /api/ebooks (which is the shop and the
   // reader) because every route here is scoped to the signed-in author and

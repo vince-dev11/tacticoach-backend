@@ -7,7 +7,17 @@ export const RegisterSchema = z.object({
   surname: latinOnly(z.string().trim().min(1).max(100)),
   /// What they say they are. Routes onboarding and segments reporting; grants
   /// nothing — see User.accountType in the schema.
-  accountType: z.enum(['coach', 'club', 'player']).default('coach'),
+  accountType: z.enum(['coach', 'club', 'player', 'parent']).default('coach'),
+  /** FAMILY-SIGNUP: a player's date of birth (required for a player). */
+  dateOfBirth: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Enter your date of birth').optional(),
+  /** The player ticked "I confirm my date of birth is correct". */
+  confirmAge: z.boolean().optional(),
+  /** A 13–17 player's parent or guardian, who must say yes. */
+  parent: z.object({
+    name: z.string().trim().min(1).max(100),
+    surname: z.string().trim().max(100).default(''),
+    email: z.string().trim().email().max(191),
+  }).optional().nullable(),
   email: z.string().email(),
   password: z.string().min(8).max(128),
   phone: z.string().max(30).optional(),

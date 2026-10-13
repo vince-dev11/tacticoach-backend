@@ -8,7 +8,7 @@ import { isMailConfigured, sendMail } from '../../config/mailer.js'
 import { buildContactEmail } from '../../lib/emails.js'
 import { db } from '../../config/database.js'
 import { captureError } from '../../lib/observability.js'
-import { CONTACT_TOPICS, TOPIC_LABEL, type ContactTopic } from './topics.js'
+import { CONTACT_TOPICS, LEAD_TOPICS, TOPIC_LABEL, type ContactTopic } from './topics.js'
 
 const ContactSchema = z.object({
   first_name: z.string().min(1).max(100),
@@ -49,15 +49,48 @@ export async function contactRoutes(app: FastifyInstance) {
 
       // Persist the lead first — it feeds the CRM inbox (/admin/leads) and
       // survives any email trouble.
+      //
+      // LEAD-ONCE (owner, 13 Oct 2026): one lead per person. Someone asking
+      // for early access or a demo again — a returning visitor, a different
+      // plan in the message — joins their open lead rather than adding a row
+      // to Leads each time. The new words go under the old ones with the date,
+      // the lead comes back to "New", and `times` counts the asks. Support
+      // questions stay separate: two problems are two tickets.
       let stored = false
       try {
-        await db.contactMessage.create({
-          data: {
-            firstName: input.first_name, lastName: input.last_name, email, message, topic,
-            // They told us they are a club: no need for an admin to set it.
-            ...(topic === 'club' ? { kind: 'club' as const } : {}),
-          },
-        })
+        const isLead = (LEAD_TOPICS as readonly string[]).includes(topic)
+        const open = isLead
+          ? await db.contactMessage.findFirst({
+              where: {
+                email,
+                status: { not: 'closed' },
+                OR: [{ topic: null }, { topic: { in: [...LEAD_TOPICS] } }],
+              },
+              orderBy: { createdAt: 'desc' },
+              select: { id: true, message: true, times: true, kind: true },
+            })
+          : null
+        if (open) {
+          const stamp = new Date().toISOString().slice(0, 10)
+          await db.contactMessage.update({
+            where: { id: open.id },
+            data: {
+              message: open.message ? `${open.message}\n\n— ${stamp} —\n${message}` : message,
+              times: open.times + 1,
+              status: 'new',
+              // They told us they are a club this time.
+              ...(topic === 'club' ? { topic, kind: 'club' as const } : {}),
+            },
+          })
+        } else {
+          await db.contactMessage.create({
+            data: {
+              firstName: input.first_name, lastName: input.last_name, email, message, topic,
+              // They told us they are a club: no need for an admin to set it.
+              ...(topic === 'club' ? { kind: 'club' as const } : {}),
+            },
+          })
+        }
         stored = true
       } catch (err) {
         request.log.error({ err }, 'Failed to store contact lead')

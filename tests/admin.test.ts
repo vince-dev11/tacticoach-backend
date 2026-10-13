@@ -480,6 +480,29 @@ describe('admin-created accounts and email verification', () => {
     expect(data.emailVerifiedAt).toBeNull()
   })
 
+  it('FAMILY · an owner-created player carries the date of birth they enter; a nonsense one is refused', async () => {
+    const app = await getApp()
+    dbMock.user.findUnique.mockImplementation((args?: unknown) => {
+      const keys = Object.keys((args as { select?: Record<string, unknown> } | undefined)?.select ?? {})
+      if (keys.length && keys.every((k) => k === 'role' || k === 'accountType')) return Promise.resolve({ role: 'owner', accountType: 'coach' } as never)
+      return Promise.resolve(null as never)
+    })
+    dbMock.user.create.mockResolvedValue({ id: 78, name: 'Ada', surname: 'P', email: 'ada@x.dev', accountType: 'player', clubName: null } as never)
+    dbMock.passwordResetToken.deleteMany.mockResolvedValue({ count: 0 } as never)
+    dbMock.passwordResetToken.create.mockResolvedValue({} as never)
+    const ok = await app.inject({
+      method: 'POST', url: '/api/admin/users', headers: authHeaders(await accessToken()),
+      payload: { name: 'Ada', surname: 'P', email: 'ada@x.dev', accountType: 'player', dateOfBirth: '1990-02-03', sendEmail: false },
+    })
+    expect(ok.statusCode).toBe(201)
+    expect((dbMock.user.create.mock.calls.at(-1)![0].data as { dateOfBirth?: Date }).dateOfBirth).toEqual(new Date(Date.UTC(1990, 1, 3)))
+    const bad = await app.inject({
+      method: 'POST', url: '/api/admin/users', headers: authHeaders(await accessToken()),
+      payload: { name: 'Ada', surname: 'P', email: 'ada2@x.dev', accountType: 'player', dateOfBirth: '1990-02-31', sendEmail: false },
+    })
+    expect(bad.statusCode).toBe(422)
+  })
+
   it('redeeming a setup/reset link verifies the email', async () => {
     const app = await getApp()
     dbMock.passwordResetToken.findUnique.mockResolvedValue({

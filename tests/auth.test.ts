@@ -4,6 +4,8 @@ import bcrypt from 'bcryptjs'
 import { dbMock } from './setup.js'
 import { getApp, userRow, mockUserFindUnique } from './helpers.js'
 
+const yearsAgo = (y: number) => `${new Date().getUTCFullYear() - y}-01-01`
+
 const registerBody = {
   name: 'Test',
   surname: 'Coach',
@@ -33,14 +35,55 @@ describe('POST /api/auth/register', () => {
     expect(days).toBeLessThanOrEqual(14)
   })
 
-  it('FT-4 · a player account gets no trial window', async () => {
+  // FAMILY-SIGNUP (12 Oct 2026): players sign up with a date of birth and a tick.
+  it('FAMILY-SIGNUP · a player needs a date of birth and the age tick', async () => {
     const app = await getApp()
-    mockUserFindUnique(dbMock.user.findUnique, userRow({ accountType: 'player' }), { whenNoSelect: null })
-    dbMock.user.create.mockResolvedValue(userRow({ accountType: 'player' }) as never)
-    dbMock.refreshToken.create.mockResolvedValue({} as never)
     const res = await app.inject({ method: 'POST', url: '/api/auth/register', payload: { ...registerBody, accountType: 'player' } })
+    expect(res.statusCode).toBe(422)
+    expect(Object.keys(res.json().issues)).toEqual(['dateOfBirth', 'confirmAge'])
+    expect(dbMock.user.create).not.toHaveBeenCalled()
+  })
+
+  it('FAMILY-SIGNUP · under 13: no account — a parent signs up instead', async () => {
+    const app = await getApp()
+    const res = await app.inject({ method: 'POST', url: '/api/auth/register', payload: { ...registerBody, accountType: 'player', dateOfBirth: yearsAgo(11), confirmAge: true } })
+    expect(res.statusCode).toBe(403)
+    expect(res.json().error).toBe('under_13')
+    expect(dbMock.user.create).not.toHaveBeenCalled()
+  })
+
+  it('FAMILY-SIGNUP · 13–17: needs a parent; the account is made, the parent asked, and no tokens', async () => {
+    const app = await getApp()
+    const teen = { ...registerBody, email: 'teen@test.dev', accountType: 'player', dateOfBirth: yearsAgo(15), confirmAge: true }
+    const noParent = await app.inject({ method: 'POST', url: '/api/auth/register', payload: teen })
+    expect(noParent.statusCode).toBe(422)
+    expect(noParent.json().issues.parent).toBeTruthy()
+    const same = await app.inject({ method: 'POST', url: '/api/auth/register', payload: { ...teen, parent: { name: 'P', email: 'teen@test.dev' } } })
+    expect(same.statusCode).toBe(422)
+
+    dbMock.user.findUnique.mockResolvedValue(null as never)
+    dbMock.user.create.mockImplementation((async ({ data }: { data: { email: string; name: string; accountType: string } }) => ({ id: data.accountType === 'parent' ? 70 : 61, name: data.name, surname: 'S', email: data.email, accountType: data.accountType })) as never)
+    dbMock.parentLink.findUnique.mockResolvedValue(null as never)
+    dbMock.parentLink.create.mockResolvedValue({} as never)
+    const res = await app.inject({ method: 'POST', url: '/api/auth/register', payload: { ...teen, parent: { name: 'Pat', email: 'pat@test.dev' } } })
     expect(res.statusCode).toBe(201)
-    expect((dbMock.user.create.mock.calls[0][0] as { data: Record<string, unknown> }).data.freeTrialEndsAt).toBeNull()
+    expect(res.json()).toEqual({ awaitingParent: true, parentEmail: 'pat@test.dev' })
+    const child = dbMock.user.create.mock.calls.find((c) => (c[0] as { data: { accountType: string } }).data.accountType === 'player')![0] as { data: { dateOfBirth: Date; freeTrialEndsAt: null } }
+    expect(child.data.dateOfBirth).toEqual(new Date(`${yearsAgo(15)}T00:00:00Z`))
+    expect(child.data.freeTrialEndsAt).toBeNull()
+    expect(dbMock.parentLink.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ parentUserId: 70, childUserId: 61, status: 'pending', invitedById: null }) }))
+    expect(dbMock.refreshToken.create).not.toHaveBeenCalled()
+  })
+
+  it('FAMILY-SIGNUP · a parent signs up like anyone else, with no trial', async () => {
+    const app = await getApp()
+    mockUserFindUnique(dbMock.user.findUnique, userRow({ accountType: 'parent' }), { whenNoSelect: null })
+    dbMock.user.create.mockResolvedValue(userRow({ accountType: 'parent' }) as never)
+    dbMock.refreshToken.create.mockResolvedValue({} as never)
+    const res = await app.inject({ method: 'POST', url: '/api/auth/register', payload: { ...registerBody, accountType: 'parent' } })
+    expect(res.statusCode).toBe(201)
+    expect(res.json().accessToken).toBeTruthy()
+    expect((dbMock.user.create.mock.calls[0][0] as { data: { freeTrialEndsAt: null } }).data.freeTrialEndsAt).toBeNull()
   })
 
   it('rejects a duplicate email with 409', async () => {

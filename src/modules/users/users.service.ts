@@ -1,3 +1,4 @@
+import { ageOn, isMinorAccount } from '../../lib/age.js'
 import { db } from '../../config/database.js'
 import { resolveSquad } from './squads.service.js'
 import { uploadToS3, deleteFromS3, presignUrl } from '../../config/s3.js'
@@ -7,6 +8,8 @@ const USER_SELECT = {
   id: true,
   role: true,
   accountType: true,
+  dateOfBirth: true,
+  canLogin: true,
   name: true,
   surname: true,
   email: true,
@@ -32,8 +35,13 @@ const USER_SELECT = {
 } as const
 
 export async function getUserProfile(userId: number) {
-  const user = await db.user.findUnique({ where: { id: userId }, select: USER_SELECT })
-  if (!user) return null
+  const found = await db.user.findUnique({ where: { id: userId }, select: USER_SELECT })
+  if (!found) return null
+  // FAMILY (12 Oct 2026): the client hides prices from a player under 18 (or
+  // one whose coach has not given a date of birth yet). The date itself stays
+  // on the server; the client needs only the answer.
+  const { dateOfBirth, ...rest } = found
+  const user = { ...rest, minor: isMinorAccount(found), age: dateOfBirth ? ageOn(dateOfBirth) : null }
   // Replace raw S3 key with a short-lived presigned URL for the logo.
   // Presign failure (S3 down / unconfigured) must not break the whole profile
   // read — pre-launch QA found every profile save 503ing on a dev box because
@@ -131,6 +139,15 @@ const SQUAD_SELECT = {
   playerUserId: true,
   linkStatus: true,
   guardianEmail: true,
+  // FAMILY (12 Oct 2026): what the coach needs to know about the account —
+  // never the date itself, only what follows from it.
+  playerUser: {
+    select: {
+      dateOfBirth: true,
+      canLogin: true,
+      parentLinks: { select: { status: true } },
+    },
+  },
 } as const
 
 /**
@@ -149,7 +166,22 @@ export async function getSquad(userId: number, squadId?: number | null) {
     orderBy: { sortOrder: 'asc' },
     select: SQUAD_SELECT,
   })
-  return { squad, players }
+  return {
+    squad,
+    players: players.map(({ playerUser, ...p }) => ({
+      ...p,
+      account: playerUser
+        ? {
+          age: playerUser.dateOfBirth ? ageOn(playerUser.dateOfBirth) : null,
+          canLogin: playerUser.canLogin,
+          parent: playerUser.parentLinks.some((l) => l.status === 'active') ? 'active' as const
+            : playerUser.parentLinks.length ? 'pending' as const : 'none' as const,
+          /** Signed up before coaches entered a date of birth: the coach adds it. */
+          needsDetails: !playerUser.dateOfBirth,
+        }
+        : null,
+    })),
+  }
 }
 
 /**

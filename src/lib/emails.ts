@@ -132,6 +132,9 @@ export type EmailKind =
   | 'lead_reply'
   | 'book_receipt'
   | 'free_trial_started'
+  | 'parent_invite'
+  | 'book_request'
+  | 'book_recommended'
 
 /**
  * Send an email without ever throwing — logs and swallows failures.
@@ -957,4 +960,146 @@ export async function sendAdminMessage(params: {
     return 'failed'
   }
   return isMailConfigured() ? 'sent' : 'skipped'
+}
+
+
+// ---- FAMILY (12 Oct 2026) ----------------------------------------------------
+
+/**
+ * "Your child's coach has created an account for them — say yes."
+ *
+ * The consent step: until the parent accepts, the child's account does not
+ * work. Says plainly who asked, for which child, and what the parent will see.
+ */
+export async function sendParentInviteEmail(params: {
+  to: string
+  parentName: string
+  childName: string
+  coachName: string
+  clubName: string | null
+  /** False for an under-13: no login of their own, seen through the parent. */
+  childCanLogin: boolean
+  inviteUrl: string
+  parentId?: number
+  actorId?: number
+  /** FAMILY-SIGNUP: the child (13–17) signed up themselves; no coach yet. */
+  selfSignup?: boolean
+}): Promise<void> {
+  if (params.selfSignup) return sendSelfSignupParentEmail(params)
+  const who = params.clubName ? `${params.coachName} (${params.clubName})` : params.coachName
+  const childLine = params.childCanLogin
+    ? `Once you say yes, ${params.childName} can log in to read their coach's feedback. You will see everything they see.`
+    : `${params.childName} is under 13, so they won't have a login of their own: you will see their coach's feedback on your Family page.`
+  await sendSafely(
+    {
+      to: params.to,
+      subject: `${params.coachName} has added ${params.childName} to TactiCoach`,
+      text:
+        `Hi ${params.parentName},\n\n` +
+        `${who} has created a TactiCoach account for ${params.childName}, so their coach can send them feedback after training.\n\n` +
+        `${childLine}\n\n` +
+        `Please say yes (or no) here — the link is valid for 14 days:\n${params.inviteUrl}\n\n` +
+        `Nothing works for ${params.childName} until you say yes. If you don't know this coach, ignore this email.\n\n— TactiCoach`,
+      html: layout(
+        `${params.coachName} has added ${params.childName} to TactiCoach — your OK is needed.`,
+        `${kicker('FOR PARENTS')}
+         <h1 style="margin:0 0 12px;font-size:21px">${esc(params.childName)}'s coach is on TactiCoach</h1>
+         <p style="margin:0 0 10px">Hi ${esc(params.parentName)}, ${esc(who)} has created an account for ${esc(params.childName)}, so their coach can send them feedback after training.</p>
+         <p style="margin:0 0 10px">${esc(childLine)}</p>
+         ${button(params.inviteUrl, 'Review and say yes')}
+         <p style="margin:0 0 8px;color:#6b7280;font-size:13px">Nothing works for ${esc(params.childName)} until you say yes. The link is valid for 14 days. If you don't know this coach, ignore this email.</p>`,
+      ),
+    },
+    'parent_invite',
+    { userId: params.parentId, actorId: params.actorId },
+  )
+}
+
+/** FAMILY-SIGNUP: a 13–17 signed up and named this parent. Nothing works until the parent says yes. */
+async function sendSelfSignupParentEmail(params: { to: string; parentName: string; childName: string; inviteUrl: string; parentId?: number; actorId?: number }): Promise<void> {
+  await sendSafely(
+    {
+      to: params.to,
+      subject: `${params.childName} has asked to join TactiCoach — your OK is needed`,
+      text:
+        `Hi ${params.parentName},\n\n` +
+        `${params.childName} has signed up to TactiCoach, the app their football coach can use to send feedback after training, and gave your email as their parent or guardian.\n\n` +
+        `They are under 18, so their account works only once you say yes. You will see everything their coach sends them, and they never see prices or buy anything.\n\n` +
+        `Say yes (or no) here — the link is valid for 14 days:\n${params.inviteUrl}\n\n` +
+        `If you don't know about this, choose no and the account is removed.\n\n— TactiCoach`,
+      html: layout(
+        `${params.childName} has asked to join TactiCoach — your OK is needed.`,
+        `${kicker('FOR PARENTS')}
+         <h1 style="margin:0 0 12px;font-size:21px">${esc(params.childName)} has asked to join TactiCoach</h1>
+         <p style="margin:0 0 10px">Hi ${esc(params.parentName)}, ${esc(params.childName)} signed up to TactiCoach, the app their football coach can use to send feedback after training, and gave your email as their parent or guardian.</p>
+         <p style="margin:0 0 10px">They are under 18, so their account works only once you say yes. You will see everything their coach sends them; they never see prices or buy anything.</p>
+         ${button(params.inviteUrl, 'Review and say yes')}
+         <p style="margin:0 0 8px;color:#6b7280;font-size:13px">The link is valid for 14 days. If you don't know about this, choose no and the account is removed.</p>`,
+      ),
+    },
+    'parent_invite',
+    { userId: params.parentId, actorId: params.actorId },
+  )
+}
+
+/** "Sam would like this book" — a player under 18 asked for a paid book. */
+export async function sendBookRequestEmail(params: {
+  to: string
+  parentName: string
+  childName: string
+  bookTitle: string
+  familyUrl: string
+  parentId?: number
+}): Promise<void> {
+  await sendSafely(
+    {
+      to: params.to,
+      subject: `${params.childName} would like a book: ${params.bookTitle}`,
+      text:
+        `Hi ${params.parentName},\n\n${params.childName} asked for "${params.bookTitle}" on TactiCoach.\n\n` +
+        `See it, and decide, on your Family page:\n${params.familyUrl}\n\n— TactiCoach`,
+      html: layout(
+        `${params.childName} would like a book.`,
+        `${kicker('FOR PARENTS')}
+         <h1 style="margin:0 0 12px;font-size:21px">${esc(params.childName)} would like a book</h1>
+         <p style="margin:0 0 10px">${esc(params.childName)} asked for <b>${esc(params.bookTitle)}</b> on TactiCoach. Players under 18 never see prices or buy anything themselves — it's your call.</p>
+         ${button(params.familyUrl, 'Open your Family page')}`,
+      ),
+    },
+    'book_request',
+    { userId: params.parentId },
+  )
+}
+
+/** "Your coach recommends a book" — to the parent of an under-18. */
+export async function sendBookRecommendedEmail(params: {
+  to: string
+  parentName: string
+  childName: string
+  coachName: string
+  bookTitle: string
+  bookUrl: string
+  note: string | null
+  parentId?: number
+}): Promise<void> {
+  await sendSafely(
+    {
+      to: params.to,
+      subject: `${params.coachName} recommends a book for ${params.childName}`,
+      text:
+        `Hi ${params.parentName},\n\n${params.coachName} recommends "${params.bookTitle}" for ${params.childName}.` +
+        (params.note ? `\n\n"${params.note}"` : '') +
+        `\n\n${params.bookUrl}\n\n— TactiCoach`,
+      html: layout(
+        `${params.coachName} recommends a book for ${params.childName}.`,
+        `${kicker('FOR PARENTS')}
+         <h1 style="margin:0 0 12px;font-size:21px">A book from ${esc(params.childName)}'s coach</h1>
+         <p style="margin:0 0 10px">${esc(params.coachName)} recommends <b>${esc(params.bookTitle)}</b> for ${esc(params.childName)}.</p>
+         ${params.note ? `<p style="margin:0 0 10px;font-style:italic">&ldquo;${esc(params.note)}&rdquo;</p>` : ''}
+         ${button(params.bookUrl, 'See the book')}`,
+      ),
+    },
+    'book_recommended',
+    { userId: params.parentId },
+  )
 }

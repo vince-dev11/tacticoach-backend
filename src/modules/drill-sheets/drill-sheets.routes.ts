@@ -1,4 +1,4 @@
-// Drill sheets ("data sheets") — publishable, likeable session sheets.
+// Drill sheets — private by default, shareable to the community, likeable.
 // The sheet's rendered image is stored in S3; `data` keeps the source
 // configuration so the owner can re-open and edit it later.
 
@@ -86,9 +86,12 @@ export async function drillSheetsRoutes(app: FastifyInstance) {
         userId,
         title: input.title,
         description: input.description ?? null,
-        // Sheets are public by default; the owner can switch to private.
-        published: true,
-        publishedAt: new Date(),
+        // SHEET-PRIVATE (12 Oct 2026): private by default, like boards. The
+        // picture can carry squad names (often children's); sharing is the
+        // coach's explicit choice — the builder's Private / Shared switch or
+        // the Library card (PATCH /:id/publish).
+        published: false,
+        publishedAt: null,
         ...(input.data !== undefined && { data: input.data as Prisma.InputJsonValue }),
       },
     }))

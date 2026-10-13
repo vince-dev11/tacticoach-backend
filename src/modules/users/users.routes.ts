@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify'
+import { db } from '../../config/database.js'
 import { authGuard } from '../../middleware/auth-guard.js'
 import { CreateSquadSchema, MovePlayerSchema } from './users.schema.js'
 import {
@@ -37,6 +38,15 @@ export async function usersRoutes(app: FastifyInstance) {
   app.patch('/me', async (request, reply) => {
     const userId = (request.user as any).sub as number
     const input = UpdateProfileSchema.parse(request.body)
+    // FAMILY (12 Oct 2026): the account type is a coach/club correction only.
+    // A player or a parent cannot type their way into the coach product, and
+    // nobody makes themselves a player (only a coach creates one).
+    if (input.accountType !== undefined) {
+      const me = await db.user.findUnique({ where: { id: userId }, select: { accountType: true } })
+      if (me?.accountType === 'player' || me?.accountType === 'parent' || input.accountType === 'player') {
+        return reply.status(403).send({ statusCode: 403, error: 'account_type', message: 'This account type cannot be changed here.' })
+      }
+    }
     const user = await updateUserProfile(userId, input)
     return reply.send(user)
   })

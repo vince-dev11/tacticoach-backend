@@ -41,6 +41,16 @@ export function playerLockdown(app: FastifyInstance) {
       where: { id: sub },
       select: { accountType: true },
     })
+    // FAMILY (12 Oct 2026): a parent account gets the same deny-by-default
+    // product as a player — their children's feedback and books, nothing else.
+    if (account?.accountType === 'parent') {
+      return reply.status(403).send({
+        statusCode: 403,
+        error: 'Forbidden',
+        message: 'This part of TactiCoach is for coaches. Your children are at /family.',
+        code: 'PARENT_ACCOUNT',
+      })
+    }
     if (account?.accountType !== 'player') return
 
     // Deliberately not the NO_EDITOR_ACCESS / "choose a plan" message the
