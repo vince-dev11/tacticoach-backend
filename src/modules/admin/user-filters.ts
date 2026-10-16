@@ -29,6 +29,8 @@ export const UserFilters = z.object({
   /** Joined within this many days. */
   joined: z.coerce.number().int().refine((n) => [7, 30, 90].includes(n)).optional().catch(undefined),
   content: z.enum(['some', 'none']).optional().catch(undefined),
+  /** EMAIL-FAIL: only accounts we cannot email (bad address, or the last email failed). */
+  email: z.enum(['problem']).optional().catch(undefined),
   sort: z.enum(['newest', 'oldest', 'trial_end']).catch('newest'),
   page: z.coerce.number().int().min(1).catch(1),
 })

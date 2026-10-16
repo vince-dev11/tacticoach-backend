@@ -41,6 +41,7 @@ import {
 // action. See ebook-review.ts for why they must not each have their own.
 import { sentOnly } from '../../lib/sent-only.js'
 import { analyticsRoutes } from './analytics/analytics.routes.js'
+import { emailIssuesFor, usersWhoseLastEmailFailed } from './email-issues.js'
 import { transition as transitionEbook, type EbookStatus as EbookStatusValue } from '../ebooks/ebook-review.js'
 import { inviteCollaborator, endCollaborator } from '../collaborations/collaborations.service.js'
 import {
@@ -346,7 +347,13 @@ export async function adminRoutes(app: FastifyInstance) {
     const f = UserFilters.parse(request.query ?? {})
     const take = 25
     const now = new Date()
-    const where = userWhere(f, now)
+    let where = userWhere(f, now)
+    if (f.email === 'problem') {
+      // EMAIL-FAIL: the last email failed, or the address has no "@" at all
+      // (the deeper format check runs per row below, for the badge).
+      const failing = await usersWhoseLastEmailFailed()
+      where = { AND: [where, { OR: [{ id: { in: failing } }, { NOT: { email: { contains: '@' } } }] }] }
+    }
     const select = {
       id: true, name: true, surname: true, email: true, clubName: true,
       emailVerifiedAt: true, createdAt: true, role: true, accountType: true,
@@ -387,7 +394,10 @@ export async function adminRoutes(app: FastifyInstance) {
         .sort((x, y) => (x.trialEndsAt ?? '9').localeCompare(y.trialEndsAt ?? '9'))
         .slice((f.page - 1) * take, f.page * take)
     }
-    return reply.send({ users, total, page: f.page, limit: take, counts: { trialEnding } })
+    // EMAIL-FAIL: say next to the person when we cannot reach them by email.
+    const issues = await emailIssuesFor(users)
+    const withIssues = users.map((u) => ({ ...u, emailIssue: issues.get(u.id) ?? null }))
+    return reply.send({ users: withIssues, total, page: f.page, limit: take, counts: { trialEnding } })
   })
 
   /**

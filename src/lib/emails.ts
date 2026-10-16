@@ -14,6 +14,7 @@ import {
   DEFAULT_CLUB_RATE,
 } from '../modules/collaborations/collaboration-terms.js'
 import { captureError } from './observability.js'
+import { isInvalidRecipient } from './email-address.js'
 
 const BRAND = '#00A76F'
 
@@ -152,6 +153,12 @@ async function sendSafely(
   try {
     await sendMail({ ...opts, kind, ...meta })
   } catch (err) {
+    // EMAIL-FAIL: a missing or malformed address is a data problem, already on
+    // record in the email log and flagged in Admin → Users. Not a Sentry error.
+    if (isInvalidRecipient(err)) {
+      console.warn(`[emails] ${kind} not sent: ${err.message} (user ${meta.userId ?? '-'})`)
+      return
+    }
     console.error(`[emails] Failed to send ${kind} to ${opts.to}`, err)
     // The recipient's address stays in the local log only; Sentry gets the
     // email kind and the account ID, which is enough to find it.
@@ -956,7 +963,10 @@ export async function sendAdminMessage(params: {
       actorId: params.actorId,
     })
   } catch (err) {
-    captureError(err, { source: 'email', tags: { email_kind: params.kind }, extra: { userId: params.userId } })
+    // EMAIL-FAIL: a bad address is shown in Admin (history + badge), not a Sentry error.
+    if (!isInvalidRecipient(err)) {
+      captureError(err, { source: 'email', tags: { email_kind: params.kind }, extra: { userId: params.userId } })
+    }
     return 'failed'
   }
   return isMailConfigured() ? 'sent' : 'skipped'

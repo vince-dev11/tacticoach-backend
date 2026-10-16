@@ -19,6 +19,12 @@ export const envBool = (fallback: boolean) =>
     .optional()
     .transform((v) => (v === undefined || v === '' ? fallback : ['1', 'true', 'yes', 'on'].includes(v.trim().toLowerCase())))
 
+/** An optional string where a blank line in .env (`NAME=`) means "not set". */
+export const blankAsUnset = z
+  .string()
+  .optional()
+  .transform((v) => (v === undefined || v.trim() === '' ? undefined : v.trim()))
+
 const schema = z.object({
   PORT: z.coerce.number().default(3001),
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
@@ -78,10 +84,13 @@ const schema = z.object({
   // SUPPORT_EMAIL — the team inbox. Contact-form messages are delivered here,
   //   and it is the Reply-To on everything we send, so answering even a
   //   no-reply email reaches a person. Defaults to MAIL_FROM.
-  SUPPORT_EMAIL: z.string().optional(),
+  //   EMAIL-FAIL: a line left blank (`SUPPORT_EMAIL=`) counts as unset. As an
+  //   empty string it beat the `?? MAIL_FROM` fallback and contact-form mail
+  //   went to nobody ("No recipients defined").
+  SUPPORT_EMAIL: blankAsUnset,
   // TEAM_MAIL_FROM — the sender of emails a person writes in Admin (messages
   //   to users, replies to leads and support). Defaults to MAIL_FROM.
-  TEAM_MAIL_FROM: z.string().optional(),
+  TEAM_MAIL_FROM: blankAsUnset,
 
   // The account with this email is promoted to the 'owner' role at boot and
   // on registration — it unlocks the /admin area (blog CMS + CRM).

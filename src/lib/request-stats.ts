@@ -5,7 +5,9 @@
 // the process — which is fine: the question it answers is "how is the API
 // doing right now", not "how did it do last month" (that is Sentry's job).
 
-import { monitorEventLoopDelay, type IntervalHistogram } from 'node:perf_hooks'
+// The event-loop delay histogram: `IntervalHistogram` in older Node typings, `ELDHistogram` from the Node 26 types (deps update, 16 Oct 2026).
+import { monitorEventLoopDelay } from 'node:perf_hooks'
+type LoopHistogram = ReturnType<typeof monitorEventLoopDelay>
 
 export interface Sample { at: number; route: string; method: string; status: number; ms: number }
 
@@ -94,7 +96,7 @@ export function requestSummary(minutes = 60, now = Date.now()): RequestSummary {
 
 // ---- Event loop lag ---------------------------------------------------------------
 
-let loopHist: IntervalHistogram | null = null
+let loopHist: LoopHistogram | null = null
 
 /** Start sampling (idempotent). Cheap: a 20 ms timer in the perf_hooks thread. */
 export function startEventLoopMonitor(): void {

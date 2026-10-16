@@ -19,6 +19,7 @@
 import 'dotenv/config'
 import * as Sentry from '@sentry/node'
 import { scrubEvent } from './lib/observability-scrub.js'
+import { shouldReportRequestError } from './lib/sentry-filter.js'
 
 const dsn = process.env.SENTRY_DSN?.trim()
 const nodeEnv = process.env.NODE_ENV ?? 'development'
@@ -48,6 +49,9 @@ if (dsn && nodeEnv !== 'test' && !globalFlag.__tcSentryInit) {
     // Never let the SDK attach IP addresses, cookies or request bodies on its
     // own. We add the user ID ourselves (never the email) — see observability.ts.
     sendDefaultPii: false,
+
+    // Validation errors and 4xx answers are not faults (see sentry-filter.ts).
+    integrations: [Sentry.fastifyIntegration({ shouldHandleError: (error) => shouldReportRequestError(error) })],
 
     // Last line of defence: strip tokens, passwords and auth headers from
     // anything that slipped into an event or breadcrumb.

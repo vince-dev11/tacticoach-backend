@@ -1,6 +1,7 @@
 import nodemailer, { type Transporter } from 'nodemailer'
 import { env } from './env.js'
 import { db } from './database.js'
+import { bareAddress, InvalidRecipientError, recipientProblem } from '../lib/email-address.js'
 
 // ---- TEMPORARY: remove once `prisma generate` has run against migration 23 --
 // The generated client has no `emailLog` delegate until then. Narrow on
@@ -32,7 +33,7 @@ function getTransport(): Transporter {
 }
 
 /** The bare address inside "Name <addr>" (or the string itself). */
-const bare = (a: string) => (a.match(/<([^>]+)>/)?.[1] ?? a).trim().toLowerCase()
+const bare = bareAddress
 
 /**
  * Reply-To for everything we send: the team inbox, so a reply to an email
@@ -85,7 +86,7 @@ async function record(
   try {
     await emailLog().create({
       data: {
-        to: opts.to.slice(0, 255),
+        to: (opts.to ?? '').slice(0, 255),
         kind: (opts.kind ?? 'other').slice(0, 40),
         subject: opts.subject.slice(0, 255),
         status,
@@ -109,6 +110,15 @@ async function record(
  * when someone says the email never arrived.
  */
 export async function sendMail(opts: SendMailOptions): Promise<void> {
+  // The address first: with no usable address there is nothing to configure
+  // or retry — the account's email is what needs fixing, so say exactly that.
+  const problem = recipientProblem(opts.to)
+  if (problem) {
+    const error = new InvalidRecipientError(problem)
+    await record(opts, 'failed', error)
+    throw error
+  }
+
   if (!isMailConfigured()) {
     // A distinct status, not a failure: nothing was attempted, and the fix is
     // configuration rather than the provider. Told apart in the admin history.
