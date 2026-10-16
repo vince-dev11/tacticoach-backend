@@ -1,4 +1,5 @@
 import type { FastifyRequest, FastifyReply } from 'fastify'
+import { blockedUntilVerified } from '../lib/email-verify-gate.js'
 
 /**
  * Bearer-token guard for authenticated routes.
@@ -27,5 +28,17 @@ export async function authGuard(request: FastifyRequest, reply: FastifyReply) {
     return reply
       .status(401)
       .send({ statusCode: 401, error: 'Unauthorized', message: 'Invalid or expired token' })
+  }
+
+  // VERIFY-GATE (16 Oct 2026): an account that still has to verify its email
+  // may look around but not do anything (lib/email-verify-gate.ts).
+  const sub = (request.user as { sub?: number } | undefined)?.sub
+  if (sub && (await blockedUntilVerified(sub, request.method, request.url))) {
+    return reply.status(403).send({
+      statusCode: 403,
+      error: 'email_unverified',
+      code: 'EMAIL_UNVERIFIED',
+      message: 'Please verify your email address to continue. We sent you a link — you can ask for a new one.',
+    })
   }
 }

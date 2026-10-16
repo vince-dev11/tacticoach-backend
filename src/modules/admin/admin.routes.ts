@@ -42,6 +42,7 @@ import {
 import { sentOnly } from '../../lib/sent-only.js'
 import { analyticsRoutes } from './analytics/analytics.routes.js'
 import { emailIssuesFor, usersWhoseLastEmailFailed } from './email-issues.js'
+import { forgetGate } from '../../lib/email-verify-gate.js'
 import { transition as transitionEbook, type EbookStatus as EbookStatusValue } from '../ebooks/ebook-review.js'
 import { inviteCollaborator, endCollaborator } from '../collaborations/collaborations.service.js'
 import {
@@ -563,6 +564,7 @@ export async function adminRoutes(app: FastifyInstance) {
       // Anything already issued pointed at the old inbox.
       db.passwordResetToken.deleteMany({ where: { userId: id, usedAt: null } }),
     ])
+    forgetGate(id) // VERIFY-GATE: the new address needs verifying
     return reply.send(updated)
   })
 

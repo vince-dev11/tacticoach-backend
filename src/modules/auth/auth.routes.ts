@@ -1,3 +1,4 @@
+import { forgetGate } from '../../lib/email-verify-gate.js'
 import { randomUUID } from 'node:crypto'
 import type { FastifyInstance } from 'fastify'
 import {
@@ -165,6 +166,7 @@ export async function authRoutes(app: FastifyInstance) {
       where: { id: payload.sub, emailVerifiedAt: null },
       data: { emailVerifiedAt: new Date() },
     })
+    forgetGate(payload.sub) // VERIFY-GATE: unlocked at once, not after the cache's 30 s
     return reply.send({ message: 'Email verified. Thanks!' })
   })
 

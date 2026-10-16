@@ -95,6 +95,13 @@ const schema = z.object({
   // The account with this email is promoted to the 'owner' role at boot and
   // on registration — it unlocks the /admin area (blog CMS + CRM).
   OWNER_EMAIL: z.string().optional(),
+  // VERIFY-GATE (16 Oct 2026): the day "verify your email first" began
+  // (YYYY-MM-DD). Accounts older than it get 7 days' grace from it.
+  EMAIL_VERIFY_GATE_FROM: z.string().optional(),
+  // EMAIL_VERIFY_GATE=off turns the gate off on a developer's machine, so the
+  // live Playwright suite's fresh (unverified) accounts can work. Ignored in
+  // production, where the gate is always on.
+  EMAIL_VERIFY_GATE: envBool(true),
 
   // Gemini — optional so the API still boots without AI configured; the AI
   // tactics routes return 503 until GEMINI_API_KEY is set.

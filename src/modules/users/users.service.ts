@@ -1,3 +1,4 @@
+import { verificationState } from '../../lib/email-verify-gate.js'
 import { ageOn, isMinorAccount } from '../../lib/age.js'
 import { db } from '../../config/database.js'
 import { resolveSquad } from './squads.service.js'
@@ -41,7 +42,8 @@ export async function getUserProfile(userId: number) {
   // one whose coach has not given a date of birth yet). The date itself stays
   // on the server; the client needs only the answer.
   const { dateOfBirth, ...rest } = found
-  const user = { ...rest, minor: isMinorAccount(found), age: dateOfBirth ? ageOn(dateOfBirth) : null }
+  // VERIFY-GATE: whether this account must verify its email now, and until when it has grace.
+  const user = { ...rest, minor: isMinorAccount(found), age: dateOfBirth ? ageOn(dateOfBirth) : null, emailVerification: verificationState(found) }
   // Replace raw S3 key with a short-lived presigned URL for the logo.
   // Presign failure (S3 down / unconfigured) must not break the whole profile
   // read — pre-launch QA found every profile save 503ing on a dev box because

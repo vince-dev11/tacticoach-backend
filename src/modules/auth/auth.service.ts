@@ -1,3 +1,4 @@
+import { forgetGate } from '../../lib/email-verify-gate.js'
 import crypto from 'node:crypto'
 import bcrypt from 'bcryptjs'
 import { db } from '../../config/database.js'
@@ -193,5 +194,6 @@ export async function resetPasswordWithToken(token: string, newPassword: string)
     db.passwordResetToken.update({ where: { id: record.id }, data: { usedAt: new Date() } }),
     db.refreshToken.deleteMany({ where: { userId: record.userId } }),
   ])
+  forgetGate(record.userId) // VERIFY-GATE: a reset link proves the mailbox
   return true
 }
