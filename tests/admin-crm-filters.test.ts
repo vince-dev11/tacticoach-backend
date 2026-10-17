@@ -129,6 +129,20 @@ describe('CRM · Admin → Users filters', () => {
     expect(trialEndsAt({ accountType: 'coach', freeTrialEndsAt: end, clubMembership: { id: 1 }, subscription: null }, now)).toBeNull()
   })
 
+  it('ADMIN-TRIAL · an old trial row that ran out, then "Extend trial": the list shows the extended free trial', () => {
+    const oldEnd = new Date(now.getTime() - 5 * 86_400_000)
+    const extended = new Date(now.getTime() + 7 * 86_400_000)
+    const row = { accountType: 'coach', freeTrialEndsAt: extended, subscription: { status: 'trial', expiresAt: oldEnd } }
+    expect(trialEndsAt(row, now)).toEqual(extended)
+    // Not extended yet: still the row's (past) date — "trial ended".
+    expect(trialEndsAt({ ...row, freeTrialEndsAt: null }, now)).toEqual(oldEnd)
+    // A live trial row still wins.
+    const live = new Date(now.getTime() + 2 * 86_400_000)
+    expect(trialEndsAt({ ...row, subscription: { status: 'trial', expiresAt: live } }, now)).toEqual(live)
+    // The "trial ended" filter leaves out someone extended past today.
+    expect(JSON.stringify(userWhere({ ...UserFilters.parse({ plan: 'trial_ended' }) }, now))).toContain('"freeTrialEndsAt":null')
+  })
+
   it('GET /admin/users passes the filters, returns trialEndsAt and the trial-ending count', async () => {
     const end = new Date(Date.now() + 3 * 86_400_000)
     dbMock.user.findMany.mockResolvedValue([

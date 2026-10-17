@@ -78,7 +78,14 @@ function planWhere(plan: NonNullable<UserFilterInput['plan']>, now: Date): Prism
     case 'trial_ended':
       return {
         OR: [
-          { subscription: { is: { status: 'trial', expiresAt: { lte: now } } } },
+          // ADMIN-TRIAL (16 Oct 2026): an old trial row that ran out, unless
+          // the owner has since extended the free trial past today.
+          {
+            AND: [
+              { subscription: { is: { status: 'trial', expiresAt: { lte: now } } } },
+              { OR: [{ freeTrialEndsAt: null }, { freeTrialEndsAt: { lte: now } }] },
+            ],
+          },
           { AND: [onFreePlan(now), { freeTrialEndsAt: { lte: now } }, { NOT: { subscription: { is: { status: { in: ['cancelled', 'expired'] } } } } }] },
         ],
       }
@@ -126,7 +133,16 @@ export function trialEndsAt(
   now: Date = new Date(),
 ): Date | null {
   const sub = u.subscription
-  if (sub?.status === 'trial') return sub.expiresAt
+  if (sub?.status === 'trial') {
+    // ADMIN-TRIAL (16 Oct 2026): "Extend trial" on someone whose old trial
+    // ROW has run out extends the free trial on the user (that is what
+    // entitlements read once the row is no longer live). The list read only
+    // the row, so it kept saying "trial ended" after a successful extension.
+    // Whichever ends later is the one that counts.
+    const free = u.freeTrialEndsAt
+    if (free && (!sub.expiresAt || (sub.expiresAt <= now && free > sub.expiresAt))) return free
+    return sub.expiresAt
+  }
   const live = !!sub && sub.status === 'active' && (!sub.expiresAt || sub.expiresAt > now)
   if (live || u.accountType === 'player' || u.clubMembership) return null
   return u.freeTrialEndsAt

@@ -6,7 +6,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { dbMock } from './setup.js'
 import { getApp, accessToken, authHeaders } from './helpers.js'
-import { verificationState, graceEndsAt, allowedWhileUnverified, gateFrom, VERIFY_GRACE_DAYS, forgetGate, gateSwitch } from '../src/lib/email-verify-gate.js'
+import { verificationState, graceEndsAt, allowedWhileUnverified, gateFrom, VERIFY_GRACE_DAYS, forgetGate, gateSwitch, isTestAddress } from '../src/lib/email-verify-gate.js'
 
 const DAY = 86_400_000
 const from = gateFrom()
@@ -31,6 +31,15 @@ describe('VERIFY-GATE · who is gated, and when', () => {
     gateSwitch.on = false
     expect(verificationState({ emailVerifiedAt: null, createdAt: new Date(gateFrom().getTime() + DAY) }, new Date(gateFrom().getTime() + 30 * DAY)).required).toBe(false)
   })
+  it('off production, a reserved .test address (the live Playwright accounts) is never gated', () => {
+    const later = new Date(gateFrom().getTime() + 30 * DAY)
+    const fresh = { emailVerifiedAt: null, createdAt: new Date(gateFrom().getTime() + DAY) }
+    expect(verificationState({ ...fresh, email: 'e2e.coach.abc@tacticoach.test' }, later).required).toBe(false)
+    expect(verificationState({ ...fresh, email: 'coach@club.co.uk' }, later).required).toBe(true)
+    expect(verificationState({ ...fresh, email: 'someone@test.co.uk' }, later).required).toBe(true)
+    expect(isTestAddress('e2e.coach.abc@tacticoach.test')).toBe(true)
+  })
+
   it('an account made after the gate started is gated at once', () => {
     const fresh = { emailVerifiedAt: null, createdAt: new Date(from.getTime() + DAY) }
     expect(verificationState(fresh, new Date(from.getTime() + DAY + 1000)).required).toBe(true)

@@ -30,6 +30,7 @@ export function gateFrom(): Date {
 }
 
 export interface GateUser {
+  email?: string | null
   emailVerifiedAt: Date | null
   createdAt: Date
   role?: string | null
@@ -42,9 +43,20 @@ export function graceEndsAt(u: GateUser, from: Date = gateFrom()): Date {
 
 /** The account's state, as /users/me reports it to the app. */
 export function verificationState(u: GateUser, now: Date = new Date()): { verified: boolean; required: boolean; graceEndsAt: string | null } {
-  if (u.emailVerifiedAt || u.role === 'owner' || !gateSwitch.on) return { verified: !!u.emailVerifiedAt, required: false, graceEndsAt: null }
+  if (u.emailVerifiedAt || u.role === 'owner' || !gateSwitch.on || isTestAddress(u.email)) return { verified: !!u.emailVerifiedAt, required: false, graceEndsAt: null }
   const ends = graceEndsAt(u)
   return { verified: false, required: now >= ends, graceEndsAt: ends > now ? ends.toISOString() : null }
+}
+
+/**
+ * Off production only: an address on the reserved `.test` domain (RFC 2606)
+ * can never receive the link, so it is never gated — this is what the live
+ * Playwright suite registers (e2e.<type>.<run>@tacticoach.test) on every run.
+ * In production anyone could type such an address, so there it counts for
+ * nothing.
+ */
+export function isTestAddress(email: string | null | undefined): boolean {
+  return env.NODE_ENV !== 'production' && !!email && /@[^@\s]+\.test$/i.test(email.trim())
 }
 
 /** Writes an unverified account may still make: its own account and getting verified. */
@@ -74,7 +86,7 @@ export function forgetGate(userId: number): void {
 async function gateUser(userId: number): Promise<GateUser | null> {
   const hit = cache.get(userId)
   if (hit && Date.now() - hit.at < TTL_MS) return hit.user
-  const user = await db.user.findUnique({ where: { id: userId }, select: { emailVerifiedAt: true, createdAt: true, role: true } })
+  const user = await db.user.findUnique({ where: { id: userId }, select: { email: true, emailVerifiedAt: true, createdAt: true, role: true } })
   if (!user) return null
   if (cache.size > 5000) cache.clear()
   cache.set(userId, { user, at: Date.now() })
