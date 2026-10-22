@@ -56,8 +56,17 @@ const schema = z.object({
 
   // Stripe — optional so the API still boots without billing configured;
   // billing routes return 503 until both are set.
-  STRIPE_SECRET_KEY: z.string().optional(),
-  STRIPE_WEBHOOK_SECRET: z.string().optional(),
+  STRIPE_SECRET_KEY: blankAsUnset,
+  STRIPE_WEBHOOK_SECRET: blankAsUnset,
+  // BILLING (20 Oct 2026): book sales go live with Stripe. A kill switch, in
+  // case the shop must close while subscriptions keep running.
+  BOOK_SALES: envBool(true),
+  // ONBOARDING-EMAIL (20 Oct 2026): the bounce webhook's shared secret
+  // (?token=… on the URL given to the email provider). Unset = webhook off.
+  EMAIL_WEBHOOK_TOKEN: blankAsUnset,
+  // The 60-second "we'll show you round" video linked from the personal
+  // welcome. Unset = the message goes without the video line.
+  WELCOME_VIDEO_URL: blankAsUnset,
   // Frontend base URL for checkout redirects, club invites and reset links —
   // and every absolute URL inside an EMAIL, including the logo. The localhost
   // default is a development convenience that must never survive into
@@ -116,6 +125,12 @@ const schema = z.object({
   AI_API_KEY: z.string().optional(),
   AI_MODEL: z.string().optional(),
 
+  // ASK (21 Oct 2026): the coach help assistant. Off unless 'true'. Answers
+  // with AI when the provider above is configured, as a help search when not.
+  ASSISTANT_ENABLED: blankAsUnset,
+  // Where the frontend's help-knowledge/<lang>.json lives. Defaults to FRONTEND_URL.
+  HELP_KNOWLEDGE_URL: blankAsUnset,
+
   // Error tracking (Sentry) — optional; read directly by src/instrument.ts,
   // declared here so they are documented and type-checked in one place.
   // Nothing is reported unless SENTRY_DSN is set.
@@ -128,7 +143,7 @@ const schema = z.object({
   // Admin → Analytics: read-only access to the analytics tools, so the owner
   // sees countries, feature usage, funnels and health inside the admin panel.
   // Each source is optional; the page says "not connected" for any that is
-  // missing. See TACTICAL_COACH/Admin_Analytics_Setup.md.
+  // missing. See docs/setup/Admin_Analytics_Setup.md.
   GA4_PROPERTY_ID: z.string().optional(),
   // The service-account key: the JSON itself, or a path to the .json file.
   GA4_SERVICE_ACCOUNT_JSON: z.string().optional(),

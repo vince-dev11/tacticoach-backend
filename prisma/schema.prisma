@@ -75,6 +75,14 @@ model User {
   toursDone        Json      @default("[]") @map("tours_done")
   stripeCustomerId String?   @unique @map("stripe_customer_id") @db.VarChar(191)
   emailVerifiedAt  DateTime? @map("email_verified_at")
+  /// ONBOARDING-EMAIL (20 Oct 2026): the language emails are written in ('en', 'es', 'pt'…). Null = English.
+  locale             String?   @db.VarChar(8)
+  /// When the set-password invitation first went out (admin- or coach-created accounts). Null = signed up themselves.
+  setupInvitedAt     DateTime? @map("setup_invited_at")
+  /// Reminders sent for that invitation (day 2, day 6).
+  setupRemindersSent Int       @default(0) @map("setup_reminders_sent")
+  /// When the team sent the personal "show you round" message.
+  welcomedAt         DateTime? @map("welcomed_at")
   /// FAMILY (12 Oct 2026): a player's date of birth, entered by the coach who
   /// creates the account. Decides who needs a parent (under 18) and who may
   /// log in at all (13+). Null for coaches, clubs, parents — and for players
@@ -152,6 +160,7 @@ model User {
   ebookPurchases    EbookPurchase[]
   ebookWaitlist     EbookWaitlist[]
 
+  @@index([setupInvitedAt])
   @@map("users")
 }
 
@@ -1217,17 +1226,36 @@ model BlogPost {
   authorId       Int       @map("author_id")
   seoTitle       String?   @map("seo_title") @db.VarChar(255)
   seoDescription String?   @map("seo_description") @db.VarChar(320)
+  /// COACH-ARTICLES (20 Oct 2026): the admin's search keywords (meta keywords, related posts).
+  seoKeywords    Json?     @map("seo_keywords")
   readMinutes    Int       @default(3) @map("read_minutes")
+  /// 'team' = written in Admin (the blog as it was); 'coach' = written by a coach, published only after review.
+  authorKind     AuthorKind @default(team) @map("author_kind")
+  submittedAt    DateTime? @map("submitted_at")
+  reviewedAt     DateTime? @map("reviewed_at")
+  /// What the reviewer told the coach (changes requested / rejected).
+  reviewNote     String?   @map("review_note") @db.VarChar(500)
   createdAt      DateTime  @default(now()) @map("created_at")
   updatedAt      DateTime  @updatedAt @map("updated_at")
 
   @@index([status, publishedAt])
+  @@index([authorId])
   @@map("blog_posts")
 }
 
+/// draft → pending (coach submitted) → published | changes_requested | rejected.
+/// A team post goes draft → published directly, as before.
 enum PostStatus {
   draft
+  pending
+  changes_requested
+  rejected
   published
+}
+
+enum AuthorKind {
+  team
+  coach
 }
 
 // ---- CRM leads (contact form submissions) ------------------------------------
@@ -1265,8 +1293,12 @@ model EmailLog {
   user  User? @relation("EmailLogSubject", fields: [userId], references: [id], onDelete: SetNull)
   actor User? @relation("EmailLogActor", fields: [actorId], references: [id], onDelete: SetNull)
 
+  /// The provider's Message-ID, so a bounce webhook finds this row.
+  providerMessageId String? @map("provider_message_id") @db.VarChar(255)
+
   @@index([userId, createdAt])
   @@index([createdAt])
+  @@index([providerMessageId])
   @@map("email_log")
 }
 
@@ -1312,6 +1344,8 @@ model ContactMessage {
   /// How many times this person has written (LEAD-ONCE, 13 Oct 2026): a repeat
   /// from the same email joins their open lead instead of starting a new one.
   times     Int           @default(1)
+  /// The language the visitor used on the form ('en', 'es'…), carried into their account.
+  locale    String?       @db.VarChar(8)
   createdAt DateTime      @default(now()) @map("created_at")
   updatedAt DateTime      @updatedAt @map("updated_at")
 
@@ -1910,4 +1944,29 @@ model EbookSessionPack {
 
   @@index([ebookId, sortOrder])
   @@map("ebook_session_packs")
+}
+
+/// BILLING (20 Oct 2026): Stripe webhook events already handled. Stripe
+/// delivers at least once; a re-delivered event is recognised here and skipped.
+model StripeEvent {
+  id        String   @id @db.VarChar(255)
+  type      String   @db.VarChar(100)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("stripe_events")
+}
+
+/// ASK (21 Oct 2026): the help assistant's questions — no account, on purpose.
+model AssistantQuestion {
+  id        Int      @id @default(autoincrement())
+  locale    String   @db.VarChar(8)
+  question  String   @db.VarChar(500)
+  /// 'ai' | 'search' | 'refused'
+  mode      String   @db.VarChar(12)
+  unsure    Boolean  @default(false)
+  sourceIds String   @default("") @map("source_ids") @db.VarChar(500)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([createdAt])
+  @@map("assistant_questions")
 }

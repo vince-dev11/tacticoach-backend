@@ -11,7 +11,7 @@
 import { db } from '../../config/database.js'
 import { env } from '../../config/env.js'
 import { sendBookReceiptEmail } from '../../lib/emails.js'
-import { bookCheckoutProvider } from './payment-provider.js'
+import { bookCheckoutProvider, refundBookPayment } from './payment-provider.js'
 import { removePackCopies } from './session-pack.service.js'
 
 export const AUTHOR_SHARE_PERCENT = 70
@@ -252,10 +252,14 @@ export async function grantBook(adminId: number, params: { slug: string; email: 
  * Take a book back. Access stops at once. The money itself is returned in
  * the gateway (or by hand while there is none); this records it.
  */
-export async function refundPurchase(id: number, note?: string | null) {
+export async function refundPurchase(id: number, note?: string | null, opts: { alreadyRefunded?: boolean } = {}) {
   const row = await db.ebookPurchase.findUnique({ where: { id } })
   if (!row) throw new PurchaseError(404, 'not_found', 'Order not found.')
   if (row.status !== 'paid') throw new PurchaseError(409, 'not_paid', 'Only a paid order can be refunded.')
+  // BILLING: a Stripe sale is refunded in Stripe too. Unless the money already
+  // went back from the Stripe dashboard (the charge.refunded webhook calls this
+  // with `alreadyRefunded`), in which case only our record changes.
+  if (row.provider === 'stripe' && !opts.alreadyRefunded) await refundBookPayment(row.providerRef)
   const updated = await db.ebookPurchase.update({
     where: { id },
     data: { status: 'refunded', refundedAt: new Date(), ...(note ? { note: note.slice(0, 255) } : {}) },

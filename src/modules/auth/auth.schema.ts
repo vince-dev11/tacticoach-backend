@@ -21,6 +21,8 @@ export const RegisterSchema = z.object({
   email: z.string().email(),
   password: z.string().min(8).max(128),
   phone: z.string().max(30).optional(),
+  /** ONBOARDING-EMAIL: the app language at signup, for the emails they get. */
+  locale: z.string().trim().max(10).optional(),
   /** The invite code from ?ref= on the signup link. Optional and never trusted:
       an unknown or self-referring code is ignored, not rejected — a broken
       referral link must never be the reason someone cannot create an account. */

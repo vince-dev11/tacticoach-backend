@@ -15,6 +15,15 @@ function inFreeTrial() {
 }
 
 describe('getEntitlements', () => {
+  it('BILLING · a cancelled plan keeps its access until the paid period ends', async () => {
+    dbMock.user.findUnique.mockResolvedValue({ role: 'user', accountType: 'coach', freeTrialEndsAt: null } as never)
+    dbMock.userSubscription.findUnique.mockResolvedValue(activeSubscription({ status: 'cancelled' }) as never)
+    dbMock.club.findUnique.mockResolvedValue(null)
+    dbMock.clubMember.findFirst.mockResolvedValue(null)
+    const ent = await getEntitlements(1)
+    expect(ent.plan?.slug).toBe('pro-ai')
+  })
+
   it('grants editor access for an active subscription', async () => {
     dbMock.userSubscription.findUnique.mockResolvedValue(activeSubscription() as never)
     noClubData()
@@ -48,10 +57,12 @@ describe('getEntitlements', () => {
     expect(ent.plan?.slug).toBe('free')
   })
 
-  it('drops cancelled and expired subscriptions onto free too', async () => {
+  // BILLING (20 Oct 2026): a cancelled plan runs to the end of the period that
+  // was paid for, so it falls to free once that date has passed (not before).
+  it('drops cancelled (once its paid period is over) and expired subscriptions onto free too', async () => {
     inFreeTrial()
     for (const status of ['cancelled', 'expired']) {
-      dbMock.userSubscription.findUnique.mockResolvedValue(activeSubscription({ status }) as never)
+      dbMock.userSubscription.findUnique.mockResolvedValue(activeSubscription({ status, expiresAt: new Date(Date.now() - 1000) }) as never)
       noClubData()
       const ent = await getEntitlements(1)
       expect(ent.plan?.slug, `${status} should fall to free`).toBe('free')

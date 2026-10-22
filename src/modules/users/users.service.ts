@@ -1,4 +1,5 @@
 import { verificationState } from '../../lib/email-verify-gate.js'
+import { storedLocale } from '../../lib/email-i18n.js'
 import { ageOn, isMinorAccount } from '../../lib/age.js'
 import { db } from '../../config/database.js'
 import { resolveSquad } from './squads.service.js'
@@ -66,6 +67,7 @@ export async function updateUserProfile(userId: number, input: UpdateProfileInpu
       ...(input.surname !== undefined && { surname: input.surname }),
       ...(input.accountType !== undefined && { accountType: input.accountType }),
       ...(input.phone !== undefined && { phone: input.phone }),
+      ...(input.locale !== undefined && { locale: storedLocale(input.locale) }),
       ...(input.clubName !== undefined && { clubName: input.clubName }),
       ...(input.instagramUrl !== undefined && { instagramUrl: input.instagramUrl }),
       ...(input.youtubeUrl !== undefined && { youtubeUrl: input.youtubeUrl }),

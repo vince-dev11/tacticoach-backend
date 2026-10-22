@@ -8,6 +8,7 @@ import { isMailConfigured, sendMail } from '../../config/mailer.js'
 import { buildContactEmail } from '../../lib/emails.js'
 import { db } from '../../config/database.js'
 import { captureError } from '../../lib/observability.js'
+import { storedLocale } from '../../lib/email-i18n.js'
 import { CONTACT_TOPICS, LEAD_TOPICS, TOPIC_LABEL, type ContactTopic } from './topics.js'
 
 const ContactSchema = z.object({
@@ -18,6 +19,10 @@ const ContactSchema = z.object({
   /** What it is about — decides Leads or Support in the admin area. Optional
       so a page loaded before this shipped still sends; missing = `other`. */
   topic: z.enum(CONTACT_TOPICS).optional(),
+  /** ONBOARDING-EMAIL: the language of the page they wrote from ('es', 'pt-BR'…), carried into their account's emails. */
+  locale: z.string().trim().max(10).optional(),
+  /** Early access says who they are; a coach is recorded as one (a club already is, by topic). */
+  kind: z.enum(['coach', 'club']).optional(),
 })
 
 export async function contactRoutes(app: FastifyInstance) {
@@ -80,6 +85,8 @@ export async function contactRoutes(app: FastifyInstance) {
               status: 'new',
               // They told us they are a club this time.
               ...(topic === 'club' ? { topic, kind: 'club' as const } : {}),
+              ...(storedLocale(input.locale) ? { locale: storedLocale(input.locale) } : {}),
+              ...(input.kind === 'coach' && open.kind === 'unknown' ? { kind: 'coach' as const } : {}),
             },
           })
         } else {
@@ -87,7 +94,8 @@ export async function contactRoutes(app: FastifyInstance) {
             data: {
               firstName: input.first_name, lastName: input.last_name, email, message, topic,
               // They told us they are a club: no need for an admin to set it.
-              ...(topic === 'club' ? { kind: 'club' as const } : {}),
+              ...(topic === 'club' ? { kind: 'club' as const } : input.kind === 'coach' ? { kind: 'coach' as const } : {}),
+              locale: storedLocale(input.locale),
             },
           })
         }

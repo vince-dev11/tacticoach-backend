@@ -9,6 +9,8 @@ import { grantedCapabilities, limitsFor, isPaidPlan } from '../../lib/capabiliti
 import { videoQuota } from '../../lib/video-quota.js'
 import { allQuotas } from '../../lib/plan-quota.js'
 import { ensureStripeCustomer } from './membership.service.js'
+import { ensurePortalConfiguration, ensurePrice, toMinorUnits } from './stripe-catalog.js'
+import { subIsActive } from '../../lib/entitlements.js'
 
 const CheckoutSchema = z.object({
   planSlug: z.string().min(1),
@@ -78,9 +80,13 @@ export async function membershipRoutes(app: FastifyInstance) {
     })
   })
 
-  // POST /membership/checkout { planSlug, cycle } → Stripe Checkout URL.
-  // Prices come straight from the plans table (inline price_data), so no
-  // Stripe dashboard product setup is needed beyond API keys.
+  // POST /membership/checkout { planSlug, cycle } → { url }.
+  //
+  // BILLING (20 Oct 2026): prices come from the plans table and are turned
+  // into Stripe Prices on first use (stripe-catalog.ts), so going live needs
+  // only the API keys. A coach who already pays by card and picks another plan
+  // is moved in place (one subscription, prorated) instead of being sent to a
+  // second checkout — two live subscriptions would bill them twice.
   app.post('/checkout', { preHandler: authGuard }, async (request, reply) => {
     if (!stripeConfigured()) {
       return reply.status(503).send({ statusCode: 503, error: 'Service Unavailable', message: 'Billing is not configured on this server' })
@@ -88,13 +94,43 @@ export async function membershipRoutes(app: FastifyInstance) {
     const userId = (request.user as any).sub as number
     const { planSlug, cycle } = CheckoutSchema.parse(request.body)
 
+    // FAMILY: a minor never buys (checkout of books is refused the same way).
+    const buyer = await db.user.findUnique({ where: { id: userId }, select: { accountType: true, dateOfBirth: true } })
+    if (buyer && (buyer.accountType === 'player' || buyer.accountType === 'parent')) {
+      return reply.status(403).send({ statusCode: 403, error: 'not_a_coach', message: 'Plans are for coach and club accounts.' })
+    }
+
     const plan = await db.membershipPlan.findUnique({ where: { slug: planSlug } })
     if (!plan || !plan.isActive) {
       return reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'Plan not found' })
     }
     const price = cycle === 'annual' ? plan.annualPrice : plan.monthlyPrice
-    if (!price) {
+    if (!price || Number(price) <= 0) {
       return reply.status(422).send({ statusCode: 422, error: 'Unprocessable Entity', message: 'This plan has no price for that billing cycle' })
+    }
+    const priceId = await ensurePrice(plan, cycle, toMinorUnits(price))
+
+    // Already paying by card? Change the plan on that subscription.
+    const current = await db.userSubscription.findUnique({ where: { userId } })
+    if (current?.paymentProvider === 'stripe' && current.providerSubscriptionId && subIsActive(current)) {
+      const sub = await stripe().subscriptions.retrieve(current.providerSubscriptionId)
+      if (sub.status === 'active' || sub.status === 'trialing' || sub.status === 'past_due') {
+        const item = sub.items.data[0]
+        if (item?.price.id === priceId) {
+          return reply.status(409).send({ statusCode: 409, error: 'same_plan', message: 'You are already on this plan.' })
+        }
+        await stripe().subscriptions.update(sub.id, {
+          items: [{ id: item.id, price: priceId }],
+          proration_behavior: 'create_prorations',
+          cancel_at_period_end: false,
+          metadata: { userId: String(userId), planId: String(plan.id), cycle },
+        })
+        await db.userSubscription.update({
+          where: { userId },
+          data: { planId: plan.id, billingCycle: cycle, status: 'active', cancelledAt: null },
+        })
+        return reply.send({ url: `${env.FRONTEND_URL}/billing/success?changed=1`, changed: true })
+      }
     }
 
     const customerId = await ensureStripeCustomer(userId)
@@ -103,26 +139,13 @@ export async function membershipRoutes(app: FastifyInstance) {
       customer: customerId,
       // RBI cross-border rules for Indian Stripe accounts: export transactions
       // must carry the customer's name and billing address, and a clear
-      // description of the service sold (the line item below provides it).
+      // description of the service sold (the product carries it).
       // Harmless on non-Indian Stripe accounts — just collects the address.
       billing_address_collection: 'required',
       customer_update: { address: 'auto', name: 'auto' },
-      line_items: [
-        {
-          quantity: 1,
-          price_data: {
-            currency: plan.currency.toLowerCase(),
-            product_data: {
-              name: `TactiCoach ${plan.name}`,
-              description:
-                plan.description ?? 'TactiCoach coaching software subscription (digital service)',
-            },
-            unit_amount: Math.round(Number(price) * 100),
-            recurring: { interval: cycle === 'annual' ? 'year' : 'month' },
-          },
-        },
-      ],
-      metadata: { userId: String(userId), planId: String(plan.id), cycle },
+      line_items: [{ quantity: 1, price: priceId }],
+      allow_promotion_codes: true,
+      metadata: { kind: 'subscription', userId: String(userId), planId: String(plan.id), cycle },
       subscription_data: {
         metadata: { userId: String(userId), planId: String(plan.id), cycle },
       },
@@ -133,6 +156,25 @@ export async function membershipRoutes(app: FastifyInstance) {
     return reply.send({ url: session.url })
   })
 
+  // POST /membership/portal → { url } — Stripe's own page to update the card,
+  // download invoices, change billing details or cancel (at period end).
+  app.post('/portal', { preHandler: authGuard }, async (request, reply) => {
+    if (!stripeConfigured()) {
+      return reply.status(503).send({ statusCode: 503, error: 'Service Unavailable', message: 'Billing is not configured on this server' })
+    }
+    const userId = (request.user as any).sub as number
+    const user = await db.user.findUnique({ where: { id: userId }, select: { stripeCustomerId: true } })
+    if (!user?.stripeCustomerId) {
+      return reply.status(404).send({ statusCode: 404, error: 'no_billing', message: 'There is no card billing on this account yet.' })
+    }
+    const session = await stripe().billingPortal.sessions.create({
+      customer: user.stripeCustomerId,
+      configuration: await ensurePortalConfiguration(),
+      return_url: `${env.FRONTEND_URL}/profile#account`,
+    })
+    return reply.send({ url: session.url })
+  })
+
   // PATCH /membership/cancel — cancel at period end via Stripe.
   app.patch('/cancel', { preHandler: authGuard }, async (request, reply) => {
     const userId = (request.user as any).sub as number
@@ -140,12 +182,17 @@ export async function membershipRoutes(app: FastifyInstance) {
     if (!sub) {
       return reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'No subscription to cancel' })
     }
+    let expiresAt = sub.expiresAt
     if (sub.paymentProvider === 'stripe' && sub.providerSubscriptionId && stripeConfigured()) {
-      await stripe().subscriptions.update(sub.providerSubscriptionId, { cancel_at_period_end: true })
+      const updatedSub = await stripe().subscriptions.update(sub.providerSubscriptionId, { cancel_at_period_end: true })
+      const end = updatedSub.items.data[0]?.current_period_end
+      if (end) expiresAt = new Date(end * 1000)
     }
+    // BILLING: 'cancelled' with a future expiresAt still has access until then
+    // (entitlements.subIsActive) — they paid for the period.
     const updated = await db.userSubscription.update({
       where: { userId },
-      data: { status: 'cancelled', cancelledAt: new Date() },
+      data: { status: 'cancelled', cancelledAt: new Date(), expiresAt },
       include: { plan: true },
     })
     return reply.send(updated)

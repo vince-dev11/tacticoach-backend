@@ -56,6 +56,11 @@ export interface Entitlements {
 
 export function subIsActive(sub: { status: string; expiresAt: Date | null } | null | undefined): boolean {
   if (!sub) return false
+  // BILLING (20 Oct 2026): a cancelled plan keeps its access until the end of
+  // the period that was paid for — cancelling stops the NEXT charge, it does
+  // not take back the current month. It needs a date to run to; an undated
+  // cancellation is over now.
+  if (sub.status === 'cancelled') return !!sub.expiresAt && sub.expiresAt > new Date()
   if (sub.status !== 'active' && sub.status !== 'trial') return false
   return !sub.expiresAt || sub.expiresAt > new Date()
 }

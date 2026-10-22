@@ -5,6 +5,9 @@ import { db } from './config/database.js'
 import { describeStorage } from './config/s3.js'
 import { buildApp } from './app.js'
 import { startTrialReminderScheduler } from './jobs/trial-reminders.js'
+import { startSetupReminderScheduler } from './jobs/setup-reminders.js'
+import { stripeConfigured } from './config/stripe.js'
+import { stripeMode } from './modules/membership/stripe-catalog.js'
 import { captureError, flushMonitoring, isMonitoringEnabled } from './lib/observability.js'
 
 const start = async () => {
@@ -26,9 +29,11 @@ const start = async () => {
 
     await app.listen({ port: env.PORT, host: '0.0.0.0' })
     startTrialReminderScheduler()
+    startSetupReminderScheduler()
     console.log(`🚀  TactiCoach API running on port ${env.PORT}`)
     console.log(`📦  Uploads: ${storage.backend === 's3' ? 'S3' : 'local disk'} → ${storage.location}`)
     if (storage.warning) console.warn(`⚠️   ${storage.warning}`)
+    console.log(`💳  Billing: ${stripeConfigured() ? `Stripe on (${stripeMode()} mode)${env.STRIPE_WEBHOOK_SECRET ? '' : ' — STRIPE_WEBHOOK_SECRET missing: payments will not activate plans'}` : 'off (set STRIPE_SECRET_KEY + STRIPE_WEBHOOK_SECRET)'}`)
     console.log(`🛰️   Error tracking: ${isMonitoringEnabled() ? 'Sentry on' : 'off (set SENTRY_DSN to enable)'}`)
   } catch (err) {
     app.log.error(err)

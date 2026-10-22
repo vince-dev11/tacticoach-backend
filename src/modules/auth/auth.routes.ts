@@ -21,7 +21,7 @@ import {
 } from './auth.service.js'
 import { env } from '../../config/env.js'
 import { isMailConfigured } from '../../config/mailer.js'
-import { sendWelcomeEmail, sendVerificationEmail, sendPasswordResetEmail } from '../../lib/emails.js'
+import { sendWelcomeEmail, sendVerificationEmail, sendPasswordResetEmail, sendActivatedWelcomeEmail } from '../../lib/emails.js'
 import { authGuard } from '../../middleware/auth-guard.js'
 import { getUserProfile } from '../users/users.service.js'
 import { db } from '../../config/database.js'
@@ -175,7 +175,7 @@ export async function authRoutes(app: FastifyInstance) {
     const userId = (request.user as { sub: number }).sub
     const user = await db.user.findUnique({
       where: { id: userId },
-      select: { id: true, name: true, email: true, emailVerifiedAt: true },
+      select: { id: true, name: true, email: true, emailVerifiedAt: true, locale: true },
     })
     if (!user) {
       return reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'User not found' })
@@ -284,6 +284,12 @@ export async function authRoutes(app: FastifyInstance) {
       return reply
         .status(400)
         .send({ statusCode: 400, error: 'Bad Request', message: 'This reset link is invalid or has expired.' })
+    }
+    // ONBOARDING-EMAIL: an invited coach has just set their password — their
+    // welcome, in their language, with the first five minutes spelled out.
+    if (ok.firstActivation) {
+      const u = await db.user.findUnique({ where: { id: ok.userId }, select: { id: true, name: true, email: true, locale: true, accountType: true } })
+      if (u && (u.accountType === 'coach' || u.accountType === 'club')) void sendActivatedWelcomeEmail(u)
     }
     return reply.send({ message: 'Password updated. You can now sign in.' })
   })

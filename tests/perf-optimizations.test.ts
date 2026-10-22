@@ -1,5 +1,5 @@
 // PERF (5 Oct 2026) — backend request optimisations from the hosting review
-// (TACTICAL_COACH/Hosting_and_Backend_Review_2026-10-05.md):
+// (docs/setup/Hosting_and_Backend_Review_2026-10-05.md):
 //   1. media URLs stay the same within a signing window, so browsers cache them
 //   2. JSON responses are gzip-compressed
 //   3. list `limit` / `page` are clamped

@@ -32,6 +32,8 @@ export const UpdateProfileSchema = z.object({
   /// club should be able to say so. Still grants nothing on its own.
   accountType: z.enum(['coach', 'club', 'player']).optional(),
   phone: z.string().max(30).optional().nullable(),
+  /** ONBOARDING-EMAIL: the language the app is in; emails follow it. */
+  locale: z.string().trim().max(10).optional(),
   clubName: latinOnly(z.string().max(150)).optional().nullable(),
   instagramUrl: SocialUrl,
   youtubeUrl: SocialUrl,

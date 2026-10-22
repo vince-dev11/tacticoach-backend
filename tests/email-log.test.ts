@@ -100,7 +100,8 @@ describe('where the logging lives', () => {
   it('every template passes a kind', () => {
     // A row of "other" in the history tells an admin nothing.
     const calls = emails.match(/await sendSafely\(/g) ?? []
-    const kinds = emails.match(/^\s+'[a-z_]+',$/gm) ?? []
+    // A literal kind, or a choice between two literals (`reminder ? 'a' : 'b',`).
+    const kinds = emails.match(/^\s+(?:[\w.]+ \? '[a-z_]+' : )?'[a-z_]+',$/gm) ?? []
     expect(calls.length).toBeGreaterThan(5)
     expect(kinds.length).toBeGreaterThanOrEqual(calls.length)
   })

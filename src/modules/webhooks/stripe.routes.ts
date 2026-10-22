@@ -19,6 +19,27 @@ import { db } from '../../config/database.js'
 import { qualifyPendingFor, qualifyReferral, reverseReferral } from '../referrals/referrals.service.js'
 import { recordCommission, reverseCommission } from '../collaborations/collaborations.service.js'
 import { captureError } from '../../lib/observability.js'
+import { markPaid, refundPurchase } from '../ebooks/purchases.service.js'
+
+/**
+ * Has this event been handled already? Stripe delivers at least once, so the
+ * same event can arrive twice; the second time is a no-op. Recorded before the
+ * work so two concurrent deliveries cannot both pass (the primary key decides).
+ */
+async function firstDelivery(event: { id: string; type: string }): Promise<boolean> {
+  try {
+    await db.stripeEvent.create({ data: { id: event.id, type: event.type } })
+    return true
+  } catch (err) {
+    if ((err as { code?: string }).code === 'P2002') return false
+    throw err
+  }
+}
+
+/** Forget an event whose handling failed, so Stripe's retry runs it again. */
+async function forgetEvent(id: string): Promise<void> {
+  await db.stripeEvent.delete({ where: { id } }).catch(() => {})
+}
 
 function periodEnd(sub: Stripe.Subscription): Date | null {
   const end = sub.items.data[0]?.current_period_end
@@ -73,9 +94,19 @@ export async function stripeWebhookRoutes(app: FastifyInstance) {
       return reply.status(400).send({ received: false })
     }
 
+    if (!(await firstDelivery(event))) return reply.send({ received: true, duplicate: true })
+
+    try {
     switch (event.type) {
       case 'checkout.session.completed': {
         const session = event.data.object
+        // BILLING: a book bought on Stripe's hosted checkout.
+        if (session.metadata?.kind === 'book') {
+          const purchaseId = Number(session.metadata.purchaseId)
+          const intent = typeof session.payment_intent === 'string' ? session.payment_intent : session.payment_intent?.id
+          if (purchaseId && session.payment_status === 'paid') await markPaid(purchaseId, intent ?? session.id)
+          break
+        }
         const userId = Number(session.metadata?.userId)
         const planId = Number(session.metadata?.planId)
         const cycle = session.metadata?.cycle === 'annual' ? 'annual' : 'monthly'
@@ -135,6 +166,13 @@ export async function stripeWebhookRoutes(app: FastifyInstance) {
       // line is reversed (agreement §5).
       case 'charge.refunded': {
         const charge = event.data.object
+        // BILLING: a book refunded from the Stripe dashboard — access stops here too.
+        const intentId = typeof charge.payment_intent === 'string' ? charge.payment_intent : charge.payment_intent?.id
+        if (charge.metadata?.kind === 'book' || (intentId && (await db.ebookPurchase.findFirst({ where: { providerRef: intentId }, select: { id: true } })))) {
+          const row = intentId ? await db.ebookPurchase.findFirst({ where: { providerRef: intentId, status: 'paid' }, select: { id: true } }) : null
+          if (row) await refundPurchase(row.id, 'Refunded in Stripe', { alreadyRefunded: true })
+          break
+        }
         // Stripe API "basil" dropped `charge.invoice`; the link now runs the
         // other way, invoice → payments → payment_intent. Find the customer's
         // invoice whose payment is this charge's intent and reverse that line.
@@ -154,8 +192,11 @@ export async function stripeWebhookRoutes(app: FastifyInstance) {
 
       case 'customer.subscription.updated': {
         const sub = event.data.object
+        // BILLING: 'past_due' keeps access while Stripe retries the card (its
+        // dunning ends in 'unpaid' or 'canceled', which expire). A cancelled
+        // plan keeps access to the end of the paid period (subIsActive).
         const status =
-          sub.status === 'active' || sub.status === 'trialing'
+          sub.status === 'active' || sub.status === 'trialing' || sub.status === 'past_due'
             ? sub.cancel_at_period_end
               ? 'cancelled'
               : 'active'
@@ -174,6 +215,12 @@ export async function stripeWebhookRoutes(app: FastifyInstance) {
 
       default:
         break
+    }
+    } catch (err) {
+      // Let Stripe retry: forget the event and answer 500.
+      await forgetEvent(event.id)
+      captureError(err, { source: 'webhook:stripe', tags: { type: event.type } })
+      throw err
     }
 
     return reply.send({ received: true })

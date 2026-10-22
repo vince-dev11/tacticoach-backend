@@ -22,9 +22,11 @@ import { clubsRoutes } from './modules/clubs/clubs.routes.js'
 import { drillSheetsRoutes } from './modules/drill-sheets/drill-sheets.routes.js'
 import { sessionsRoutes } from './modules/sessions/sessions.routes.js'
 import { stripeWebhookRoutes } from './modules/webhooks/stripe.routes.js'
+import { emailWebhookRoutes } from './modules/webhooks/email.routes.js'
 import { contactRoutes } from './modules/contact/contact.routes.js'
 import { aiRoutes } from './modules/ai/ai.routes.js'
 import { blogRoutes } from './modules/blog/blog.routes.js'
+import { articlesRoutes } from './modules/articles/articles.routes.js'
 import { adminRoutes } from './modules/admin/admin.routes.js'
 import { shareRoutes } from './modules/share/share.routes.js'
 import { challengesRoutes } from './modules/challenges/challenges.routes.js'
@@ -39,6 +41,7 @@ import { authoringRoutes } from './modules/ebooks/authoring.routes.js'
 import { certificatesRoutes } from './modules/certificates/certificates.routes.js'
 import { playerLockdown } from './middleware/player-guard.js'
 import { familyRoutes } from './modules/family/family.routes.js'
+import { assistantRoutes } from './modules/assistant/assistant.routes.js'
 
 export async function buildApp(): Promise<FastifyInstance> {
   const app = Fastify({
@@ -172,12 +175,16 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(drillSheetsRoutes, { prefix: '/api/drill-sheets' })
   await app.register(sessionsRoutes, { prefix: '/api/sessions' })
   await app.register(stripeWebhookRoutes, { prefix: '/api/webhooks' })
+  // ONBOARDING-EMAIL: bounces from the email provider (own plugin: JSON parsed normally).
+  await app.register(emailWebhookRoutes, { prefix: '/api/webhooks' })
   await app.register(contactRoutes, { prefix: '/api/contact' })
   await app.register(collaborationsRoutes, { prefix: '/api/collaborations' })
   // AI tactics generation lives under the canvas namespace to match the
   // editor's existing client (/api/canvas/ai-layout, /api/canvas/ai-animation).
   await app.register(aiRoutes, { prefix: '/api/canvas' })
   await app.register(blogRoutes, { prefix: '/api/blog' })
+  // COACH-ARTICLES: a coach's own articles (auth; players denied by the lockdown).
+  await app.register(articlesRoutes, { prefix: '/api/articles' })
   await app.register(adminRoutes, { prefix: '/api/admin' })
   await app.register(shareRoutes, { prefix: '/api/share' })
   await app.register(challengesRoutes, { prefix: '/api/challenges' })
@@ -187,6 +194,8 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(coachPageRoutes, { prefix: '/api/coach' })
   await app.register(feedbackRoutes, { prefix: '/api/feedback' })
   await app.register(familyRoutes, { prefix: '/api/family' })
+  // ASK (21 Oct 2026): coaches only — not on the player allow-list, on purpose.
+  await app.register(assistantRoutes, { prefix: '/api/assistant' })
   await app.register(ebooksRoutes, { prefix: '/api/ebooks' })
   // Writing books. Separate from /api/ebooks (which is the shop and the
   // reader) because every route here is scoped to the signed-in author and

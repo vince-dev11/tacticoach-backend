@@ -263,6 +263,11 @@ export function limitsFor(ent: Entitlements): PlanLimits {
 }
 
 /** Every capability a plan slug grants — for the pricing page and for tests. */
+/** A plan's counts by slug (the Ask assistant's plans answer). Null for an unknown slug. */
+export function limitsOfPlan(slug: string): PlanLimits | null {
+  return LIMITS[slug] ?? null
+}
+
 export function capabilitiesOf(slug: string): Capability[] {
   return BY_PLAN[slug] ?? []
 }

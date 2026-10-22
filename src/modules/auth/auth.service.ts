@@ -1,4 +1,5 @@
 import { forgetGate } from '../../lib/email-verify-gate.js'
+import { storedLocale } from '../../lib/email-i18n.js'
 import crypto from 'node:crypto'
 import bcrypt from 'bcryptjs'
 import { db } from '../../config/database.js'
@@ -35,13 +36,14 @@ export async function registerUser(input: RegisterInput, extra: { dateOfBirth?: 
       phone: input.phone ?? null,
       accountType: input.accountType,
       passwordHash,
+      locale: storedLocale(input.locale),
       ...(extra.dateOfBirth ? { dateOfBirth: extra.dateOfBirth } : {}),
       // Players and parents are never on a trial: their accounts are free.
       freeTrialEndsAt: input.accountType === 'player' || input.accountType === 'parent' ? null : freeTrialEnd(),
       // The configured company-owner account gets the admin role immediately.
       ...(env.OWNER_EMAIL && input.email === env.OWNER_EMAIL ? { role: 'owner' as const } : {}),
     },
-    select: { id: true, name: true, surname: true, email: true, accountType: true },
+    select: { id: true, name: true, surname: true, email: true, accountType: true, locale: true },
   })
 
   // Credit whoever invited them. Attribution is decided here, once — see
@@ -179,9 +181,18 @@ export async function createPasswordResetToken(
  * when the token is missing, already used, or expired. Also revokes the user's
  * refresh tokens so existing sessions can't outlive the password change.
  */
-export async function resetPasswordWithToken(token: string, newPassword: string): Promise<boolean> {
+/**
+ * Redeem a set-password / reset link. Returns false when the link is no good;
+ * otherwise who it was, and whether this was an INVITED coach setting their
+ * password for the first time (ONBOARDING-EMAIL: they get their welcome now).
+ */
+export async function resetPasswordWithToken(
+  token: string,
+  newPassword: string,
+): Promise<false | { userId: number; firstActivation: boolean }> {
   const record = await db.passwordResetToken.findUnique({ where: { tokenHash: sha256(token) } })
   if (!record || record.usedAt || record.expiresAt < new Date()) return false
+  const before = await db.user.findUnique({ where: { id: record.userId }, select: { emailVerifiedAt: true, setupInvitedAt: true } })
 
   const passwordHash = await bcrypt.hash(newPassword, BCRYPT_ROUNDS)
   // Redeeming a link that was emailed to the address proves the mailbox, so
@@ -195,5 +206,5 @@ export async function resetPasswordWithToken(token: string, newPassword: string)
     db.refreshToken.deleteMany({ where: { userId: record.userId } }),
   ])
   forgetGate(record.userId) // VERIFY-GATE: a reset link proves the mailbox
-  return true
+  return { userId: record.userId, firstActivation: !!before?.setupInvitedAt && !before.emailVerifiedAt }
 }

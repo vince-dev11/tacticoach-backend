@@ -14,6 +14,7 @@ import {
   DEFAULT_CLUB_RATE,
 } from '../modules/collaborations/collaboration-terms.js'
 import { captureError } from './observability.js'
+import { emailCopy, fillIn } from './email-i18n.js'
 import { isInvalidRecipient } from './email-address.js'
 
 const BRAND = '#00A76F'
@@ -123,6 +124,12 @@ export type EmailKind =
   | 'club_invite'
   | 'club_page_approved'
   | 'club_page_rejected'
+  | 'welcome_activated'
+  | 'account_setup_reminder'
+  | 'personal_welcome'
+  | 'article_approved'
+  | 'article_changes_requested'
+  | 'article_rejected'
   | 'collaboration_invite'
   | 'account_setup'
   | 'player_note'
@@ -146,7 +153,7 @@ export type EmailKind =
  * coming was the one case with no record of it.
  */
 async function sendSafely(
-  opts: { to: string; subject: string; html: string; text: string },
+  opts: { to: string; subject: string; html: string; text: string; from?: string },
   kind: EmailKind,
   meta: { userId?: number; actorId?: number } = {},
 ): Promise<void> {
@@ -166,73 +173,110 @@ async function sendSafely(
   }
 }
 
+// ---- Onboarding emails, in the coach's language (ONBOARDING-EMAIL, 20 Oct 2026) ----
+//
+// Copy lives in email-i18n.ts (7 languages). A user's `locale` picks it; none
+// or an unknown one is English. Names are escaped; copy is ours and plain.
+
+/** A user an onboarding email is about. `locale` decides the language. */
+export interface MailUser { id?: number; name: string; email: string; locale?: string | null }
+
+/** Plain copy → HTML paragraph text (escaped; newlines become <br>). */
+const para = (s: string) => esc(s).replace(/\n/g, '<br>')
+const muted = (html: string) => `<p style="margin:0 0 8px;color:#6b7280;font-size:13px">${html}</p>`
+
 // ---- Welcome (on register) ---------------------------------------------------
 
-export async function sendWelcomeEmail(
-  user: { name: string; email: string },
-  verifyUrl?: string,
-): Promise<void> {
+export async function sendWelcomeEmail(user: MailUser, verifyUrl?: string): Promise<void> {
+  const c = emailCopy(user.locale)
+  const w = c.welcome
   const dashboard = `${env.FRONTEND_URL}/dashboard`
-  const verifyText = verifyUrl
-    ? `\nPlease verify your email address:\n${verifyUrl}\n`
-    : ''
-  const verifyHtml = verifyUrl
-    ? `<p style="margin:0 0 4px">Please verify your email address to secure your account:</p>
-       ${button(verifyUrl, 'Verify my email')}
-       <p style="margin:0 0 16px;color:#6b7280;font-size:13px">Or paste this link into your browser:<br>${verifyUrl}</p>`
-    : `${button(dashboard, 'Open your dashboard')}`
+  const name = esc(user.name)
   await sendSafely(
     {
       to: user.email,
-      subject: 'Welcome to TactiCoach — your 14-day free trial has started',
+      subject: w.subject,
       text:
-        `Hi ${user.name},\n\n` +
-        `Welcome to TactiCoach! Your 14-day free trial has started.\n${verifyText}\n` +
-        `During your trial you can make 3 boards, 3 drill sheets, 3 sessions, a season plan and a book to write,\n` +
-        `with animation and up to 3 videos. Every pitch, from 5v5 to 11v11.\n\n` +
-        `After 14 days your work stays in your library; choose a plan any time to keep building.\n\n` +
-        `Get started: ${dashboard}\n\n` +
-        `Happy coaching!\nThe TactiCoach team`,
+        `${fillIn(w.h1, { name: user.name })}\n\n${w.body}\n\n` +
+        `1. ${w.step1}\n2. ${w.step2}\n3. ${w.step3}\n\n` +
+        (verifyUrl ? `${w.verify}\n${verifyUrl}\n\n` : '') +
+        `${w.dashboardCta}: ${dashboard}\n\n${c.signoff}`,
       html: layout(
-        'Your 14-day free trial has started.',
-        `${kicker("WELCOME TO THE SQUAD")}
-         <h1 style="margin:0 0 12px;font-size:21px">You are on the team sheet, ${user.name} ✅</h1>
-         <p style="margin:0 0 12px">Your <strong>14-day free trial</strong> has started: 3 boards, 3 drill sheets, 3 sessions, a season plan and a book to write, with animation and up to 3 videos. After 14 days your work stays in your library. Here is the game plan:</p>
-         ${pitchCard('YOUR KICK-OFF PLAN', `1&#65039;&#8419; One click puts a full team on the board &#8212; add your squad and it is YOUR players, by name<br>2&#65039;&#8419; Drag the runs &#8212; every movement becomes an animation, with your coaching notes on screen<br>3&#65039;&#8419; Export HD video straight to the team group chat`)}
-         ${verifyHtml}
-         <p style="margin:0;color:#6b7280;font-size:13px">Happy coaching!<br>The TactiCoach team</p>`,
+        w.subject,
+        `${kicker(esc(w.kicker))}
+         <h1 style="margin:0 0 12px;font-size:21px">${fillIn(esc(w.h1), { name })}</h1>
+         <p style="margin:0 0 12px">${para(w.body)}</p>
+         ${pitchCard(esc(w.planTitle), `1&#65039;&#8419; ${para(w.step1)}<br>2&#65039;&#8419; ${para(w.step2)}<br>3&#65039;&#8419; ${para(w.step3)}`)}
+         ${verifyUrl
+           ? `<p style="margin:0 0 4px">${para(w.verify)}</p>${button(verifyUrl, esc(w.verifyCta))}${muted(`${para(c.orPaste)}<br>${verifyUrl}`)}`
+           : button(dashboard, esc(w.dashboardCta))}
+         ${muted(para(c.signoff))}`,
+        para(c.footer),
       ),
     },
     'welcome',
+    { userId: user.id },
+  )
+}
+
+/**
+ * "You're in": sent once, the moment an invited coach sets their password —
+ * the welcome an admin-created account never got, with the first five minutes
+ * spelled out. (A coach who signed up themselves got sendWelcomeEmail.)
+ */
+export async function sendActivatedWelcomeEmail(user: MailUser): Promise<void> {
+  const c = emailCopy(user.locale)
+  const a = c.activated
+  const dashboard = `${env.FRONTEND_URL}/dashboard`
+  const name = esc(user.name)
+  await sendSafely(
+    {
+      to: user.email,
+      subject: a.subject,
+      text:
+        `${fillIn(a.h1, { name: user.name })}\n\n${a.body}\n\n1. ${a.step1}\n2. ${a.step2}\n3. ${a.step3}\n\n` +
+        `${a.cta}: ${dashboard}\n\n${a.help}\n\n${c.signoff}`,
+      html: layout(
+        a.subject,
+        `${kicker(esc(a.kicker))}
+         <h1 style="margin:0 0 12px;font-size:21px">${fillIn(esc(a.h1), { name })}</h1>
+         <p style="margin:0 0 12px">${para(a.body)}</p>
+         ${pitchCard('1 · 2 · 3', `1&#65039;&#8419; ${para(a.step1)}<br>2&#65039;&#8419; ${para(a.step2)}<br>3&#65039;&#8419; ${para(a.step3)}`)}
+         ${button(dashboard, esc(a.cta))}
+         ${muted(para(a.help))}
+         ${muted(para(c.signoff))}`,
+        para(c.footer),
+      ),
+    },
+    'welcome_activated',
+    { userId: user.id },
   )
 }
 
 // ---- Email verification (resend) -----------------------------------------------
 
-export async function sendVerificationEmail(
-  user: { name: string; email: string },
-  verifyUrl: string,
-): Promise<void> {
+export async function sendVerificationEmail(user: MailUser, verifyUrl: string): Promise<void> {
+  const c = emailCopy(user.locale)
+  const v = c.verification
+  const name = esc(user.name)
   await sendSafely(
     {
       to: user.email,
-      subject: 'Verify your TactiCoach email address',
-      text:
-        `Hi ${user.name},\n\n` +
-        `Confirm this email address for your TactiCoach account (link valid for 24 hours):\n${verifyUrl}\n\n` +
-        `If you didn't request this, you can safely ignore this email.\n\n` +
-        `The TactiCoach team`,
+      subject: v.subject,
+      text: `${fillIn(v.body, { name: user.name })}\n\n${verifyUrl}\n\n${v.ignore}\n\n${c.signoff}`,
       html: layout(
-        'Confirm your email address for TactiCoach.',
-        `${kicker("ONE QUICK CHECK")}
-         <h1 style="margin:0 0 12px;font-size:21px">Verify your email ✉️</h1>
-         <p style="margin:0 0 4px">Hi ${user.name}, confirm this email address for your TactiCoach account (the link is valid for 24 hours):</p>
-         ${button(verifyUrl, 'Verify my email')}
-         <p style="margin:0 0 8px;color:#6b7280;font-size:13px">Or paste this link into your browser:<br>${verifyUrl}</p>
-         <p style="margin:0;color:#6b7280;font-size:13px">If you didn't request this, you can safely ignore this email.</p>`,
+        v.subject,
+        `${kicker(esc(v.kicker))}
+         <h1 style="margin:0 0 12px;font-size:21px">${esc(v.h1)}</h1>
+         <p style="margin:0 0 4px">${fillIn(para(v.body), { name })}</p>
+         ${button(verifyUrl, esc(v.cta))}
+         ${muted(`${para(c.orPaste)}<br>${verifyUrl}`)}
+         ${muted(para(v.ignore))}`,
+        para(c.footer),
       ),
     },
     'verification',
+    { userId: user.id },
   )
 }
 
@@ -552,6 +596,65 @@ export async function sendClubPageRejectedEmail(
   )
 }
 
+// ---- Coach articles (COACH-ARTICLES, 20 Oct 2026) -------------------------------
+
+export async function sendArticleApprovedEmail(
+  author: { name: string; email: string },
+  title: string,
+  postUrl: string,
+): Promise<void> {
+  await sendSafely(
+    {
+      to: author.email,
+      subject: `Your article is live: ${title}`,
+      text:
+        `Hi ${author.name},\n\n` +
+        `"${title}" has been approved and is now on the TactiCoach blog:\n${postUrl}\n\n` +
+        `Share it with your coaches, players' parents and on your socials — it links back to your coach page.\n\n` +
+        `The TactiCoach team`,
+      html: layout(
+        `"${title}" is approved and live.`,
+        `${kicker('ARTICLE PUBLISHED')}
+         <h1 style="margin:0 0 12px;font-size:21px">Your article is live 🎉</h1>
+         <p style="margin:0 0 4px">Hi ${author.name}, <strong>${title}</strong> has been approved and published:</p>
+         ${button(postUrl, 'Read it on the blog')}
+         <p style="margin:0;color:#6b7280;font-size:13px">Share it with your coaches and on your socials — it links back to your coach page.</p>`,
+      ),
+    },
+    'article_approved',
+  )
+}
+
+export async function sendArticleReturnedEmail(
+  author: { name: string; email: string },
+  title: string,
+  note: string,
+  rejected: boolean,
+  articlesUrl: string,
+): Promise<void> {
+  await sendSafely(
+    {
+      to: author.email,
+      subject: rejected ? `About your article: ${title}` : `One more pass on your article: ${title}`,
+      text:
+        `Hi ${author.name},\n\n` +
+        (rejected
+          ? `We can't publish "${title}" on the blog.\n\nReviewer note: ${note}\n\n`
+          : `We've read "${title}" and it needs a change before it goes live.\n\nReviewer note: ${note}\n\nEdit it in My articles and submit again:\n${articlesUrl}\n\n`) +
+        `The TactiCoach team`,
+      html: layout(
+        rejected ? `We can't publish "${title}".` : `"${title}" needs a change before it goes live.`,
+        `${kicker(rejected ? 'NOT PUBLISHED' : 'ONE MORE PASS')}
+         <h1 style="margin:0 0 12px;font-size:21px">${rejected ? 'About your article' : 'Almost there'}</h1>
+         <p style="margin:0 0 10px">Hi ${author.name}, ${rejected ? `we can't publish <strong>${title}</strong> on the blog.` : `<strong>${title}</strong> needs a change before it goes live.`}</p>
+         <p style="margin:0 0 10px;padding:10px 14px;background:#f4f6f8;border-radius:8px;color:#1a2332"><strong>Reviewer note:</strong> ${note}</p>
+         ${rejected ? '' : button(articlesUrl, 'Edit and resubmit')}`,
+      ),
+    },
+    rejected ? 'article_rejected' : 'article_changes_requested',
+  )
+}
+
 // ---- Contact form → support inbox ----------------------------------------------
 
 /**
@@ -627,34 +730,97 @@ export function buildCoachContactEmail(input: {
  * the person themselves. Deliberately not the reset email: someone who never
  * asked for anything needs to be told who made the account and why, or the
  * mail reads as a phishing attempt.
+ *
+ * ONBOARDING-EMAIL: in the coach's language, and with `reminder` 1 (day 2) or
+ * 2 (day 6) the same link-carrying email worded as a reminder.
  */
 export async function sendAccountSetupEmail(
-  user: { id?: number; name: string; email: string },
+  user: MailUser,
   setupUrl: string,
   actorId?: number,
+  opts: { reminder?: 1 | 2 } = {},
 ): Promise<void> {
+  const c = emailCopy(user.locale)
+  const s = c.setup
+  const r = opts.reminder === 1 ? c.reminder1 : opts.reminder === 2 ? c.reminder2 : null
+  const name = esc(user.name)
+  const subject = r ? r.subject : s.subject
+  const kick = r ? r.kicker : s.kicker
+  const h1 = r ? r.h1 : s.h1
+  const body = r ? r.body : s.body
   await sendSafely(
     {
       to: user.email,
-      subject: 'Your TactiCoach account is ready',
-      text:
-        `Hi ${user.name},\n\n` +
-        `An account has been created for you on TactiCoach.\n\n` +
-        `Choose your password to get started (link valid for 7 days):\n${setupUrl}\n\n` +
-        `If you weren't expecting this, you can ignore this email — the account cannot be used until a password is set.\n\n` +
-        `— TactiCoach`,
+      subject,
+      text: `${fillIn(body, { name: user.name })}\n\n${s.cta}: ${setupUrl}\n${s.valid}\n\n${s.ignore}\n\n${c.signoff}`,
       html: layout(
-        'Your TactiCoach account is ready — choose a password to get started.',
-        `${kicker('YOUR ACCOUNT')}
-         <h1 style="margin:0 0 12px;font-size:21px">Your account is ready ⚽</h1>
-         <p style="margin:0 0 4px">Hi ${user.name}, an account has been created for you on TactiCoach. Choose your password to get started (the link is valid for 7 days):</p>
-         ${button(setupUrl, 'Choose your password')}
-         <p style="margin:0 0 8px;color:#6b7280;font-size:13px">Or paste this link into your browser:<br>${setupUrl}</p>
-         <p style="margin:0;color:#6b7280;font-size:13px">If you weren't expecting this, you can ignore this email — the account cannot be used until a password is set.</p>`,
+        subject,
+        `${kicker(esc(kick))}
+         <h1 style="margin:0 0 12px;font-size:21px">${esc(h1)}</h1>
+         <p style="margin:0 0 4px">${fillIn(para(body), { name })}</p>
+         ${button(setupUrl, esc(s.cta))}
+         ${muted(para(s.valid))}
+         ${muted(`${para(c.orPaste)}<br>${setupUrl}`)}
+         ${muted(para(s.ignore))}`,
+        para(c.footer),
       ),
     },
-    'account_setup',
+    opts.reminder ? 'account_setup_reminder' : 'account_setup',
     { userId: user.id, actorId },
+  )
+}
+
+/**
+ * The personal "we'll show you round" message (ONBOARDING-EMAIL). Written as
+ * a person, from the team address, signed with the admin's own name, in the
+ * coach's language: the video, the first thing to try, and one question. A
+ * coach who hasn't set a password yet gets a fresh setup link in it too.
+ * Awaited by the caller (the admin is watching); never throws past sendSafely.
+ */
+export async function sendPersonalWelcomeEmail(
+  user: MailUser,
+  params: { senderName: string; setupUrl?: string | null; videoUrl?: string | null; actorId?: number },
+): Promise<void> {
+  const c = emailCopy(user.locale)
+  const p = c.personal
+  const sender = params.senderName.trim() || 'TactiCoach'
+  const dashboard = `${env.FRONTEND_URL}/dashboard`
+  const vars = { name: user.name, sender }
+  const evars = { name: esc(user.name), sender: esc(sender) }
+  const subject = fillIn(p.subject, vars)
+  const textParts = [
+    fillIn(p.hi, vars),
+    fillIn(p.intro, vars),
+    ...(params.setupUrl ? [`${p.setupFirst}\n${params.setupUrl}`] : []),
+    params.videoUrl ? `${p.video}\n${params.videoUrl}` : p.noVideo,
+    ...(params.setupUrl ? [] : [`${p.openCta}: ${dashboard}`]),
+    p.question,
+    p.reply,
+    sender,
+  ]
+  await sendSafely(
+    {
+      to: user.email,
+      subject,
+      text: textParts.join('\n\n'),
+      html: layout(
+        subject,
+        `<p style="margin:0 0 12px">${fillIn(para(p.hi), evars)}</p>
+         <p style="margin:0 0 12px">${fillIn(para(p.intro), evars)}</p>
+         ${params.setupUrl ? `<p style="margin:0 0 4px">${para(p.setupFirst)}</p>${button(params.setupUrl, esc(p.setupCta))}` : ''}
+         ${params.videoUrl
+           ? `<p style="margin:0 0 4px">${para(p.video)}</p>${button(params.videoUrl, esc(p.videoCta))}`
+           : `<p style="margin:0 0 12px">${para(p.noVideo)}</p>`}
+         ${params.setupUrl ? '' : button(dashboard, esc(p.openCta))}
+         <p style="margin:0 0 12px">${para(p.question)}</p>
+         <p style="margin:0 0 12px">${para(p.reply)}</p>
+         <p style="margin:0">${esc(sender)}</p>`,
+        para(c.footer),
+      ),
+      from: env.TEAM_MAIL_FROM ?? env.MAIL_FROM,
+    },
+    'personal_welcome',
+    { userId: user.id, actorId: params.actorId },
   )
 }
 

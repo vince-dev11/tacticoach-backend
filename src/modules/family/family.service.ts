@@ -1,6 +1,6 @@
 // FAMILY (12 Oct 2026) — coach-created players, parent accounts and consent.
 //
-// The owner's rules (TACTICAL_COACH/Plan_Books_And_Family_Accounts_2026-10-12.md):
+// The owner's rules (docs/briefs/Plan_Books_And_Family_Accounts_2026-10-12.md):
 //   - only a coach creates a player account, and enters the date of birth;
 //   - under 18 needs a parent account, and the parent must say yes before the
 //     child's account works (the consent is the parent's, not the coach's);

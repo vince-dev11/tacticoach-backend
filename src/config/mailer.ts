@@ -2,6 +2,7 @@ import nodemailer, { type Transporter } from 'nodemailer'
 import { env } from './env.js'
 import { db } from './database.js'
 import { bareAddress, InvalidRecipientError, recipientProblem } from '../lib/email-address.js'
+import { normaliseMessageId } from '../lib/email-bounce.js'
 
 // ---- TEMPORARY: remove once `prisma generate` has run against migration 23 --
 // The generated client has no `emailLog` delegate until then. Narrow on
@@ -82,6 +83,7 @@ async function record(
   opts: SendMailOptions,
   status: 'sent' | 'failed' | 'skipped',
   error?: unknown,
+  providerMessageId?: string | null,
 ): Promise<void> {
   try {
     await emailLog().create({
@@ -95,6 +97,8 @@ async function record(
         error: error ? String((error as Error)?.message ?? error).slice(0, 500) : null,
         userId: opts.userId ?? null,
         actorId: opts.actorId ?? null,
+        // ONBOARDING-EMAIL: lets the bounce webhook find this row.
+        ...(providerMessageId ? { providerMessageId: normaliseMessageId(providerMessageId) } : {}),
       },
     })
   } catch (logError) {
@@ -127,9 +131,10 @@ export async function sendMail(opts: SendMailOptions): Promise<void> {
     return
   }
 
+  let messageId: string | null = null
   try {
     const replyTo = opts.replyTo ?? teamReplyTo(opts.from ?? env.MAIL_FROM)
-    await getTransport().sendMail({
+    const info = await getTransport().sendMail({
       from: opts.from ?? env.MAIL_FROM,
       to: opts.to,
       subject: opts.subject,
@@ -137,9 +142,10 @@ export async function sendMail(opts: SendMailOptions): Promise<void> {
       text: opts.text,
       ...(replyTo && { replyTo }),
     })
+    messageId = (info as { messageId?: string } | undefined)?.messageId ?? null
   } catch (error) {
     await record(opts, 'failed', error)
     throw error
   }
-  await record(opts, 'sent')
+  await record(opts, 'sent', undefined, messageId)
 }

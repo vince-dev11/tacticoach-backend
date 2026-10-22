@@ -17,9 +17,14 @@ import crypto from 'node:crypto'
 import bcrypt from 'bcryptjs'
 import {
   sendClubPageApprovedEmail, sendClubPageRejectedEmail, sendAccountSetupEmail,
-  sendPasswordResetEmail,
+  sendPasswordResetEmail, sendArticleApprovedEmail, sendArticleReturnedEmail,
 } from '../../lib/emails.js'
 import { isMailConfigured } from '../../config/mailer.js'
+import { storedLocale } from '../../lib/email-i18n.js'
+import { onboardingRoutes } from './onboarding.routes.js'
+import { stripe, stripeConfigured } from '../../config/stripe.js'
+import { stripeMode } from '../membership/stripe-catalog.js'
+import { bookCheckoutProvider } from '../ebooks/payment-provider.js'
 import { grantBook, refundPurchase, listOrders, PurchaseError } from '../ebooks/purchases.service.js'
 import { boxWhere, CONTACT_TOPICS, SUPPORT_TOPICS, type ContactBox } from '../contact/topics.js'
 import { createAccountSetupToken, createPasswordResetTokenFor } from '../auth/auth.service.js'
@@ -125,41 +130,12 @@ const PostSchema = z.object({
   status: z.enum(['draft', 'published']).default('draft'),
   seoTitle: z.string().max(255).optional().nullable(),
   seoDescription: z.string().max(320).optional().nullable(),
+  // COACH-ARTICLES: the admin's search keywords (meta keywords + related posts).
+  seoKeywords: KeywordsSchema.optional().nullable(),
 })
 
-const COVER_TYPES = ['image/jpeg', 'image/png', 'image/webp']
-const COVER_MAX = 3 * 1024 * 1024 // 3 MB
-
-function slugify(title: string): string {
-  return (
-    title
-      .toLowerCase()
-      .normalize('NFKD')
-      .replace(/[̀-ͯ]/g, '')
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-+|-+$/g, '')
-      .slice(0, 180) || 'post'
-  )
-}
-
-async function uniqueSlug(base: string, excludeId?: number): Promise<string> {
-  let slug = base
-  for (let i = 2; ; i++) {
-    const clash = await db.blogPost.findFirst({
-      where: { slug, ...(excludeId ? { id: { not: excludeId } } : {}) },
-      select: { id: true },
-    })
-    if (!clash) return slug
-    slug = `${base}-${i}`
-  }
-}
-
-const readMinutes = (content: string) =>
-  Math.max(1, Math.round(content.split(/\s+/).filter(Boolean).length / 200))
-
-async function withCover<T extends { coverImageKey: string | null }>(post: T) {
-  return { ...post, coverUrl: post.coverImageKey ? await presignUrl(post.coverImageKey) : null }
-}
+// Slugs, reading time, covers: shared with the coach articles module.
+import { COVER_MAX, COVER_TYPES, KeywordsSchema, authorsFor, bylineOf, readMinutes, slugify, uniqueSlug, withCover } from '../blog/blog.shared.js'
 
 // ---- Routes ------------------------------------------------------------------
 
@@ -169,6 +145,9 @@ export async function adminRoutes(app: FastifyInstance) {
 
   // ===== Analytics (countries, features, funnels, health) ======================
   await app.register(analyticsRoutes)
+
+  // ===== Onboarding: bulk resend, personal welcome (ONBOARDING-EMAIL) ===========
+  await app.register(onboardingRoutes)
 
   // ===== Error tracking check ===================================================
   //
@@ -182,16 +161,20 @@ export async function adminRoutes(app: FastifyInstance) {
 
   // ===== Blog CMS ===============================================================
 
-  // GET /admin/blog — every post, drafts included
+  // GET /admin/blog — every post, drafts included; coach articles carry their
+  // author and the review trail (COACH-ARTICLES). Pending first, then by update.
   app.get('/blog', async (_request, reply) => {
     const posts = await db.blogPost.findMany({
-      orderBy: { updatedAt: 'desc' },
+      orderBy: [{ updatedAt: 'desc' }],
       select: {
-        id: true, slug: true, title: true, excerpt: true, status: true,
-        publishedAt: true, updatedAt: true, tags: true, coverImageKey: true,
+        id: true, slug: true, title: true, excerpt: true, status: true, authorKind: true, authorId: true,
+        publishedAt: true, updatedAt: true, submittedAt: true, tags: true, coverImageKey: true,
       },
     })
-    return reply.send(await Promise.all(posts.map(withCover)))
+    const authors = await authorsFor(posts)
+    const rows = await Promise.all(posts.map(async (p) => ({ ...(await withCover(p)), author: bylineOf(p, authors) })))
+    rows.sort((a, b) => (a.status === 'pending' ? -1 : 0) - (b.status === 'pending' ? -1 : 0))
+    return reply.send(rows)
   })
 
   // GET /admin/blog/:id — full post for editing
@@ -199,7 +182,48 @@ export async function adminRoutes(app: FastifyInstance) {
     const id = Number((request.params as { id: string }).id)
     const post = await db.blogPost.findUnique({ where: { id } })
     if (!post) return reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'Post not found' })
-    return reply.send(await withCover(post))
+    const authors = await authorsFor([post])
+    return reply.send({ ...(await withCover(post)), author: bylineOf(post, authors) })
+  })
+
+  // PATCH /admin/blog/:id/review { action, note?, seoKeywords? } — the review
+  // step for a coach's article (COACH-ARTICLES). Approve publishes it and keeps
+  // its first publish date; "changes" and "reject" need a note, because the
+  // coach has to know why. Works on a team post too (approve = publish).
+  app.patch('/blog/:id/review', async (request, reply) => {
+    const id = Number((request.params as { id: string }).id)
+    const { action, note, seoKeywords } = z
+      .object({
+        action: z.enum(['approve', 'changes', 'reject']),
+        note: z.string().trim().max(500).optional(),
+        seoKeywords: KeywordsSchema.optional(),
+      })
+      .parse(request.body)
+    const existing = await db.blogPost.findUnique({ where: { id } })
+    if (!existing) return reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'Post not found' })
+    if (action !== 'approve' && !note) {
+      return reply.status(422).send({ statusCode: 422, error: 'Unprocessable Entity', message: 'A note is required — the coach needs to know what to change' })
+    }
+    const status = action === 'approve' ? 'published' : action === 'changes' ? 'changes_requested' : 'rejected'
+    const post = await db.blogPost.update({
+      where: { id },
+      data: {
+        status,
+        reviewedAt: new Date(),
+        reviewNote: action === 'approve' ? null : note!,
+        ...(seoKeywords !== undefined && { seoKeywords: seoKeywords as Prisma.InputJsonValue }),
+        ...(action === 'approve' && { publishedAt: existing.publishedAt ?? new Date() }),
+      },
+    })
+    if (existing.authorKind === 'coach') {
+      const author = await db.user.findUnique({ where: { id: existing.authorId }, select: { name: true, email: true } })
+      if (author) {
+        const url = `${env.FRONTEND_URL}/blog/${post.slug}`
+        if (action === 'approve') void sendArticleApprovedEmail(author, post.title, url)
+        else void sendArticleReturnedEmail(author, post.title, note!, action === 'reject', `${env.FRONTEND_URL}/articles/mine`)
+      }
+    }
+    return reply.send({ id: post.id, status: post.status })
   })
 
   // POST /admin/blog — create (draft by default)
@@ -218,8 +242,10 @@ export async function adminRoutes(app: FastifyInstance) {
         publishedAt: input.status === 'published' ? new Date() : null,
         seoTitle: input.seoTitle ?? null,
         seoDescription: input.seoDescription ?? null,
+        seoKeywords: (input.seoKeywords ?? []) as Prisma.InputJsonValue,
         readMinutes: readMinutes(input.content),
         authorId: userId,
+        authorKind: 'team',
       },
     })
     return reply.status(201).send(await withCover(post))
@@ -245,6 +271,7 @@ export async function adminRoutes(app: FastifyInstance) {
         ...(input.tags !== undefined && { tags: input.tags as Prisma.InputJsonValue }),
         ...(input.seoTitle !== undefined && { seoTitle: input.seoTitle }),
         ...(input.seoDescription !== undefined && { seoDescription: input.seoDescription }),
+        ...(input.seoKeywords !== undefined && { seoKeywords: (input.seoKeywords ?? []) as Prisma.InputJsonValue }),
         ...(input.status !== undefined && {
           status: input.status,
           publishedAt:
@@ -359,6 +386,8 @@ export async function adminRoutes(app: FastifyInstance) {
       id: true, name: true, surname: true, email: true, clubName: true,
       emailVerifiedAt: true, createdAt: true, role: true, accountType: true,
       freeTrialEndsAt: true,
+      // ONBOARDING-EMAIL: language, invitation and personal-welcome state.
+      locale: true, setupInvitedAt: true, setupRemindersSent: true, welcomedAt: true,
       // The derived reality next to the declared type: someone who picked
       // "club" at signup and never took the plan has no Club row, which
       // makes them a sales lead rather than a club.
@@ -469,6 +498,9 @@ export async function adminRoutes(app: FastifyInstance) {
         /// FAMILY (12 Oct 2026): a player's date of birth. Without one a player
         /// counts as a child (no prices, no switching to coach) — see lib/age.ts.
         dateOfBirth: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().nullable(),
+        /// ONBOARDING-EMAIL: the language their emails go out in. Omitted =
+        /// the language of their early-access request, if they sent one.
+        locale: z.string().trim().max(10).optional().nullable(),
       })
       .parse(request.body)
 
@@ -481,6 +513,8 @@ export async function adminRoutes(app: FastifyInstance) {
     if (await db.user.findUnique({ where: { email }, select: { id: true } })) {
       return reply.status(409).send({ statusCode: 409, error: 'Conflict', message: 'That email already has an account' })
     }
+    const lead = input.locale ? null : await db.contactMessage.findFirst({ where: { email, locale: { not: null } }, orderBy: { createdAt: 'desc' }, select: { locale: true } })
+    const locale = storedLocale(input.locale ?? lead?.locale ?? null)
 
     const plan = input.planSlug
       ? await db.membershipPlan.findUnique({ where: { slug: input.planSlug }, select: { id: true, slug: true, name: true } })
@@ -505,8 +539,11 @@ export async function adminRoutes(app: FastifyInstance) {
         // something nobody has checked, and the list could not tell an
         // activated account from an invitation still sitting in an inbox.
         emailVerifiedAt: null,
+        locale,
+        // ONBOARDING-EMAIL: the invitation clock (reminders on day 2 and 6).
+        ...(input.sendEmail ? { setupInvitedAt: new Date(), setupRemindersSent: 0 } : {}),
       },
-      select: { id: true, name: true, surname: true, email: true, accountType: true, clubName: true },
+      select: { id: true, name: true, surname: true, email: true, accountType: true, clubName: true, locale: true },
     })
 
     if (plan) await grantPlan(user.id, plan, input.months ?? null, user)
@@ -582,7 +619,7 @@ export async function adminRoutes(app: FastifyInstance) {
 
     const user = await db.user.findUnique({
       where: { id },
-      select: { id: true, name: true, surname: true, email: true, emailVerifiedAt: true },
+      select: { id: true, name: true, surname: true, email: true, emailVerifiedAt: true, locale: true },
     })
     if (!user) {
       return reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'User not found' })
@@ -619,8 +656,11 @@ export async function adminRoutes(app: FastifyInstance) {
     // Awaited, not fire-and-forget: the admin is watching, and "sent" needs to
     // mean it. sendSafely swallows provider failures, and the email_log row
     // records which of the two it was.
-    if (kind === 'setup') await sendAccountSetupEmail(user, url, actorId)
-    else await sendPasswordResetEmail(user, url, actorId)
+    if (kind === 'setup') {
+      await sendAccountSetupEmail(user, url, actorId)
+      // A resent invitation restarts its reminder clock.
+      if (!user.emailVerifiedAt) await db.user.update({ where: { id }, data: { setupInvitedAt: new Date(), setupRemindersSent: 0 } })
+    } else await sendPasswordResetEmail(user, url, actorId)
 
     return reply.send({ sent: true, url, mailConfigured: isMailConfigured() })
   })
@@ -751,6 +791,63 @@ export async function adminRoutes(app: FastifyInstance) {
     }
     await db.userSubscription.update({ where: { userId: id }, data: { status: 'expired', expiresAt: new Date(), cancelledAt: new Date() } })
     return reply.status(204).send()
+  })
+
+  // ===== Billing (20 Oct 2026) ==================================================
+
+  // GET /admin/billing/status — is Stripe connected, in which mode, and is the
+  // shop open? What the owner checks after pasting the keys.
+  app.get('/billing/status', async (_request, reply) => {
+    return reply.send({
+      stripe: {
+        configured: stripeConfigured(),
+        mode: stripeMode(),
+        webhookSecret: !!env.STRIPE_WEBHOOK_SECRET,
+        webhookUrl: `${env.FRONTEND_URL}/api/webhooks/stripe`,
+      },
+      books: { live: !!bookCheckoutProvider(), switch: env.BOOK_SALES },
+      email: {
+        configured: isMailConfigured(),
+        from: env.MAIL_FROM,
+        bounceWebhook: !!env.EMAIL_WEBHOOK_TOKEN,
+      },
+    })
+  })
+
+  // POST /admin/users/:id/refund-subscription { note?, force? } — the refund
+  // rule (Terms §11): a full refund on request within 14 days of the FIRST
+  // payment, none after. The money goes back in Stripe, the subscription ends
+  // now, and the webhooks expire access and reverse referral commission.
+  // `force` lets the owner refund outside the window as a goodwill gesture.
+  app.post('/users/:id/refund-subscription', async (request, reply) => {
+    const id = Number((request.params as { id: string }).id)
+    const { force } = z.object({ note: z.string().max(255).optional(), force: z.boolean().default(false) }).parse(request.body ?? {})
+    if (!stripeConfigured()) {
+      return reply.status(503).send({ statusCode: 503, error: 'Service Unavailable', message: 'Billing is not configured on this server' })
+    }
+    const sub = await db.userSubscription.findUnique({ where: { userId: id } })
+    if (!sub || sub.paymentProvider !== 'stripe' || !sub.providerSubscriptionId) {
+      return reply.status(409).send({ statusCode: 409, error: 'no_card_plan', message: 'This account has no card subscription to refund.' })
+    }
+    const invoices = await stripe().invoices.list({ subscription: sub.providerSubscriptionId, status: 'paid', limit: 100, expand: ['data.payments'] })
+    if (!invoices.data.length) {
+      return reply.status(409).send({ statusCode: 409, error: 'no_payment', message: 'No paid invoice found for this subscription.' })
+    }
+    const first = invoices.data.reduce((a, b) => (a.created <= b.created ? a : b))
+    const withinWindow = Date.now() - first.created * 1000 <= 14 * 86_400_000
+    if (!withinWindow && !force) {
+      return reply.status(409).send({ statusCode: 409, error: 'outside_window', message: 'The first payment was more than 14 days ago, so the refund rule does not apply. Refund anyway only as goodwill.' })
+    }
+    const latest = invoices.data.reduce((a, b) => (a.created >= b.created ? a : b))
+    const pay = latest.payments?.data.find((p) => p.payment.payment_intent)
+    const intent = pay ? (typeof pay.payment.payment_intent === 'string' ? pay.payment.payment_intent : pay.payment.payment_intent?.id) : null
+    if (!intent) {
+      return reply.status(409).send({ statusCode: 409, error: 'no_payment', message: 'Could not find the payment on the latest invoice. Refund it in the Stripe dashboard.' })
+    }
+    const refund = await stripe().refunds.create({ payment_intent: intent, metadata: { kind: 'subscription', userId: String(id) } })
+    await stripe().subscriptions.cancel(sub.providerSubscriptionId)
+    await db.userSubscription.update({ where: { userId: id }, data: { status: 'expired', expiresAt: new Date(), cancelledAt: new Date() } })
+    return reply.send({ refunded: true, refundId: refund.id, amount: refund.amount, currency: refund.currency, withinWindow })
   })
 
   // ===== Club page approvals ====================================================

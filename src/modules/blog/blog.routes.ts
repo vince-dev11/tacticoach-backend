@@ -5,6 +5,7 @@ import type { FastifyInstance } from 'fastify'
 import { db } from '../../config/database.js'
 import { env } from '../../config/env.js'
 import { presignUrl } from '../../config/s3.js'
+import { authorsFor, bylineOf } from './blog.shared.js'
 
 const CARD_SELECT = {
   id: true,
@@ -15,11 +16,23 @@ const CARD_SELECT = {
   tags: true,
   publishedAt: true,
   readMinutes: true,
+  // COACH-ARTICLES: the byline (a coach's name and page), null for a team post.
+  authorId: true,
+  authorKind: true,
 } as const
 
 async function withCover<T extends { coverImageKey: string | null }>(post: T) {
   const { coverImageKey, ...rest } = post
   return { ...rest, coverUrl: coverImageKey ? await presignUrl(coverImageKey) : null }
+}
+
+/** The public shape: cover URL, byline, and no internal ids. */
+async function publicPost<T extends { coverImageKey: string | null; authorId: number; authorKind: 'team' | 'coach' }>(
+  post: T,
+  authors: Awaited<ReturnType<typeof authorsFor>>,
+) {
+  const { authorId: _a, authorKind: _k, ...rest } = await withCover(post)
+  return { ...rest, author: bylineOf(post, authors) }
 }
 
 const esc = (s: string) =>
@@ -41,8 +54,9 @@ export async function blogRoutes(app: FastifyInstance) {
       }),
       db.blogPost.count({ where: { status: 'published' } }),
     ])
+    const authors = await authorsFor(posts)
     return reply.send({
-      posts: await Promise.all(posts.map(withCover)),
+      posts: await Promise.all(posts.map((p) => publicPost(p, authors))),
       total,
       page: Number(page) || 1,
       limit: take,
@@ -114,6 +128,8 @@ ${urls}
     if (!post) {
       return reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'Post not found' })
     }
-    return reply.send(await withCover(post))
+    // Internal fields stay internal; the review note is the coach's business.
+    const { reviewNote: _n, submittedAt: _s, reviewedAt: _r, ...pub } = post
+    return reply.send(await publicPost(pub, await authorsFor([post])))
   })
 }

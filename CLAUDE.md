@@ -23,6 +23,10 @@ After every change: `npm run typecheck`, `npx vitest run` on the area's tests fr
 
 `src/modules/<area>/{routes,service,schema}.ts`; `src/middleware/` (auth guard, error handler); `src/lib/` (emails, player lockdown, observability); `src/config/` (env, mailer, s3, database). AI: `ai.dsl.ts` (deterministic compiler: pattern + params → board objects/frames), `ai.concepts.ts` (concept cards, areas, principles), `ai.validate.ts` (squad size, age-appropriateness, layout, animation, brief), `ai.patterns.ts`, `evals/eval-ai.ts`.
 
+## Docs
+
+`docs/deploy/` (deploy notes and runbook: write a new one per release), `docs/setup/` (Stripe and email, analytics, error tracing, hosting), `docs/ai/` (editor AI plan), `docs/briefs/`, `docs/planning/`. Feature briefs, reviews and the glossary are in the frontend repo's `docs/`. No keys, passwords or customer data in any doc.
+
 ## Definition of done
 
 `.claude/skills/definition-of-done/SKILL.md`.

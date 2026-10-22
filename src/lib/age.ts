@@ -1,6 +1,6 @@
 // FAMILY (12 Oct 2026) — a player's age, from the date of birth their coach
 // entered. Two thresholds, both the owner's rule (see the plan in
-// TACTICAL_COACH/Plan_Books_And_Family_Accounts_2026-10-12.md):
+// docs/briefs/Plan_Books_And_Family_Accounts_2026-10-12.md):
 //
 //   - under 13: no login of their own; the parent's account is the window.
 //     (13 is the UK / US age of digital consent; it varies 13–16 across the
