@@ -139,6 +139,8 @@ const schema = z.object({
   SENTRY_RELEASE: z.string().optional(),
   SENTRY_TRACES_SAMPLE_RATE: z.string().optional(),
   SENTRY_SERVER_NAME: z.string().optional(),
+  /** SENTRY-PROD: report from a non-production process on purpose (testing the wiring). */
+  SENTRY_FORCE: z.string().optional(),
 
   // Admin → Analytics: read-only access to the analytics tools, so the owner
   // sees countries, feature usage, funnels and health inside the admin panel.

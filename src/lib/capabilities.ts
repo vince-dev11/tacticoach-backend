@@ -22,7 +22,7 @@ export type Capability =
   | 'video_export'
   /** Squad roster and written feedback to players. Paid plans only (1 Oct 2026). */
   | 'player_feedback'
-  /** Export at HD rather than 720p, and without our watermark. */
+  /** Export without our watermark (every paid plan gets 4K — owner, 24 Oct 2026; the badge is the difference). */
   | 'video_hd'
   /** Square/story renders for social. */
   | 'social_export'

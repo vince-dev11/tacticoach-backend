@@ -32,7 +32,25 @@ function rate(value: string | undefined, fallback: number): number {
 
 const globalFlag = globalThis as { __tcSentryInit?: boolean }
 
-if (dsn && nodeEnv !== 'test' && !globalFlag.__tcSentryInit) {
+/**
+ * SENTRY-PROD (24 Oct 2026, owner): Sentry registers errors from PRODUCTION
+ * only. A DSN in a local .env no longer reports a developer's errors to the
+ * live project; `NODE_ENV=production` is required, or SENTRY_FORCE=1 to test
+ * the wiring deliberately from a dev process.
+ */
+export function shouldInitSentry(env: NodeJS.ProcessEnv): boolean {
+  if (!env.SENTRY_DSN?.trim()) return false
+  const node = env.NODE_ENV ?? 'development'
+  if (node === 'test') return false
+  if (/^(1|true)$/i.test(env.SENTRY_FORCE ?? '')) return true
+  return node === 'production'
+}
+
+if (!shouldInitSentry(process.env) && dsn && nodeEnv !== 'test' && !globalFlag.__tcSentryInit) {
+  console.info('[sentry] off: errors are only registered when NODE_ENV=production (SENTRY_FORCE=1 to test it).')
+}
+
+if (shouldInitSentry(process.env) && !globalFlag.__tcSentryInit) {
   globalFlag.__tcSentryInit = true
   Sentry.init({
     dsn,

@@ -8,6 +8,8 @@ Ships everything since the last deploy. If the 22 Oct deploy was **not** done ye
 - **E2E fixes** (draft overwrite, early-access child data, age bands, "Example page" labels, Admin "no login (under 13)"): `TACTICAL_COACH/E2E_Report_2026-10-23.md`.
 - **Brand fixes** (trial wording, Inter font bundled, brand green): `TACTICAL_COACH/03_Brand_and_Guides/brand/Brand_Review_2026-10-23.md`.
 - **Security / payments fixes** (book sale recorded at the amount paid, duplicate payment refunded, subscription end date on both Stripe API versions, nodemailer 10.2.1): `docs/security/Security_Review_2026-10-23.md`.
+- **Video that plays on every phone (VIDEO-LEVEL, 24 Oct):** the 2D download is 4K · 30 fps by default (H.264 Level 5.1 — the file that failed on Android was 4K · 60, Level 5.2); Video quality choice in the timeline settings; constant-quality encoding; pricing page says 4K for Basic and Pro. `tacticoach-frontend/docs/briefs/2026-10-24-video-level.md`.
+- **Sentry from production only (24 Oct):** the browser reports only from a production build on a non-local host; the API only when `NODE_ENV=production`. A local `.env` with the DSN no longer sends dev errors to the live project (`SENTRY_FORCE` / `VITE_SENTRY_FORCE=true` to test the wiring on purpose).
 - **Admin → Analytics:** Sentry panels work again (400 fixed); PageSpeed needs `PAGESPEED_API_KEY` (optional).
 - Plus everything listed in `Deploy_Runbook_2026-10-22.md` if that deploy hasn't happened.
 
@@ -50,7 +52,7 @@ bash scripts/preflight-deploy.sh
 ```
 - Section 3 must be 0; otherwise `npx prisma migrate resolve --rolled-back <name>` first.
 - Plans: every row `ok`.
-- `.env`: nothing new is required. Optional: `PAGESPEED_API_KEY=` (Admin → Analytics → Performance), and the 22 Oct lines if not set (`BOOK_SALES=true`, `WELCOME_VIDEO_URL=`, `EMAIL_WEBHOOK_TOKEN=`; leave `ASSISTANT_ENABLED=` blank).
+- `.env`: nothing new is required. **Check `grep ^NODE_ENV .env` says `production`** — Sentry now reports only then (step 5.10 confirms). Optional: `PAGESPEED_API_KEY=` (Admin → Analytics → Performance), and the 22 Oct lines if not set (`BOOK_SALES=true`, `WELCOME_VIDEO_URL=`, `EMAIL_WEBHOOK_TOKEN=`; leave `ASSISTANT_ENABLED=` blank).
 
 ## 3. API
 
@@ -81,7 +83,7 @@ Look for `code: … → e89b0d9`, `GA4: measurement ID baked in`, `Done.`
 1. **Social clip:** open a board with movement → Share → Clip for social media. Five looks; type a headline and a coaching point; preview updates; export one story from 2D and one from 3D and play both on your phone. No words on the pitch; background is the view.
 2. **Fonts:** DevTools → Network, filter `woff2`: `inter-latin-400`, and when the social dialog opens `bebas-neue`, `dm-serif-display`, `barlow-condensed`, `anton`.
 3. **3D / Stadium:** opens on the whole pitch, low behind the near goal; ⌂ returns there.
-4. **Video:** Share → Video on the same board downloads an MP4 that plays in QuickTime and on a phone.
+4. **Video:** in Movement → Speed, arrows and sound, **Video quality** shows 4K · 30 fps selected. Share → Video downloads `…-4k30.mp4`; open it on an **Android phone** (gallery and WhatsApp), an iPhone and the Mac. Optional: MediaInfo/ffprobe shows H.264 High, level 51, 30 fps.
 5. **Board draft:** new board → place a player → open another board → the first one's draft is still offered; Save → no "Unsaved work".
 6. **Early access → Player or parent:** asks who is filling it in; an under-18 gets no form.
 7. **Admin → Users:** "no login (under 13)" badge; **Admin → Analytics → Health:** Sentry panels show data.
