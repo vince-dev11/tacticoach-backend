@@ -184,3 +184,47 @@ describe('performance', () => {
     expect(res.headers['access-control-max-age']).toBe('7200')
   })
 })
+
+// SENTRY-400 (23 Oct 2026): Admin → Health said "Sentry API failed (400)" on
+// both cards. The issues endpoint only takes statsPeriod "24h" / "14d" / "";
+// the window is now a search filter, and one card failing leaves the other.
+describe('SENTRY-400 · Health reads Sentry the way its API allows', () => {
+  const fetchMock = vi.fn()
+  beforeEach(() => {
+    vi.stubGlobal('fetch', fetchMock)
+    fetchMock.mockReset()
+    Object.assign(env, { SENTRY_API_TOKEN: 'sntrys_test', SENTRY_ORG: 'tacticoach', SENTRY_PROJECT_API: 'tacticoach-api', SENTRY_PROJECT_WEB: 'tacticoach-web' })
+  })
+  const ok = (body: unknown) => ({ ok: true, status: 200, json: async () => body })
+
+  it('asks for unresolved issues seen in the range, with no statsPeriod Sentry would refuse', async () => {
+    fetchMock.mockImplementation(async (url: string) =>
+      url.includes('stats_v2') ? ok({ intervals: ['2026-10-22T00:00:00Z'], groups: [{ series: { 'sum(quantity)': [3] } }] })
+        : ok([{ id: '1', title: 'TypeError', culprit: 'x', count: '5', userCount: 2, lastSeen: '2026-10-22', level: 'error', permalink: 'p' }]))
+    const app = await getApp()
+    const res = await app.inject({ method: 'GET', url: '/api/admin/analytics/health?range=30d', headers: await owner() })
+    const issueUrls = fetchMock.mock.calls.map(([u]) => String(u)).filter((u) => u.includes('/issues/'))
+    expect(issueUrls).toHaveLength(2)
+    for (const u of issueUrls) {
+      const q = new URL(u).searchParams
+      expect(q.get('query')).toBe('is:unresolved lastSeen:-30d')
+      expect(['', '24h', '14d']).toContain(q.get('statsPeriod'))
+    }
+    expect(res.json().sentry).toMatchObject({ status: { state: 'ok' }, data: { errorsPerDay: [{ date: '2026-10-22', count: 3 }] } })
+    expect(res.json().sentry.data.issues).toHaveLength(2)
+  })
+
+  it('one project or one endpoint failing does not blank the other card', async () => {
+    fetchMock.mockImplementation(async (url: string) =>
+      url.includes('stats_v2') ? ok({ intervals: [], groups: [] })
+        : url.includes('tacticoach-web') ? { ok: false, status: 404, json: async () => ({}) }
+          : ok([{ id: '1', title: 'TypeError', culprit: 'x', count: '5', userCount: 2, lastSeen: '2026-10-22', level: 'error', permalink: 'p' }]))
+    const app = await getApp()
+    const res = await app.inject({ method: 'GET', url: '/api/admin/analytics/health?range=7d', headers: await owner() })
+    const s = res.json().sentry
+    expect(s.status.state).toBe('ok')
+    expect(s.data.issues).toHaveLength(1)
+    expect(s.data.issuesError).toContain('404')
+    expect(s.data.errorsPerDayError).toBeUndefined()
+  })
+})

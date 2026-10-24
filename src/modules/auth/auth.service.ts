@@ -81,6 +81,23 @@ export async function validateCredentials(input: LoginInput) {
 // Refresh tokens are stored HASHED (like the reset tokens below): a leaked
 // database dump must not hand an attacker every user's live session. The raw
 // token only ever exists client-side; we hash on the way in and look up by hash.
+/**
+ * SIGN-IN (23 Oct 2026): a real sign-in (login, or registering — which signs
+ * you in). Not a token refresh: that is the app keeping a session alive, and
+ * "last signed in" should mean the person did something. Never blocks or fails
+ * the sign-in it records.
+ */
+export async function noteSignIn(userId: number, at: Date = new Date()): Promise<void> {
+  try {
+    await db.$transaction([
+      db.user.update({ where: { id: userId }, data: { lastLoginAt: at } }),
+      db.user.updateMany({ where: { id: userId, firstLoginAt: null }, data: { firstLoginAt: at } }),
+    ])
+  } catch {
+    /* bookkeeping only */
+  }
+}
+
 export async function saveRefreshToken(userId: number, token: string) {
   await db.refreshToken.create({
     data: {
@@ -192,7 +209,7 @@ export async function resetPasswordWithToken(
 ): Promise<false | { userId: number; firstActivation: boolean }> {
   const record = await db.passwordResetToken.findUnique({ where: { tokenHash: sha256(token) } })
   if (!record || record.usedAt || record.expiresAt < new Date()) return false
-  const before = await db.user.findUnique({ where: { id: record.userId }, select: { emailVerifiedAt: true, setupInvitedAt: true } })
+  const before = await db.user.findUnique({ where: { id: record.userId }, select: { emailVerifiedAt: true, setupInvitedAt: true, setupCompletedAt: true } })
 
   const passwordHash = await bcrypt.hash(newPassword, BCRYPT_ROUNDS)
   // Redeeming a link that was emailed to the address proves the mailbox, so
@@ -202,6 +219,9 @@ export async function resetPasswordWithToken(
   await db.$transaction([
     db.user.update({ where: { id: record.userId }, data: { passwordHash } }),
     db.user.updateMany({ where: { id: record.userId, emailVerifiedAt: null }, data: { emailVerifiedAt: now } }),
+    // SIGN-IN: an invited person setting their password from a link we sent
+    // them — the invitation is done. (A later "forgot password" changes nothing.)
+    db.user.updateMany({ where: { id: record.userId, setupInvitedAt: { not: null }, setupCompletedAt: null }, data: { setupCompletedAt: now } }),
     db.passwordResetToken.update({ where: { id: record.id }, data: { usedAt: new Date() } }),
     db.refreshToken.deleteMany({ where: { userId: record.userId } }),
   ])

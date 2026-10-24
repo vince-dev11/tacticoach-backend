@@ -67,6 +67,16 @@ export const stripeBookCheckout: BookCheckoutProvider = {
   },
 }
 
+/**
+ * PAY-STALE: close a book checkout page that was never paid, so it cannot be
+ * paid later at the price it was opened with. Already completed or expired
+ * sessions refuse — that is fine, there is nothing to close.
+ */
+export async function expireBookCheckout(sessionId: string): Promise<void> {
+  if (!sessionId.startsWith('cs_') || !stripeConfigured()) return
+  await stripe().checkout.sessions.expire(sessionId).catch(() => {})
+}
+
 /** Give the money back for a book bought through Stripe. */
 export async function refundBookPayment(providerRef: string | null | undefined): Promise<boolean> {
   if (!providerRef?.startsWith('pi_') || !stripeConfigured()) return false

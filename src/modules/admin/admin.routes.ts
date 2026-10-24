@@ -388,6 +388,11 @@ export async function adminRoutes(app: FastifyInstance) {
       freeTrialEndsAt: true,
       // ONBOARDING-EMAIL: language, invitation and personal-welcome state.
       locale: true, setupInvitedAt: true, setupRemindersSent: true, welcomedAt: true,
+      // SIGN-IN: has this person ever signed in, and did they finish their invitation?
+      firstLoginAt: true, lastLoginAt: true, setupCompletedAt: true,
+      // An under-13 has no login of their own: Admin says so instead of
+      // "never signed in · not verified" (E2E 23 Oct 2026).
+      canLogin: true,
       // The derived reality next to the declared type: someone who picked
       // "club" at signup and never took the plan has no Club row, which
       // makes them a sales lead rather than a club.

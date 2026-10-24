@@ -31,6 +31,10 @@ export const UserFilters = z.object({
   content: z.enum(['some', 'none']).optional().catch(undefined),
   /** EMAIL-FAIL: only accounts we cannot email (bad address, or the last email failed). */
   email: z.enum(['problem']).optional().catch(undefined),
+  /** SIGN-IN: has signed in at least once / never has. */
+  signedIn: z.enum(['yes', 'no']).optional().catch(undefined),
+  /** SIGN-IN: invited and set their password from the link / invited and has not yet. */
+  invite: z.enum(['done', 'waiting']).optional().catch(undefined),
   sort: z.enum(['newest', 'oldest', 'trial_end']).catch('newest'),
   page: z.coerce.number().int().min(1).catch(1),
 })
@@ -114,6 +118,9 @@ export function userWhere(f: UserFilterInput, now: Date = new Date()): Prisma.Us
   if (f.plan) and.push(planWhere(f.plan, now))
   if (f.verified) and.push({ emailVerifiedAt: f.verified === 'yes' ? { not: null } : null })
   if (f.joined) and.push({ createdAt: { gte: new Date(now.getTime() - f.joined * DAY) } })
+  if (f.signedIn) and.push({ firstLoginAt: f.signedIn === 'yes' ? { not: null } : null })
+  if (f.invite === 'done') and.push({ setupInvitedAt: { not: null }, setupCompletedAt: { not: null } })
+  if (f.invite === 'waiting') and.push({ setupInvitedAt: { not: null }, setupCompletedAt: null })
   if (f.content === 'some') and.push({ OR: [{ boards: { some: {} } }, { drillSheets: { some: {} } }] })
   if (f.content === 'none') and.push({ boards: { none: {} }, drillSheets: { none: {} } })
   return and.length ? { AND: and } : {}

@@ -14,7 +14,7 @@ const fake = vi.hoisted(() => ({
   prices: { list: vi.fn(), create: vi.fn() },
   products: { search: vi.fn(), create: vi.fn() },
   customers: { create: vi.fn() },
-  checkout: { sessions: { create: vi.fn() } },
+  checkout: { sessions: { create: vi.fn(), expire: vi.fn() } },
   subscriptions: { retrieve: vi.fn(), update: vi.fn(), cancel: vi.fn() },
   billingPortal: { configurations: { list: vi.fn(), create: vi.fn() }, sessions: { create: vi.fn() } },
   invoices: { list: vi.fn() },
@@ -178,7 +178,7 @@ describe('BILLING · webhooks', () => {
     dbMock.stripeEvent.create.mockResolvedValue({} as never)
     dbMock.ebookPurchase.findUnique.mockResolvedValue({ id: 9, status: 'pending', pricePence: 1000, currency: 'GBP', ebook: { title: 'B', slug: 'b' }, user: { id: 1, name: 'C', email: 'c@test.dev' } } as never)
     dbMock.ebookPurchase.update.mockResolvedValue({} as never)
-    const res = await webhook({ id: 'evt_2', type: 'checkout.session.completed', data: { object: { id: 'cs_1', metadata: { kind: 'book', purchaseId: '9' }, payment_status: 'paid', payment_intent: 'pi_9' } } })
+    const res = await webhook({ id: 'evt_2', type: 'checkout.session.completed', data: { object: { id: 'cs_1', metadata: { kind: 'book', purchaseId: '9' }, payment_status: 'paid', payment_intent: 'pi_9', amount_total: 1000, currency: 'gbp' } } })
     expect(res.statusCode).toBe(200)
     expect(dbMock.ebookPurchase.update.mock.calls[0][0]).toMatchObject({ where: { id: 9 }, data: { status: 'paid', providerRef: 'pi_9', authorSharePence: 700, platformSharePence: 300 } })
     expect(dbMock.userSubscription.upsert).not.toHaveBeenCalled()
@@ -198,6 +198,54 @@ describe('BILLING · webhooks', () => {
     const res = await webhook({ id: 'evt_5', type: 'customer.subscription.deleted', data: { object: { id: 'sub_1', items: { data: [] } } } })
     expect(res.statusCode).toBe(500)
     expect(dbMock.stripeEvent.delete).toHaveBeenCalledWith({ where: { id: 'evt_5' } })
+  })
+})
+
+// SECURITY SCAN (23 Oct 2026) — book payments are recorded at what was paid.
+describe('PAY-AMOUNT / PAY-TWICE / PAY-STALE · book money adds up', () => {
+  const bookEvent = (id: string, o: Record<string, unknown>) =>
+    webhook({ id, type: 'checkout.session.completed', data: { object: { id: 'cs_old', metadata: { kind: 'book', purchaseId: '9' }, payment_status: 'paid', ...o } } })
+  const row = (o: Record<string, unknown> = {}) => ({ id: 9, status: 'pending', pricePence: 2000, currency: 'GBP', providerRef: 'cs_new', ebook: { title: 'B', slug: 'b' }, user: { id: 1, name: 'C', email: 'c@test.dev' }, ...o })
+
+  it('an older, cheaper checkout page that gets paid is recorded at what was paid — the author is credited 70% of that, not of today’s price', async () => {
+    dbMock.stripeEvent.create.mockResolvedValue({} as never)
+    dbMock.ebookPurchase.findUnique.mockResolvedValue(row() as never)
+    dbMock.ebookPurchase.update.mockResolvedValue({} as never)
+    await bookEvent('evt_p1', { payment_intent: 'pi_old', amount_total: 50, currency: 'gbp' })
+    expect(dbMock.ebookPurchase.update.mock.calls[0][0].data).toMatchObject({ status: 'paid', pricePence: 50, authorSharePence: 35, platformSharePence: 15 })
+  })
+
+  it('a payment in another currency, or of nothing, is never recorded as a sale', async () => {
+    dbMock.stripeEvent.create.mockResolvedValue({} as never)
+    dbMock.ebookPurchase.findUnique.mockResolvedValue(row() as never)
+    await bookEvent('evt_p2', { payment_intent: 'pi_x', amount_total: 2000, currency: 'usd' })
+    await bookEvent('evt_p3', { payment_intent: 'pi_y', amount_total: 0, currency: 'gbp' })
+    expect(dbMock.ebookPurchase.update).not.toHaveBeenCalled()
+  })
+
+  it('a second, different payment for a book already owned (two tabs) is refunded', async () => {
+    dbMock.stripeEvent.create.mockResolvedValue({} as never)
+    dbMock.ebookPurchase.findUnique.mockResolvedValue(row({ status: 'paid', providerRef: 'pi_first' }) as never)
+    fake.refunds.create.mockResolvedValue({ id: 're_1' })
+    await bookEvent('evt_p4', { payment_intent: 'pi_second', amount_total: 2000, currency: 'gbp' })
+    expect(fake.refunds.create).toHaveBeenCalledWith(expect.objectContaining({ payment_intent: 'pi_second' }))
+    expect(dbMock.ebookPurchase.update).not.toHaveBeenCalled()
+    // …but the same payment delivered again refunds nothing.
+    fake.refunds.create.mockClear()
+    await bookEvent('evt_p5', { payment_intent: 'pi_first', amount_total: 2000, currency: 'gbp' })
+    expect(fake.refunds.create).not.toHaveBeenCalled()
+  })
+
+  it('starting a new checkout closes the old, unpaid checkout page', () => {
+    const svc = readFileSync('src/modules/ebooks/purchases.service.ts', 'utf8')
+    expect(svc).toMatch(/existing\?\.status === 'pending' && existing\.providerRef\?\.startsWith\('cs_'\)\) \{\s*await expireBookCheckout\(existing\.providerRef\)/)
+  })
+
+  it('PAY-PERIOD: the end of the paid period is read on either API version', async () => {
+    const { periodEnd } = await import('../src/modules/webhooks/stripe.routes.js')
+    const t = 1_800_000_000
+    expect(periodEnd({ items: { data: [{ current_period_end: t }] } } as never)).toEqual(new Date(t * 1000))
+    expect(periodEnd({ items: { data: [{}] }, current_period_end: t } as never)).toEqual(new Date(t * 1000))
   })
 })
 

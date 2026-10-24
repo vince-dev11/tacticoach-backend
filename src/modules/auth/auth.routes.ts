@@ -13,6 +13,7 @@ import {
   registerUser,
   validateCredentials,
   saveRefreshToken,
+  noteSignIn,
   rotateRefreshToken,
   revokeRefreshToken,
   findRefreshToken,
@@ -140,6 +141,7 @@ export async function authRoutes(app: FastifyInstance) {
     const accessToken = signAccess(user.id, user.email)
     const refreshToken = signRefresh(user.id)
     await saveRefreshToken(user.id, refreshToken)
+    await noteSignIn(user.id)
     // Fire-and-forget: the welcome email must never delay or fail a signup.
     void sendWelcomeEmail(user, verifyUrlFor(user.id, user.email))
     // Same shape as GET /users/me — see the note on /login below.
@@ -207,6 +209,7 @@ export async function authRoutes(app: FastifyInstance) {
     const accessToken = signAccess(user.id, user.email)
     const refreshToken = signRefresh(user.id)
     await saveRefreshToken(user.id, refreshToken)
+    await noteSignIn(user.id)
     // The SAME payload as GET /users/me, not a hand-picked subset.
     //
     // This used to send five fields, so everything else — `role` above all —

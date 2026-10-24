@@ -11,7 +11,8 @@
 import { db } from '../../config/database.js'
 import { env } from '../../config/env.js'
 import { sendBookReceiptEmail } from '../../lib/emails.js'
-import { bookCheckoutProvider, refundBookPayment } from './payment-provider.js'
+import { bookCheckoutProvider, expireBookCheckout, refundBookPayment } from './payment-provider.js'
+import { captureError } from '../../lib/observability.js'
 import { removePackCopies } from './session-pack.service.js'
 
 export const AUTHOR_SHARE_PERCENT = 70
@@ -125,6 +126,12 @@ export async function startCheckout(userId: number, slug: string, consent: boole
     refundedAt: null,
     provider: availability === 'test' ? 'test' : bookCheckoutProvider()!.name,
   }
+  // PAY-STALE (security scan, 23 Oct 2026): the row is reused, so an earlier
+  // checkout page — maybe at an older, lower price — must not stay payable.
+  // Close it first; a session that already completed or expired is ignored.
+  if (existing?.status === 'pending' && existing.providerRef?.startsWith('cs_')) {
+    await expireBookCheckout(existing.providerRef)
+  }
   const purchase = existing
     ? await db.ebookPurchase.update({ where: { id: existing.id }, data })
     : await db.ebookPurchase.create({ data: { ...data, ebookId: book.id, userId } })
@@ -154,12 +161,38 @@ export async function startCheckout(userId: number, slug: string, consent: boole
  * split is fixed here, on the row, so a later change to it never restates a
  * sale. Idempotent: a webhook delivered twice changes nothing the second time.
  */
-export async function markPaid(purchaseId: number, providerRef: string): Promise<boolean> {
+export async function markPaid(
+  purchaseId: number,
+  providerRef: string,
+  /**
+   * PAY-AMOUNT (security scan, 23 Oct 2026): what the gateway actually took.
+   * The sale and the 70/30 split are recorded on THIS, not on the row's price —
+   * the row is reused, so a buyer who paid an older, cheaper checkout page
+   * used to be recorded (and the author credited) at today's higher price.
+   * Absent only for owner test purchases.
+   */
+  paid?: { amountPence: number; currency: string },
+): Promise<boolean> {
   const purchase = await db.ebookPurchase.findUnique({
     where: { id: purchaseId },
     include: { ebook: { select: { title: true, slug: true } }, user: { select: { id: true, name: true, email: true } } },
   })
-  if (!purchase || purchase.status === 'paid') return false
+  if (!purchase) return false
+  if (purchase.status === 'paid') {
+    // PAY-TWICE: the same delivery again changes nothing; a SECOND, different
+    // payment for a book they already own (two checkout tabs) goes back.
+    if (paid && purchase.providerRef && purchase.providerRef !== providerRef && providerRef.startsWith('pi_')) {
+      await refundBookPayment(providerRef).catch((err) => captureError(err, { source: 'ebooks:markPaid', tags: { step: 'refund-duplicate' } }))
+      captureError(new Error(`Duplicate book payment refunded (purchase ${purchaseId})`), { source: 'ebooks:markPaid', tags: { step: 'duplicate' } })
+    }
+    return false
+  }
+  if (paid && (paid.amountPence <= 0 || paid.currency.toUpperCase() !== purchase.currency.toUpperCase())) {
+    // Never grant (or credit an author) on a payment we cannot account for.
+    captureError(new Error(`Book payment not recorded: ${paid.amountPence} ${paid.currency} for purchase ${purchaseId}`), { source: 'ebooks:markPaid', tags: { step: 'amount' } })
+    return false
+  }
+  const pricePence = paid ? paid.amountPence : purchase.pricePence
   const paidAt = new Date()
   await db.ebookPurchase.update({
     where: { id: purchaseId },
@@ -167,12 +200,13 @@ export async function markPaid(purchaseId: number, providerRef: string): Promise
       status: 'paid',
       paidAt,
       providerRef,
+      pricePence,
       authorSharePercent: AUTHOR_SHARE_PERCENT,
-      ...splitPence(purchase.pricePence),
+      ...splitPence(pricePence),
     },
   })
   void sendBookReceiptEmail({
-    user: purchase.user, book: purchase.ebook, pricePence: purchase.pricePence,
+    user: purchase.user, book: purchase.ebook, pricePence,
     currency: purchase.currency, orderId: purchase.id, paidAt, granted: false,
   })
   return true

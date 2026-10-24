@@ -217,15 +217,24 @@ export async function funnelsView(range: Range) {
 
 export async function healthView(range: Range) {
   return cached(`health:${range}`, async () => {
-    const period = range === '7d' ? '7d' : range === '30d' ? '30d' : '30d'
-    const sentry = await sourced(sentryConfigured(), async (): Promise<{ issues: SentryIssue[]; errorsPerDay: { date: string; count: number }[] }> => {
+    // SENTRY-400: the two cards read two different Sentry endpoints, and one
+    // failing used to blank both. Each part now fails on its own and says why
+    // (`issuesError` / `errorsPerDayError`); only both failing is an error.
+    const sentry = await sourced(sentryConfigured(), async (): Promise<{
+      issues: SentryIssue[]; errorsPerDay: { date: string; count: number }[]; issuesError?: string; errorsPerDayError?: string
+    }> => {
       const projects = [env.SENTRY_PROJECT_API, env.SENTRY_PROJECT_WEB].filter((p): p is string => Boolean(p))
-      const [lists, errorsPerDay] = await Promise.all([
-        Promise.all(projects.map((p) => sentryIssues(p, period))),
-        sentryErrorsPerDay(Math.min(rangeDays(range), 30)),
+      const days = rangeDays(range)
+      const [lists, perDay] = await Promise.all([
+        Promise.allSettled(projects.map((p) => sentryIssues(p, days))),
+        sentryErrorsPerDay(Math.min(days, 30)).then((v) => ({ ok: true as const, v }), (e: Error) => ({ ok: false as const, e })),
       ])
-      const issues = lists.flat().sort((a, b) => b.count - a.count).slice(0, 15)
-      return { issues, errorsPerDay }
+      const failed = lists.filter((r): r is PromiseRejectedResult => r.status === 'rejected')
+      const issues = lists.flatMap((r) => (r.status === 'fulfilled' ? r.value : [])).sort((a, b) => b.count - a.count).slice(0, 15)
+      const issuesError = failed.length ? String((failed[0].reason as Error)?.message ?? failed[0].reason).slice(0, 200) : undefined
+      const errorsPerDayError = perDay.ok ? undefined : String(perDay.e?.message ?? perDay.e).slice(0, 200)
+      if (issuesError && failed.length === lists.length && errorsPerDayError) throw new Error(issuesError)
+      return { issues, errorsPerDay: perDay.ok ? perDay.v : [], ...(issuesError && { issuesError }), ...(errorsPerDayError && { errorsPerDayError }) }
     })
     // Our own signal, always available: emails that failed to send.
     const since = new Date(Date.now() - rangeDays(range) * 86400_000)

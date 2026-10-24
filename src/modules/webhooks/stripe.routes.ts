@@ -41,8 +41,14 @@ async function forgetEvent(id: string): Promise<void> {
   await db.stripeEvent.delete({ where: { id } }).catch(() => {})
 }
 
-function periodEnd(sub: Stripe.Subscription): Date | null {
-  const end = sub.items.data[0]?.current_period_end
+/**
+ * PAY-PERIOD (security scan, 23 Oct 2026): Stripe API "basil" moved the period
+ * end onto the subscription item; a webhook endpoint left on an older API
+ * version still sends it on the subscription. Read both — an active plan with
+ * no end date counts as never expiring (entitlements.subIsActive).
+ */
+export function periodEnd(sub: Stripe.Subscription): Date | null {
+  const end = sub.items?.data?.[0]?.current_period_end ?? (sub as unknown as { current_period_end?: number }).current_period_end
   return end ? new Date(end * 1000) : null
 }
 
@@ -104,7 +110,10 @@ export async function stripeWebhookRoutes(app: FastifyInstance) {
         if (session.metadata?.kind === 'book') {
           const purchaseId = Number(session.metadata.purchaseId)
           const intent = typeof session.payment_intent === 'string' ? session.payment_intent : session.payment_intent?.id
-          if (purchaseId && session.payment_status === 'paid') await markPaid(purchaseId, intent ?? session.id)
+          // PAY-AMOUNT: recorded at what was actually paid, in the currency paid.
+          if (purchaseId && session.payment_status === 'paid') {
+            await markPaid(purchaseId, intent ?? session.id, { amountPence: session.amount_total ?? 0, currency: session.currency ?? '' })
+          }
           break
         }
         const userId = Number(session.metadata?.userId)

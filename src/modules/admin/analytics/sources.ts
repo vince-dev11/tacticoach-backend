@@ -215,8 +215,15 @@ export interface SentryIssue {
   project: string
 }
 
-export async function sentryIssues(projectSlug: string, statsPeriod: '24h' | '7d' | '30d'): Promise<SentryIssue[]> {
-  const q = new URLSearchParams({ query: 'is:unresolved', statsPeriod, sort: 'freq', limit: '10' })
+/**
+ * SENTRY-400 (23 Oct 2026): `statsPeriod` on this endpoint only picks the
+ * little timeline in each row and accepts "24h", "14d" or "" — "7d"/"30d"
+ * were refused with a 400, which blanked both Sentry cards in Admin → Health.
+ * The time window is a search filter instead (`lastSeen:-30d`), and the
+ * timeline is switched off (we never drew it).
+ */
+export async function sentryIssues(projectSlug: string, days: number): Promise<SentryIssue[]> {
+  const q = new URLSearchParams({ query: `is:unresolved lastSeen:-${Math.max(1, Math.round(days))}d`, statsPeriod: '', sort: 'freq', limit: '10' })
   const rows = await sentryGet<{
     id: string; title: string; culprit: string; count: string; userCount: number; lastSeen: string; level: string; permalink: string
   }[]>(`/projects/${env.SENTRY_ORG}/${projectSlug}/issues/?${q}`)
