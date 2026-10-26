@@ -90,6 +90,7 @@ Look for `code: … → e89b0d9`, `GA4: measurement ID baked in`, `Done.`
 8. **Admin → Overview → Payments & email:** Stripe off/test/live and the sender.
 9. Send one email (Forgot password on your own account) — nodemailer changed.
 10. **Sentry:** no new errors in the 15 minutes after.
+11. **Public site v3 (26 Oct, only when `VITE_PUBLIC_SITE=true` on the server):** `/` is the light page with the dark bar and the real logo; `/de` is German on first paint (view source: `lang="de"`, "Einheit planen"); Product / For players / Pricing / FAQ scroll to their sections from `/contact` too; the three screenshots load (`/assets/board-2d-*.jpg` ~90 KB); plan buttons go to `/early-access?plan=…`; on a phone the bar folds to ☰ and the pricing cards stack.
 
 ## Rollback
 
