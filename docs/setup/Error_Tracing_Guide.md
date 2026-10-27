@@ -229,7 +229,6 @@ These have no request and no user watching, so before this change they failed si
   - `source:job:trial-reminders`: the hourly trial-reminder sweep broke.
   - `source:email` with `email_kind:<kind>`: an email couldn't be sent. The recipient's address is only in the server log and the email log table, not in Sentry.
   - `source:webhook:stripe`: a payment/refund step failed.
-  - `source:ai:credits`: generation worked but credit accounting didn't.
 
 ### Useful Sentry searches
 
@@ -319,7 +318,6 @@ try { await exportVideo() } catch (err) {
 - Handled failures now reported in:
   - `jobs/trial-reminders.ts`
   - `lib/emails.ts`
-  - `modules/ai/ai.routes.ts`
   - `modules/contact/contact.routes.ts`
   - `modules/coach-page/coach-page.routes.ts`
   - `modules/collaborations/collaborations.routes.ts`

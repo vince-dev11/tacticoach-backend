@@ -14,6 +14,10 @@ picks up everything below as well.
 - **Sentry noise filter (TACTICOACH-WEB-J):** Instagram's in-app browser injects a script that
   throws `window._META.IABInnerFrame` (seen once on /early-access, iPhone). Not our code; the web
   Sentry setup now ignores it (`src/lib/monitoring.ts`, test `tests/unit/sentryInAppBrowser.test.ts`).
+- **Session builder practice details tidied (SESSION-UI, 27 Oct):** the fields sit in four groups
+  (Set-up · For the players · What to look for · Make it easier or harder), two columns when
+  there's room, and every box grows with its text, so nothing is cut off. Layout only, no data change.
+  Test `tests/unit/sessionDetailLayout.test.tsx`.
 - **Public site v3:** clean light page, Inter only, real screenshots of the board, dark top
   bar with the logo, dark footer, 7 languages. `tacticoach-frontend/docs/briefs/2026-10-26-site-v3.md`.
   **Only visible if the server's `.env` has `VITE_PUBLIC_SITE=true`.** Without it the site stays

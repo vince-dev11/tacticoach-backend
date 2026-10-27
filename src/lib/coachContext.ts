@@ -1,8 +1,9 @@
-// ai.context — who the session is actually for.
+// coachContext — who the session is actually for: age group, format, level.
 //
-// Until now the generator received exactly two things: the coach's sentence and
-// the board dimensions. It had no idea whether the session was for eight-year-
-// olds or a senior side, which meant it could not tell the difference between a
+// Moved here from the old AI module when that module was removed (27 Oct
+// 2026). The coach profile (users.schema) validates against these tables, and
+// the new assistant (docs/ai/AI_Editor_Design_and_Plan_2026-10-19.md) will read
+// the same context. Without it a generator cannot tell the difference between a
 // good answer and an impossible one. "4-3-3 high press" for an under-9 team is
 // not a stylistic mismatch — under-9s play 7v7, so eleven players is impossible
 // before tactics enter the conversation, and a sustained coordinated press is

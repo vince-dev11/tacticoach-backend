@@ -1,6 +1,6 @@
 // Gemini client — minimal fetch wrapper around the Generative Language API.
-// Optional like Stripe/SMTP: the API boots without a key and the AI routes
-// return 503 until GEMINI_API_KEY is set.
+// Optional like Stripe/SMTP: the API boots without a key and the Ask
+// assistant returns 503 until GEMINI_API_KEY is set.
 
 import { env } from './env.js'
 

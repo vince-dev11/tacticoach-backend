@@ -3,7 +3,7 @@ import { latinOnly } from '../../lib/latin-only.js'
 import { COUNTRY_CODES } from '../../lib/countries.js'
 import {
   AGE_PROFILES, FORMAT_PROFILES, LEVEL_LABELS, FORMATIONS_BY_FORMAT,
-} from '../ai/ai.context.js'
+} from '../../lib/coachContext.js'
 
 const ALL_FORMATIONS = [...new Set(Object.values(FORMATIONS_BY_FORMAT).flat())]
 

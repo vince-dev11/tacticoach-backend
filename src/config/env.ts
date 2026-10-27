@@ -112,8 +112,8 @@ const schema = z.object({
   // production, where the gate is always on.
   EMAIL_VERIFY_GATE: envBool(true),
 
-  // Gemini — optional so the API still boots without AI configured; the AI
-  // tactics routes return 503 until GEMINI_API_KEY is set.
+  // Gemini — optional so the API still boots without AI configured; the Ask
+  // help assistant answers 503 until a key is set.
   GEMINI_API_KEY: z.string().optional(),
   GEMINI_MODEL: z.string().default('gemini-2.5-flash'),
 

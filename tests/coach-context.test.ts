@@ -1,7 +1,9 @@
 // Coach context — who the session is for, and what that makes impossible.
 //
-// The gap this closes: the generator used to receive the coach's sentence and
-// the board size, and nothing else. It could not distinguish an under-9 session
+// Kept when the old AI module was removed (27 Oct 2026): the coach profile
+// validates against these tables and the new assistant will read them.
+// The gap this closes: a generator that receives only the coach's sentence and
+// the board size. It could not distinguish an under-9 session
 // from a senior one, so "4-3-3 high press" produced eleven players and a
 // pressing scheme for a team that plays 7v7 and has never been taught to press.
 // These tests pin the rules that make that impossible rather than merely
@@ -22,22 +24,9 @@ import {
   resolveContext,
   type AgeGroup,
   type CoachContext,
-} from '../src/modules/ai/ai.context.js'
-import { validateAgeAppropriate, validateSquadSize } from '../src/modules/ai/ai.validate.js'
-import type { CleanItem } from '../src/modules/ai/ai.schema.js'
+} from '../src/lib/coachContext.js'
 
 const AGES = Object.keys(AGE_PROFILES) as AgeGroup[]
-
-function squad(team: 'blue' | 'red', n: number): CleanItem[] {
-  return Array.from({ length: n }, (_, i) => ({
-    ref: `${team}${i}`,
-    key: `player_${team}`,
-    type: 'player',
-    x: 100 + i * 40,
-    y: 300,
-    props: { label: String(i + 1) },
-  })) as CleanItem[]
-}
 
 describe('the age rules are real football', () => {
   it('FR-I9 · suggests England\'s 2026/27 (FutureFit) format for each age — a suggestion only', () => {
@@ -166,62 +155,19 @@ describe('the type guards', () => {
   })
 })
 
-describe('a squad that cannot exist is an error, not a low score', () => {
-  const u9: CoachContext = { age: 'u9', format: '7v7', level: 'grassroots' }
-
-  it('rejects eleven players in a 7v7 session', () => {
-    const issues = validateSquadSize(squad('blue', 11), u9)
-    expect(issues).toHaveLength(1)
-    expect(issues[0]).toContain('7-a-side')
-    expect(issues[0]).toContain('at most 7')
-  })
-
-  it('accepts a full 7v7 squad', () => {
-    expect(validateSquadSize([...squad('blue', 7), ...squad('red', 7)], u9)).toHaveLength(0)
-  })
-
-  it('never objects to small-sided work — a 4v2 rondo is fine at any age', () => {
-    expect(validateSquadSize([...squad('blue', 4), ...squad('red', 2)], u9)).toHaveLength(0)
-  })
-
-  it('checks both teams independently', () => {
-    expect(validateSquadSize([...squad('blue', 11), ...squad('red', 11)], u9)).toHaveLength(2)
-  })
-
-  it('lets a senior side field eleven', () => {
-    expect(validateSquadSize(squad('blue', 11), DEFAULT_CONTEXT)).toHaveLength(0)
-  })
-
+describe('the format sets the squad size', () => {
   it('the cap always matches the format', () => {
     expect(maxPlayersPerTeam({ ...DEFAULT_CONTEXT, format: '5v5' })).toBe(5)
     expect(maxPlayersPerTeam({ ...DEFAULT_CONTEXT, format: '7v7' })).toBe(7)
+    expect(maxPlayersPerTeam({ ...DEFAULT_CONTEXT, format: '8v8' })).toBe(8)
     expect(maxPlayersPerTeam({ ...DEFAULT_CONTEXT, format: '9v9' })).toBe(9)
     expect(maxPlayersPerTeam({ ...DEFAULT_CONTEXT, format: '11v11' })).toBe(11)
   })
-})
 
-describe('age-appropriate concepts', () => {
-  const u9: CoachContext = { age: 'u9', format: '7v7', level: 'grassroots' }
-
-  it('objects to a sustained press at under-9, and explains why', () => {
-    const issues = validateAgeAppropriate('high_press', u9)
-    expect(issues).toHaveLength(1)
-    expect(issues[0]).toContain('Under 9')
-    // The reason matters as much as the refusal — it goes to the coach.
-    expect(issues[0].length).toBeGreaterThan(40)
-  })
-
-  it('is happy with the same concept for a senior side', () => {
-    expect(validateAgeAppropriate('high_press', DEFAULT_CONTEXT)).toHaveLength(0)
-  })
-
-  it('allows what the age can actually do', () => {
-    expect(validateAgeAppropriate('rondo', u9)).toHaveLength(0)
-    expect(validateAgeAppropriate('one_two', u9)).toHaveLength(0)
-  })
-
-  it('says nothing when no concept was identified', () => {
-    expect(validateAgeAppropriate(undefined, u9)).toHaveLength(0)
+  it('a concept the age is not ready for comes with a reason', () => {
+    const u9: CoachContext = { age: 'u9', format: '7v7', level: 'grassroots' }
+    expect(conceptObjection(u9, 'high_press')?.length ?? 0).toBeGreaterThan(40)
+    expect(conceptObjection(DEFAULT_CONTEXT, 'high_press')).toBeNull()
     expect(conceptObjection(u9, undefined)).toBeNull()
   })
 })

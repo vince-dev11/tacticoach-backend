@@ -1,6 +1,6 @@
 # TactiCoach — working rules (API)
 
-Fastify + Prisma (MySQL) API behind `api.tacticoach.co.uk`, serving the app at `tacticoach.co.uk`. Serves the coaching product: auth/accounts, canvas boards, drill sheets, sessions & season planner, player feedback, ebooks marketplace, clubs, referrals/collaboration, admin, and the football AI (`src/modules/ai`). The frontend repo's `CLAUDE.md` and `.claude/skills/` hold the product and football knowledge; the same skills are mirrored here.
+Fastify + Prisma (MySQL) API behind `api.tacticoach.co.uk`, serving the app at `tacticoach.co.uk`. Serves the coaching product: auth/accounts, canvas boards, drill sheets, sessions & season planner, player feedback, ebooks marketplace, clubs, referrals/collaboration, admin, and the coach context for the future AI (`src/lib/coachContext.ts`; the old AI module was removed 27 Oct 2026 — the new design is `docs/ai/`). The frontend repo's `CLAUDE.md` and `.claude/skills/` hold the product and football knowledge; the same skills are mirrored here.
 
 ## Rules
 
@@ -21,7 +21,7 @@ After every change: `npm run typecheck`, `npx vitest run` on the area's tests fr
 
 ## Map
 
-`src/modules/<area>/{routes,service,schema}.ts`; `src/middleware/` (auth guard, error handler); `src/lib/` (emails, player lockdown, observability); `src/config/` (env, mailer, s3, database). AI: `ai.dsl.ts` (deterministic compiler: pattern + params → board objects/frames), `ai.concepts.ts` (concept cards, areas, principles), `ai.validate.ts` (squad size, age-appropriateness, layout, animation, brief), `ai.patterns.ts`, `evals/eval-ai.ts`.
+`src/modules/<area>/{routes,service,schema}.ts`; `src/middleware/` (auth guard, error handler); `src/lib/` (emails, player lockdown, observability); `src/config/` (env, mailer, s3, database). Coach context (age group, format, level): `src/lib/coachContext.ts`. The Ask help assistant: `src/modules/assistant` (uses `src/config/gemini.ts`).
 
 ## Docs
 

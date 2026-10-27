@@ -24,7 +24,6 @@ import { sessionsRoutes } from './modules/sessions/sessions.routes.js'
 import { stripeWebhookRoutes } from './modules/webhooks/stripe.routes.js'
 import { emailWebhookRoutes } from './modules/webhooks/email.routes.js'
 import { contactRoutes } from './modules/contact/contact.routes.js'
-import { aiRoutes } from './modules/ai/ai.routes.js'
 import { blogRoutes } from './modules/blog/blog.routes.js'
 import { articlesRoutes } from './modules/articles/articles.routes.js'
 import { adminRoutes } from './modules/admin/admin.routes.js'
@@ -179,9 +178,6 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(emailWebhookRoutes, { prefix: '/api/webhooks' })
   await app.register(contactRoutes, { prefix: '/api/contact' })
   await app.register(collaborationsRoutes, { prefix: '/api/collaborations' })
-  // AI tactics generation lives under the canvas namespace to match the
-  // editor's existing client (/api/canvas/ai-layout, /api/canvas/ai-animation).
-  await app.register(aiRoutes, { prefix: '/api/canvas' })
   await app.register(blogRoutes, { prefix: '/api/blog' })
   // COACH-ARTICLES: a coach's own articles (auth; players denied by the lockdown).
   await app.register(articlesRoutes, { prefix: '/api/articles' })

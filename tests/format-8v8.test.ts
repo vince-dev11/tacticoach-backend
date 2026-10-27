@@ -3,7 +3,7 @@
 // save "8-a-side" as their format: the profile, the AI context and the book
 // filter only knew 5/7/9/11.
 import { describe, it, expect } from 'vitest'
-import { FORMAT_PROFILES, FORMATIONS_BY_FORMAT, isPlayFormat, isFormationForFormat } from '../src/modules/ai/ai.context.js'
+import { FORMAT_PROFILES, FORMATIONS_BY_FORMAT, isPlayFormat, isFormationForFormat } from '../src/lib/coachContext.js'
 import { UpdateProfileSchema } from '../src/modules/users/users.schema.js'
 import { FORMATS as BOOK_FORMATS } from '../src/modules/ebooks/ebooks.service.js'
 
