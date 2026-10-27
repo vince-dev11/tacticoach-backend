@@ -50,6 +50,8 @@ const NoteSchema = z.object({
   strengths: TagList,
   workOns: TagList,
   boardId: z.number().int().positive().optional().nullable(),
+  /** KIDS-F6 (26 Oct 2026): a small home challenge with the move ("10 minutes, three times: …"). */
+  challenge: z.string().max(200).optional().nullable(),
 })
 
 export async function feedbackRoutes(app: FastifyInstance) {
@@ -104,7 +106,7 @@ export async function feedbackRoutes(app: FastifyInstance) {
               // boardId so a parent gets the animation too. Withholding it
               // from the one adult most likely to be impressed by it was an
               // oversight, not a policy.
-              id: true, body: true, strengths: true, workOns: true, boardId: true, createdAt: true,
+              id: true, body: true, strengths: true, workOns: true, boardId: true, challenge: true, createdAt: true,
               // Named individually: a parent is entitled to know which adult
               // wrote to their child, and it is not always the squad's coach.
               coach: { select: { name: true, surname: true } },
@@ -283,6 +285,7 @@ export async function feedbackRoutes(app: FastifyInstance) {
             : null,
           digest: note.digest,
           boardId: note.boardId ?? null,
+          challenge: note.challenge ?? null,
           // The SQUAD ROW, not the note. A guardian link is a standing view of
           // one child's record, so it has to outlive the note that introduced
           // it — signing note.id here is the bug the route above describes.

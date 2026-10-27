@@ -849,6 +849,8 @@ export interface PlayerNoteEmail {
   digest: { total: number; strengths: [string, number][]; workOns: [string, number][] }
   /** An animated board the coach attached to this note, if any. */
   boardId: number | null
+  /** KIDS-F6: a small home challenge sent with the note, if any. */
+  challenge?: string | null
   guardianToken: string | null
 }
 
@@ -960,6 +962,7 @@ export async function sendPlayerNoteEmail(params: PlayerNoteEmail): Promise<void
       `Mentioned most this season: ${params.digest.strengths.slice(0, 3).map(([t, n]) => `${tagLabel(t)} x${n}`).join(', ')}`,
     )
   }
+  if (params.challenge) textLines.push('', `Your challenge at home: ${params.challenge}`)
   if (boardUrl) textLines.push('', `Watch the move your coach attached:\n${boardUrl}`)
   textLines.push('', `See your whole season:\n${seasonUrl}`)
   if (guardianUrl) {
@@ -1002,6 +1005,11 @@ export async function sendPlayerNoteEmail(params: PlayerNoteEmail): Promise<void
          ${
            params.workOns.length > 0
              ? `${sectionLabel('To work on next')}${chipRow(params.workOns, 'work')}`
+             : ''
+         }
+         ${
+           params.challenge
+             ? `${sectionLabel('Your challenge at home')}<p style="margin:0;padding:12px 16px;border:2px dashed #00a76f;border-radius:12px;font-size:15.5px;font-weight:700;color:#14532d">${esc(params.challenge)}</p>`
              : ''
          }
 

@@ -22,7 +22,9 @@
 // 11v11 from U14. [Guidance — The FA]
 
 export type AgeGroup = 'u7' | 'u9' | 'u11' | 'u13' | 'u15' | 'u17' | 'senior'
-export type PlayFormat = '5v5' | '7v7' | '9v9' | '11v11'
+// 8v8 (26 Oct 2026): football à 8, fútbol 8, the KNVB's U11–U12, Turkey's U11 —
+// the board has had its pitch and formations since 5 Oct; the profile now too.
+export type PlayFormat = '5v5' | '7v7' | '8v8' | '9v9' | '11v11'
 export type CoachLevel = 'grassroots' | 'academy' | 'semi_pro' | 'professional'
 
 export interface CoachContext {
@@ -57,6 +59,7 @@ export interface CoachContext {
 export const FORMATIONS_BY_FORMAT: Record<PlayFormat, string[]> = {
   '5v5': ['1-2-1', '2-1-1', '1-1-2'],
   '7v7': ['2-3-1', '3-2-1', '2-1-2-1', '3-3'],
+  '8v8': ['3-3-1', '3-2-2', '2-3-2'],
   '9v9': ['3-2-3', '3-3-2', '2-3-2-1', '3-4-1'],
   '11v11': ['4-3-3', '4-4-2', '4-2-3-1', '3-5-2', '4-1-4-1', '3-4-3'],
 }
@@ -177,6 +180,7 @@ export const FORMAT_PROFILES: Record<PlayFormat, FormatProfile> = {
   // clearer with one, so we allow rather than require it.
   '5v5': { label: '5-a-side', perTeam: 5, pitchKey: 'pitch_4', keepers: true },
   '7v7': { label: '7-a-side', perTeam: 7, pitchKey: 'pitch_4', keepers: true },
+  '8v8': { label: '8-a-side', perTeam: 8, pitchKey: 'pitch_8v8', keepers: true },
   '9v9': { label: '9-a-side', perTeam: 9, pitchKey: 'classic', keepers: true },
   '11v11': { label: '11-a-side', perTeam: 11, pitchKey: 'classic', keepers: true },
 }

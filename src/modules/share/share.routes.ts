@@ -75,7 +75,78 @@ export function withoutPlayerNames(state: unknown): unknown {
   return walk(state)
 }
 
+/** KIDS: a saved board's main message for players (tcMeta.playerMessage), or ''. */
+export function boardPlayerMessage(state: unknown): string {
+  const meta = (state as { canvas?: { tcMeta?: { playerMessage?: unknown } } } | null)?.canvas?.tcMeta
+  return typeof meta?.playerMessage === 'string' ? meta.playerMessage.trim().slice(0, 160) : ''
+}
+
+const PREVIEW_TOKEN = /^[A-Za-z0-9_-]{16,32}$/
+type PreviewBlock = { kind?: unknown; refId?: unknown; title?: unknown; minutes?: unknown; keyPoint?: unknown; board?: unknown }
+
+/**
+ * KIDS (26 Oct 2026): what a session's parents' preview shows — and nothing
+ * more. Per practice: its name, minutes, the one line to remember and the
+ * moving board (names removed). Coaching points, organisation, the squad,
+ * notes and match details stay with the coach. Notes ("text" blocks) are
+ * left out: they are the coach's own reminders.
+ */
+export async function previewPractices(userId: number, blocks: unknown) {
+  const list = (Array.isArray(blocks) ? (blocks as PreviewBlock[]) : []).filter((b) => b && b.kind !== 'text').slice(0, 12)
+  const boardIds = list.filter((b) => b.kind === 'board' && !b.board && typeof b.refId === 'number').map((b) => b.refId as number)
+  const sheetIds = list.filter((b) => b.kind === 'sheet' && !b.board && typeof b.refId === 'number').map((b) => b.refId as number)
+  // Only the coach's own library items — a block can never pull someone else's board.
+  const [boards, sheets] = await Promise.all([
+    boardIds.length ? db.canvasBoard.findMany({ where: { id: { in: boardIds }, userId }, select: { id: true, state: true } }) : [],
+    sheetIds.length ? db.drillSheet.findMany({ where: { id: { in: sheetIds }, userId }, select: { id: true, data: true } }) : [],
+  ])
+  return list.map((b) => {
+    let board: unknown = b.board ?? null
+    let sheetMessage = ''
+    if (!board && b.kind === 'board') board = boards.find((x) => x.id === b.refId)?.state ?? null
+    if (!board && b.kind === 'sheet') {
+      const sheet = sheets.find((x) => x.id === b.refId)
+      board = sheet ? sheetBoards(sheet.data)[0]?.board ?? null : null
+      const meta = (sheet?.data as { meta?: { keyPoint?: unknown } } | undefined)?.meta
+      sheetMessage = typeof meta?.keyPoint === 'string' ? meta.keyPoint.trim().slice(0, 160) : ''
+    }
+    const own = typeof b.keyPoint === 'string' ? b.keyPoint.trim().slice(0, 160) : ''
+    return {
+      title: typeof b.title === 'string' ? b.title.slice(0, 255) : '',
+      minutes: typeof b.minutes === 'number' ? b.minutes : null,
+      message: own || sheetMessage || boardPlayerMessage(board),
+      board: board ? withoutPlayerNames(board) : null,
+    }
+  })
+}
+
 export async function shareRoutes(app: FastifyInstance) {
+  // GET /share/session/:token — KIDS: the parents' preview of a session. Public
+  // by its unguessable link; switched off (token cleared) = 404 for everyone.
+  app.get('/session/:token', async (request, reply) => {
+    const token = (request.params as { token: string }).token
+    const notFound = () => reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'This session preview is not available' })
+    if (!PREVIEW_TOKEN.test(token)) return notFound()
+    const session = await db.trainingSession.findFirst({
+      where: { previewToken: token },
+      select: {
+        userId: true, title: true, description: true, sessionDate: true, previewQuestion: true, blocks: true,
+        user: { select: { name: true, surname: true, clubName: true } },
+      },
+    })
+    if (!session) return notFound()
+    return reply.send({
+      title: session.title,
+      aim: session.description ?? null,
+      sessionDate: session.sessionDate,
+      question: session.previewQuestion ?? null,
+      coach: `${session.user.name} ${session.user.surname}`.trim(),
+      clubName: session.user.clubName,
+      practices: await previewPractices(session.userId, session.blocks),
+      club: await clubStripFor(session.userId),
+    })
+  })
+
   // GET /share/board/:id — a published board's video/thumbnail + attribution
   app.get('/board/:id', async (request, reply) => {
     const id = Number((request.params as { id: string }).id)

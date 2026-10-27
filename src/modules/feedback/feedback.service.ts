@@ -226,6 +226,7 @@ export async function rosterForSession(viewerId: number, sessionId: number) {
           strengths: true,
           workOns: true,
           boardId: true,
+          challenge: true,
           sentAt: true,
           readAt: true,
           acknowledgedAt: true,
@@ -266,6 +267,8 @@ export interface WriteNoteInput {
   strengths: unknown
   workOns: unknown
   boardId?: number | null
+  /** KIDS-F6: a small home challenge sent with the note. */
+  challenge?: string | null
 }
 
 /**
@@ -287,6 +290,7 @@ export async function writeNote(viewerId: number, sessionId: number | null, inpu
 
   const { strengths, workOns } = splitTagLists(input.strengths, input.workOns)
   const body = input.body.trim()
+  const challenge = input.challenge?.trim() || null
 
   // Looked up WITHOUT an author filter. One note per player per session, no
   // matter who wrote it: if a club admin and the coach both write, the player
@@ -308,7 +312,7 @@ export async function writeNote(viewerId: number, sessionId: number | null, inpu
     return {
       note: await db.playerNote.update({
         where: { id: existing.id },
-        data: { body, strengths, workOns, boardId: input.boardId ?? null },
+        data: { body, strengths, workOns, boardId: input.boardId ?? null, challenge },
       }),
     }
   }
@@ -325,6 +329,7 @@ export async function writeNote(viewerId: number, sessionId: number | null, inpu
         body,
         strengths,
         workOns,
+        challenge,
       },
     }),
   }
@@ -401,6 +406,7 @@ export async function sendSessionNotes(coachId: number, sessionId: number) {
       strengths: true,
       workOns: true,
       boardId: true,
+      challenge: true,
       squadPlayerId: true,
       squadPlayer: {
         select: {
@@ -456,6 +462,7 @@ export async function notesForPlayer(playerUserId: number) {
           strengths: true,
           workOns: true,
           boardId: true,
+          challenge: true,
           readAt: true,
           acknowledgedAt: true,
           createdAt: true,

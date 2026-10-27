@@ -16,6 +16,7 @@ import { getEntitlements } from '../../lib/entitlements.js'
 import { sendClubInviteEmail } from '../../lib/emails.js'
 import { uploadToS3, deleteFromS3, presignUrl } from '../../config/s3.js'
 import { readUpload } from '../../lib/multipart.js'
+import { COUNTRY_CODES } from '../../lib/countries.js'
 
 const INVITE_TTL_MS = 14 * 24 * 60 * 60 * 1000 // 14 days
 
@@ -52,6 +53,8 @@ export async function clubsRoutes(app: FastifyInstance) {
         role: 'owner',
         id: club.id,
         name: club.name,
+        // COACH-COUNTRY: the default country for the club's coaches.
+        country: club.country ?? null,
         seats,
         // Owner occupies one seat.
         seatsUsed: club.members.length + 1,
@@ -90,8 +93,23 @@ export async function clubsRoutes(app: FastifyInstance) {
       id: membership.club.id,
       name: membership.club.name,
       owner: membership.club.owner,
+      country: membership.club.country ?? null,
       members: membership.club.members,
     })
+  })
+
+  // PATCH /clubs/country { country } — COACH-COUNTRY (26 Oct 2026). OWNER only:
+  // the club's default country; each coach may still set their own, which
+  // wins. Suggestions only (format hint, age names). null clears it.
+  app.patch('/country', async (request, reply) => {
+    const userId = (request.user as any).sub as number
+    const club = await db.club.findUnique({ where: { ownerId: userId }, select: { id: true } })
+    if (!club) return reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'You do not own a club' })
+    const { country } = z
+      .object({ country: z.union([z.enum(COUNTRY_CODES as [string, ...string[]]), z.null()]) })
+      .parse(request.body)
+    const updated = await db.club.update({ where: { id: club.id }, data: { country }, select: { country: true } })
+    return reply.send({ country: updated.country })
   })
 
   // POST /clubs/invites { email } — owner only, seat-capped

@@ -41,6 +41,9 @@ model User {
   // so adding an age group is a code change, not a migration.
   coachAgeGroup    String?   @map("coach_age_group") @db.VarChar(16)
   coachFormat      String?   @map("coach_format") @db.VarChar(16)
+  /// COACH-COUNTRY (migration 59): where they coach — suggestions only (format hint, age names).
+  /// Null = use their club's country, if any. ISO 3166-1 alpha-2 or GB-ENG/GB-SCT/GB-WLS/GB-NIR.
+  coachCountry     String?   @map("coach_country") @db.VarChar(8)
   coachLevel       String?   @map("coach_level") @db.VarChar(24)
   /// The team's usual shape ("2-3-1" at 7v7) and typical squad size. Both feed
   /// the AI context; both validated against the format at resolution time.
@@ -715,6 +718,8 @@ model Club {
   websiteUrl     String?    @map("website_url") @db.VarChar(300)
   /// Age groups the club runs, free text ("U7–U16, adults").
   ageGroups      String?    @map("age_groups") @db.VarChar(120)
+  /// COACH-COUNTRY (migration 59): the default for the club's coaches; a coach's own wins.
+  country        String?    @db.VarChar(8)
   // Public page lifecycle: content gate + owner submission + CRM approval.
   pageStatus      PageStatus @default(none) @map("page_status")
   pageSubmittedAt DateTime?  @map("page_submitted_at")
@@ -860,6 +865,10 @@ model TrainingSession {
   squadId     Int?      @map("squad_id")
   /// Planned length in minutes (the target the running total is checked against).
   targetMinutes Int?    @map("target_minutes")
+  /// KIDS (migration 60): the parents' preview link — a random token, NULL = switched off.
+  previewToken    String? @unique @map("preview_token") @db.VarChar(32)
+  /// KIDS: the one question parents ask their child on the way to training.
+  previewQuestion String? @map("preview_question") @db.VarChar(200)
   /// Ordered blocks: [{ kind, refId?, title, minutes, note?, part? }]
   /// `part` groups blocks under warm-up / main / game / cool-down. Absent on
   /// blocks saved before the redesign; those fall into the main part.
@@ -1195,6 +1204,8 @@ model PlayerNote {
   /// missing and took the whole player screen down with it.
   strengths Json   @default("[]")
   workOns   Json   @default("[]") @map("work_ons")
+  /// KIDS (migration 60): a small home challenge sent with the note. Null = none.
+  challenge String? @db.VarChar(200)
 
   /// Notes are written, reviewed, then sent as a batch. Nothing reaches a
   /// player (or their guardian) until the coach presses send.

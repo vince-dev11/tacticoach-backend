@@ -5,6 +5,7 @@
 // means fixing a drill once updates every session that uses it; the client
 // resolves refs against the library when rendering/exporting.
 
+import { randomBytes } from 'node:crypto'
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { Prisma } from '@prisma/client'
@@ -86,6 +87,15 @@ const BlockSchema = z.object({
   regression: z.string().max(400).optional().nullable(),
   /** How the coach knows it worked: "3 switches before scoring" (PD-1). */
   successCriteria: z.string().max(400).optional().nullable(),
+  /** KIDS (26 Oct 2026): the one line players remember. */
+  keyPoint: z.string().max(160).optional().nullable(),
+  /** KIDS: questions to ask the players, one per line. */
+  questions: z.string().max(600).optional().nullable(),
+})
+
+// KIDS: the parents' preview — just the question; the token is made here.
+const PreviewSchema = z.object({
+  question: latinOnly(z.string().max(200)).optional().nullable(),
 })
 
 // ---- Match-day mode (migration 51) -------------------------------------------
@@ -367,6 +377,40 @@ export async function sessionsRoutes(app: FastifyInstance) {
       },
     })
     return reply.send(session)
+  })
+
+  // POST /sessions/:id/preview { question? } — KIDS (26 Oct 2026). OWNER only.
+  // Turns on (or keeps) the parents' preview link and sets the one question
+  // parents ask on the way to training. The token is random and unguessable;
+  // the same link stays until the coach switches it off. Coaches only — this
+  // router is behind the editor gate like every other session write.
+  app.post('/:id/preview', { preHandler: requireEditorAccess }, async (request, reply) => {
+    const userId = (request.user as any).sub as number
+    const id = Number((request.params as { id: string }).id)
+    const { question } = PreviewSchema.parse(request.body ?? {})
+    const existing = await db.trainingSession.findFirst({ where: { id, userId }, select: { id: true, previewToken: true } })
+    if (!existing) {
+      return reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'Session not found' })
+    }
+    const token = existing.previewToken ?? randomBytes(16).toString('base64url')
+    const updated = await db.trainingSession.update({
+      where: { id },
+      data: { previewToken: token, ...(question !== undefined && { previewQuestion: question?.trim() || null }) },
+      select: { previewToken: true, previewQuestion: true },
+    })
+    return reply.send(updated)
+  })
+
+  // DELETE /sessions/:id/preview — switch the parents' link off (it 404s from now on).
+  app.delete('/:id/preview', async (request, reply) => {
+    const userId = (request.user as any).sub as number
+    const id = Number((request.params as { id: string }).id)
+    const existing = await db.trainingSession.findFirst({ where: { id, userId }, select: { id: true } })
+    if (!existing) {
+      return reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'Session not found' })
+    }
+    await db.trainingSession.update({ where: { id }, data: { previewToken: null } })
+    return reply.send({ previewToken: null })
   })
 
   // DELETE /sessions/:id — owner only

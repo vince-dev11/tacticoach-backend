@@ -25,6 +25,7 @@ const USER_SELECT = {
   facebookUrl: true,
   coachAgeGroup: true,
   coachFormat: true,
+  coachCountry: true,
   coachLevel: true,
   coachFormation: true,
   coachSquadSize: true,
@@ -36,6 +37,14 @@ const USER_SELECT = {
   },
 } as const
 
+/** COACH-COUNTRY: the country of the club this person owns or coaches in, if set. */
+export async function clubCountryFor(userId: number): Promise<string | null> {
+  const owned = await db.club.findUnique({ where: { ownerId: userId }, select: { country: true } })
+  if (owned) return owned.country ?? null
+  const seat = await db.clubMember.findUnique({ where: { userId }, select: { club: { select: { country: true } } } })
+  return seat?.club.country ?? null
+}
+
 export async function getUserProfile(userId: number) {
   const found = await db.user.findUnique({ where: { id: userId }, select: USER_SELECT })
   if (!found) return null
@@ -44,7 +53,8 @@ export async function getUserProfile(userId: number) {
   // on the server; the client needs only the answer.
   const { dateOfBirth, ...rest } = found
   // VERIFY-GATE: whether this account must verify its email now, and until when it has grace.
-  const user = { ...rest, minor: isMinorAccount(found), age: dateOfBirth ? ageOn(dateOfBirth) : null, emailVerification: verificationState(found) }
+  // COACH-COUNTRY: clubCountry is the club's country — the coach's default (their own wins).
+  const user = { ...rest, minor: isMinorAccount(found), age: dateOfBirth ? ageOn(dateOfBirth) : null, emailVerification: verificationState(found), clubCountry: await clubCountryFor(userId) }
   // Replace raw S3 key with a short-lived presigned URL for the logo.
   // Presign failure (S3 down / unconfigured) must not break the whole profile
   // read — pre-launch QA found every profile save 503ing on a dev box because
@@ -75,6 +85,7 @@ export async function updateUserProfile(userId: number, input: UpdateProfileInpu
       ...(input.facebookUrl !== undefined && { facebookUrl: input.facebookUrl }),
       ...(input.coachAgeGroup !== undefined && { coachAgeGroup: input.coachAgeGroup }),
       ...(input.coachFormat !== undefined && { coachFormat: input.coachFormat }),
+      ...(input.coachCountry !== undefined && { coachCountry: input.coachCountry }),
       ...(input.coachLevel !== undefined && { coachLevel: input.coachLevel }),
       ...(input.coachFormation !== undefined && { coachFormation: input.coachFormation }),
       ...(input.coachSquadSize !== undefined && { coachSquadSize: input.coachSquadSize }),

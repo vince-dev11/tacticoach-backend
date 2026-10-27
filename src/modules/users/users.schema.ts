@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { latinOnly } from '../../lib/latin-only.js'
+import { COUNTRY_CODES } from '../../lib/countries.js'
 import {
   AGE_PROFILES, FORMAT_PROFILES, LEVEL_LABELS, FORMATIONS_BY_FORMAT,
 } from '../ai/ai.context.js'
@@ -41,6 +42,8 @@ export const UpdateProfileSchema = z.object({
   facebookUrl: SocialUrl,
   coachAgeGroup: enumOrClear(AGE_PROFILES),
   coachFormat: enumOrClear(FORMAT_PROFILES),
+  /** COACH-COUNTRY: where they coach (suggestions only). '' or null = use the club's. */
+  coachCountry: enumOrClear(Object.fromEntries(COUNTRY_CODES.map((c) => [c, true]))),
   coachLevel: enumOrClear(LEVEL_LABELS),
   // Formation is validated against the FORMAT at generation time (a saved
   // 4-3-3 is silently ignored during a 7v7 session), so here it only needs to

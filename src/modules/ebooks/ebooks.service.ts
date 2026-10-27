@@ -140,7 +140,7 @@ const progressDb = () =>
 
 export const CATEGORIES = ['tactics', 'technique', 'mindset', 'goalkeeping', 'fitness', 'set_pieces'] as const
 /** The match format a book is written for. The author picks it; nothing infers it from age. */
-export const FORMATS = ['3v3', '5v5', '7v7', '9v9', '11v11', 'mixed'] as const
+export const FORMATS = ['3v3', '5v5', '7v7', '8v8', '9v9', '11v11', 'mixed'] as const
 /** Governing-body context. NULL on the row means "any country". */
 export const COUNTRIES = ['eng', 'sco', 'wal', 'nir', 'irl', 'usa'] as const
 export const TOPICS = [
