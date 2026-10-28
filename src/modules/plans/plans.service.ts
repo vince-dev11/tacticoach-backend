@@ -155,6 +155,8 @@ export interface SeasonPlanView {
   seasonLabel: string | null
   startDate: string
   weekStartsOn: number
+  /** SEASON-DAYS: the team's days (0 = Sunday), or null for every day. */
+  teamDays: number[] | null
   weeks: WeekSummary[]
 }
 
@@ -180,6 +182,7 @@ export async function getPlan(userId: number, planId: number): Promise<SeasonPla
     seasonLabel: plan.seasonLabel,
     startDate: isoDate(plan.startDate),
     weekStartsOn: plan.weekStartsOn,
+    teamDays: plan.teamDays ? plan.teamDays.split(',').map(Number).filter((n) => n >= 0 && n <= 6) : null,
     weeks: plan.weeks.map((week) =>
       buildWeek(week, (week.sessions as SessionRow[]).map(toSummary), weekStartsOn),
     ),
@@ -300,8 +303,9 @@ export async function createPlan(params: {
   startDate: Date
   weekStartsOn: WeekStart
   weeks: number
+  teamDays?: string | null
 }): Promise<number> {
-  const { userId, title, ageGroup, seasonLabel, startDate, weekStartsOn, weeks } = params
+  const { userId, title, ageGroup, seasonLabel, startDate, weekStartsOn, weeks, teamDays } = params
   const first = startOfWeek(startDate, weekStartsOn)
 
   const plan = await db.seasonPlan.create({
@@ -314,6 +318,7 @@ export async function createPlan(params: {
       // agrees about where week 1 begins.
       startDate: first,
       weekStartsOn,
+      teamDays: teamDays ?? null,
       weeks: {
         create: Array.from({ length: weeks }, (_, i) => ({
           weekIndex: i + 1,
@@ -487,6 +492,7 @@ export async function copyPlan(
       seasonLabel: params.seasonLabel ?? null,
       startDate: first,
       weekStartsOn,
+      teamDays: source.teamDays,
       weeks: {
         create: weeks.map((w) => ({
           weekIndex: w.weekIndex,

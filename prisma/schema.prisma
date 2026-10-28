@@ -798,6 +798,8 @@ model SeasonPlan {
   /// 0 = Sunday … 6 = Saturday. A per-plan setting, not a profile setting —
   /// a coach can run an academy week and a senior week differently.
   weekStartsOn Int      @default(1) @map("week_starts_on")
+  /// SEASON-DAYS (migration 62): the team's days, "2,4,6" (0 = Sunday); null = all.
+  teamDays     String?  @map("team_days") @db.VarChar(20)
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
@@ -1943,6 +1945,8 @@ model FreeUsage {
   sessions    Int  @default(0)
   seasons     Int  @default(0)
   books       Int  @default(0)
+  /// TRIAL-FEEDBACK (migration 61): feedback notes written on the trial.
+  feedbackNotes Int @default(0) @map("feedback_notes")
   user        User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("free_usage")

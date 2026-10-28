@@ -37,8 +37,9 @@ describe('FT-2 · free trial window', () => {
     coach(new Date(Date.now() + 5 * DAY))
     const ent = await getEntitlements(1)
     expect(ent).toMatchObject({ editorAccess: true, subscriptionStatus: 'free_trial', plan: { slug: 'free' } })
-    expect(limitsFor(ent)).toMatchObject({ boards: 3, drillSheets: 3, sessions: 3, seasons: 1, books: 1, videoExports: 3, squads: 0 })
-    expect(can(ent, 'player_feedback')).toBe(false)
+    expect(limitsFor(ent)).toMatchObject({ boards: 3, drillSheets: 3, sessions: 3, seasons: 1, books: 1, videoExports: 3, squads: 1, feedbackNotes: 5 })
+    // TRIAL-FEEDBACK (27 Oct 2026): the trial shows the feedback loop.
+    expect(can(ent, 'player_feedback')).toBe(true)
     expect(can(ent, 'video_export')).toBe(true)
     expect(ent.trialEndsAt).toBeInstanceOf(Date)
   })
@@ -89,26 +90,42 @@ describe('FT-2 · after the trial, writes answer 402 TRIAL_ENDED and reads still
   })
 })
 
-describe('FT-4 · squads and player feedback are paid', () => {
-  it('a free-trial coach cannot edit the squad roster or write feedback, but can read squads', async () => {
+describe('FT-4 · TRIAL-FEEDBACK: the trial has one squad and five feedback notes', () => {
+  it('one squad: a second is refused with the plan wall', async () => {
     const app = await getApp()
     coach(new Date(Date.now() + 5 * DAY))
     const headers = authHeaders(await accessToken())
-    const writes = [
-      { method: 'POST', url: '/api/users/me/squads', payload: { name: 'U12 Reds' } },
-      { method: 'PUT', url: '/api/users/me/squad', payload: { players: [] } },
-      { method: 'POST', url: '/api/feedback/sessions/1/notes', payload: { squadPlayerId: 1, body: 'x' } },
-      { method: 'POST', url: '/api/feedback/sessions/1/send', payload: {} },
-      { method: 'GET', url: '/api/feedback/sessions/1' },
-    ] as const
-    for (const w of writes) {
-      const res = await app.inject({ ...w, headers } as never)
-      expect(res.statusCode, `${w.method} ${w.url}`).toBe(402)
-      expect(res.json().code, `${w.method} ${w.url}`).toBe('CAPABILITY_REQUIRED')
-    }
-    mock.squad.findMany.mockResolvedValue([{ id: 1, name: 'My squad', ageGroup: null, sortOrder: 0, players: [] }])
-    const read = await app.inject({ method: 'GET', url: '/api/users/me/squads', headers })
-    expect(read.statusCode).toBe(200)
+    mock.squad.count.mockResolvedValue(1 as never)
+    const second = await app.inject({ method: 'POST', url: '/api/users/me/squads', payload: { name: 'U12 Blues' }, headers })
+    expect(second.statusCode).toBe(402)
+    expect(second.json().message).toMatch(/one squad/)
+  })
+
+  it('a new note spends one of the five; with none left it is refused, counted by creation', async () => {
+    const app = await getApp()
+    coach(new Date(Date.now() + 5 * DAY))
+    const headers = authHeaders(await accessToken())
+    mock.squadPlayer.findFirst.mockResolvedValue({ id: 1 } as never)
+    mock.playerNote.findFirst.mockResolvedValue(null)
+    mock.freeUsage.upsert.mockResolvedValue({} as never)
+    mock.$executeRaw.mockResolvedValue(0 as never) // no slot left
+    const res = await app.inject({ method: 'POST', url: '/api/feedback/sessions/1/notes', payload: { squadPlayerId: 1, body: 'Great first touch' }, headers })
+    expect(res.statusCode).toBe(402)
+    expect(res.json()).toMatchObject({ code: 'QUOTA_REACHED', quota: 'feedbackNotes', limit: 5, lifetime: true })
+    expect(mock.playerNote.create).not.toHaveBeenCalled()
+  })
+
+  it('editing a note never spends one', async () => {
+    const app = await getApp()
+    coach(new Date(Date.now() + 5 * DAY))
+    const headers = authHeaders(await accessToken())
+    mock.squadPlayer.findFirst.mockResolvedValue({ id: 1 } as never)
+    mock.playerNote.findFirst.mockResolvedValue({ id: 9, createdAt: new Date(), sentAt: null, coachUserId: 1 } as never)
+    mock.playerNote.update.mockResolvedValue({ id: 9 } as never)
+    mock.$executeRaw.mockResolvedValue(0 as never)
+    const res = await app.inject({ method: 'POST', url: '/api/feedback/sessions/1/notes', payload: { squadPlayerId: 1, body: 'Edited' }, headers })
+    expect(res.statusCode).toBe(201)
+    expect(mock.$executeRaw).not.toHaveBeenCalled()
   })
 
   it('a player keeps their notes and links (unaffected)', async () => {

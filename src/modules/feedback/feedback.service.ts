@@ -279,7 +279,17 @@ export interface WriteNoteInput {
  * (squadPlayerId + sessionId) would forbid the several standalone notes a
  * coach can leave outside a session.
  */
-export async function writeNote(viewerId: number, sessionId: number | null, input: WriteNoteInput) {
+/**
+ * `beforeCreate` (TRIAL-FEEDBACK, 27 Oct 2026): runs only when a NEW note is
+ * about to be written (never for an edit) — the route claims the trial's
+ * note allowance there; the returned release gives it back if the write fails.
+ */
+export async function writeNote(
+  viewerId: number,
+  sessionId: number | null,
+  input: WriteNoteInput,
+  opts: { beforeCreate?: () => Promise<() => Promise<void>> } = {},
+) {
   const coachIds = await coachIdsFor(viewerId)
 
   const row = await db.squadPlayer.findFirst({
@@ -317,10 +327,12 @@ export async function writeNote(viewerId: number, sessionId: number | null, inpu
     }
   }
 
-  return {
-    note: await db.playerNote.create({
-      data: {
-        squadPlayerId: row.id,
+  const release = opts.beforeCreate ? await opts.beforeCreate() : null
+  try {
+    return {
+      note: await db.playerNote.create({
+        data: {
+          squadPlayerId: row.id,
         // Whoever actually typed it, which is not necessarily whose squad it
         // is. The player is shown this name, not the squad owner's.
         coachUserId: viewerId,
@@ -330,8 +342,12 @@ export async function writeNote(viewerId: number, sessionId: number | null, inpu
         strengths,
         workOns,
         challenge,
-      },
-    }),
+        },
+      }),
+    }
+  } catch (err) {
+    if (release) await release().catch(() => {})
+    throw err
   }
 }
 

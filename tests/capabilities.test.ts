@@ -78,7 +78,10 @@ describe('the free tier', () => {
   it('PRO-TRIAL · still never the coach\'s own brand, AI or publishing', () => {
     // What costs us or moves money stays paid, and so does looking like a
     // club: their badge, AI credits, selling a book, parents' copies.
-    for (const c of ['own_branding', 'ai', 'publish_ebooks', 'guardian_copies', 'multi_squad', 'player_feedback'] as Capability[]) {
+    // TRIAL-FEEDBACK (27 Oct 2026): player feedback is IN the trial now (one
+    // squad, five notes — LIMITS.free); more squads and parents' copies stay paid.
+    expect(can(ent('free'), 'player_feedback')).toBe(true)
+    for (const c of ['own_branding', 'ai', 'publish_ebooks', 'guardian_copies', 'multi_squad'] as Capability[]) {
       expect(can(ent('free'), c), `the trial should not grant ${c}`).toBe(false)
     }
   })
@@ -95,7 +98,7 @@ describe('the free tier', () => {
 
   it('counts everything the paid tiers do not', () => {
     expect(limitsFor(ent('free'))).toMatchObject({
-      boards: 3, drillSheets: 3, books: 1, sessions: 3, seasons: 1, squads: 0, videoExports: 3,
+      boards: 3, drillSheets: 3, books: 1, sessions: 3, seasons: 1, squads: 1, videoExports: 3, feedbackNotes: 5,
     })
   })
 

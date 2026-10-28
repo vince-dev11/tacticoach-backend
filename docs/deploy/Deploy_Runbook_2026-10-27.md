@@ -33,11 +33,12 @@ migrations 59 and 60. This one adds nothing to the database.
 - **Session builder practice details (SESSION-UI).** Four groups, boxes grow with their text.
 - **Social post logo (LOGO).** Drill sheet → Share as a social post: the footer now shows the
   real "Made with tacticoach" logo (the drill sheet's dark stamp) instead of typed words.
-- **Social clip follows the camera (CAMERA-ANGLE).** In 3D / Stadium, a social clip (and a Story
-  or Feed 3D video) is filmed from the angle the coach turned the camera to — the TV camera too.
-  A "Camera: Your angle · Low, along the pitch" choice appears once the camera has been moved; a
-  side-on angle shows a hint that the pitch will look small. Never moved = the low angle as before.
-  Tests `socialCameraAngle.test.ts`, `tests/e2e/social-camera-angle.spec.ts`.
+- **Social clip = the view on screen (CAMERA-ANGLE / SAME-AS-SCREEN).** In 3D / Stadium a social
+  clip (and a Story or Feed 3D video) films the pitch exactly as the view shows it — the coach's
+  angle, the TV camera, or the view's opening camera when never moved — on every pitch (before, a
+  half or third pitch was turned to the touchline and every clip used a different camera). A
+  "Camera: As on screen · Low, along the pitch" choice sits in the dialog; a side-on angle on a full
+  pitch shows a hint. Tests `socialCameraAngle.test.ts`, `tests/e2e/social-camera-angle.spec.ts`.
 - **Node.** CI on Node 24; `engines: node >= 22` and `.nvmrc` = 24 in both repos.
 - **Sentry noise filter (TACTICOACH-WEB-J)**, if it was not in the 26 Oct deploy.
 
@@ -81,11 +82,39 @@ cd /var/www/html/tacticoach-frontend && bash scripts/deploy-web.sh && sudo nginx
 4. On a phone: Drill sheet → the buttons wrap under the title; Books → Country and Topic sit
    under their labels, nothing off the edge.
 5. Sessions → open a practice: the four groups, nothing cut off.
-   3D view → turn the camera → Share → Clip for social media: "Your angle" is on, the preview and
-   the downloaded clip show your angle; "Low, along the pitch" switches back.
+   3D view on a half pitch → Share → Clip for social media: "As on screen" is on and the preview
+   shows the pitch the way the view does (goal at the top); turn the camera and reopen — the clip
+   follows; "Low, along the pitch" switches to the low angle.
    Drill sheet → Share as a social post: the logo sits bottom-right (Post, Carousel) or centred (Story).
 6. Sentry: no new errors in 15 minutes.
 
+## Part 2 — team set-up and the product-review fixes (27 Oct, later)
+
+**Migrations (API first):** `npx prisma migrate deploy` applies
+`61_trial_feedback` (free_usage.feedback_notes) and `62_season_team_days`
+(season_plans.team_days). Both are additive with defaults; old code ignores them.
+
+What changed (web unless noted):
+- Set up your team card on the dashboard; new boards, sessions, sheets and seasons start from it; Team in the top bar.
+- Trial includes 1 squad and 5 feedback notes (API: capabilities, plan-quota, feedback routes).
+- Season: training days and "Add themes to the next weeks" (API: plans routes).
+- Starter sessions save themselves and carry board pictures; 8v8 starter.
+- Movement on Start positions offers "Go to frame 1" / "Make that a run"; tours no longer open by themselves.
+- First save asks for the board's name; every profile formation is on the board (5v5 2-1-1/1-1-2, 7v7 3-2-1/2-1-2-1/3-3, 9v9 3-3-2/2-3-2-1/3-4-1, 11v11 4-1-4-1/3-4-3).
+- Four games for U7–U11 in Ready-made practices, first for a U7–U11 team.
+- Age boxes suggest the team bands; Books marks "Your team" on the matching age chip.
+- Run session and Match Day: Daylight switch. Frame buttons have words. Sessions list: Copy.
+
+Smoke test after deploy:
+1. New coach → dashboard asks Set up your team → pick 7-a-side, U10–U11 → the line shows; Board opens on the 7v7 pitch.
+2. Board → save → the dialog asks for a name; the library shows that name.
+3. Formations (7v7) list 2-3-1, 3-2-1, 2-1-2-1, 3-3.
+4. ⋯ → Ready-made practices → "Games for young players" first.
+5. Sessions → Copy on a session → opens "… (copy)", undated.
+6. Run session → Daylight → white page; reload → still white.
+7. Books → "Your team" on U9–11.
+
 ## Rollback
-No migration, so either repo can be rolled back on its own: `git checkout <previous>` and run the
+Part 2 has two additive migrations: rolling the code back is safe without reverting them.
+Either repo can be rolled back on its own: `git checkout <previous>` and run the
 deploy script again (API: `npm install && npm run build && pm2 restart tacticoach-api`).

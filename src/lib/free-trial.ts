@@ -24,7 +24,7 @@ export function freeTrialActive(endsAt: Date | null | undefined, now: Date = new
 // single conditional UPDATE, so two creates racing for the last slot cannot
 // both win.
 
-export type FreeQuotaKey = 'boards' | 'drillSheets' | 'sessions' | 'seasons' | 'books'
+export type FreeQuotaKey = 'boards' | 'drillSheets' | 'sessions' | 'seasons' | 'books' | 'feedbackNotes'
 
 const COLUMN: Record<FreeQuotaKey, string> = {
   boards: 'boards',
@@ -32,6 +32,7 @@ const COLUMN: Record<FreeQuotaKey, string> = {
   sessions: 'sessions',
   seasons: 'seasons',
   books: 'books',
+  feedbackNotes: 'feedback_notes',
 }
 
 /** Take `count` slots if they are all there. True when they were taken. */

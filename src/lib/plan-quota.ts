@@ -20,7 +20,7 @@ import { getEntitlements } from './entitlements.js'
 import { freeUsed, releaseFreeSlot, reserveFreeSlot } from './free-trial.js'
 
 /** The countable things. Each maps to one limit and one table. */
-export type Quota = 'boards' | 'drillSheets' | 'books' | 'sessions' | 'seasons'
+export type Quota = 'boards' | 'drillSheets' | 'books' | 'sessions' | 'seasons' | 'feedbackNotes'
 
 export interface QuotaState {
   /** null = unlimited. */
@@ -54,6 +54,9 @@ const COUNTERS: Record<Quota, (userId: number) => Promise<number>> = {
   // fills a plan's session allowance (migration 47).
   sessions: (userId) => db.trainingSession.count({ where: { userId, isMatch: false, sourceEbookId: null } as never }),
   seasons: (userId) => db.seasonPlan.count({ where: { userId } }),
+  // Only the trial limits notes (paid plans: null), and the trial counts by
+  // creation in free_usage — this counter is never reached; kept for shape.
+  feedbackNotes: (userId) => db.playerNote.count({ where: { coachUserId: userId } }),
 }
 
 /** What a coach is told when each runs out. */
@@ -69,6 +72,7 @@ const MESSAGES: Record<Quota, (limit: number) => string> = {
   sessions: (n) =>
     `Your plan covers ${n} saved ${n === 1 ? 'session' : 'sessions'}. Upgrade for the full season planner.`,
   seasons: (n) => `Your plan covers ${n} season ${n === 1 ? 'plan' : 'plans'}. Upgrade for more.`,
+  feedbackNotes: (n) => `Your plan covers ${n} feedback notes. Upgrade to write to every player.`,
 }
 
 /** The free trial's walls: counted by creation, so they never say "delete one". */
@@ -78,6 +82,7 @@ const LIFETIME_MESSAGES: Record<Quota, (n: number) => string> = {
   sessions: (n) => `Your free trial includes ${n} sessions in total — deleted sessions still count. Choose a plan for the full season planner.`,
   seasons: (n) => `Your free trial includes ${n === 1 ? 'one season plan' : `${n} season plans`} in total — a deleted season still counts. Choose a plan for more.`,
   books: () => 'Your free trial includes one book, and publishing needs a paid plan.',
+  feedbackNotes: (n) => `Your free trial includes ${n} feedback notes. Choose a plan to write to every player after every session.`,
 }
 
 /** Where each quota reads its number from. */
@@ -87,6 +92,7 @@ const LIMIT_KEY: Record<Quota, keyof PlanLimits> = {
   books: 'books',
   sessions: 'sessions',
   seasons: 'seasons',
+  feedbackNotes: 'feedbackNotes',
 }
 
 /** Where this coach stands on one quota, right now. */

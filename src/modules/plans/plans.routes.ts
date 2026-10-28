@@ -44,6 +44,8 @@ const CreatePlanSchema = z.object({
   seasonLabel: z.string().max(40).optional().nullable(),
   startDate: z.coerce.date(),
   weekStartsOn: z.coerce.number().int().min(0).max(6).default(1),
+  /** SEASON-DAYS: the days the team trains or plays (0 = Sunday); empty/absent = every day. */
+  teamDays: z.array(z.number().int().min(0).max(6)).max(7).optional().nullable(),
   /** The coach chooses how many weeks to plan — his request, section 1. */
   weeks: z.coerce.number().int().min(1).max(MAX_WEEKS).default(42),
 })
@@ -53,7 +55,14 @@ const UpdatePlanSchema = z.object({
   ageGroup: z.string().max(16).optional().nullable(),
   seasonLabel: z.string().max(40).optional().nullable(),
   weekStartsOn: z.coerce.number().int().min(0).max(6).optional(),
+  teamDays: z.array(z.number().int().min(0).max(6)).max(7).optional().nullable(),
 })
+
+/** [4, 2, 2] → "2,4"; empty or null → null (every day). */
+function teamDaysColumn(days: number[] | null | undefined): string | null {
+  if (!days || days.length === 0) return null
+  return [...new Set(days)].sort((a, b) => a - b).join(',')
+}
 
 const UpdateWeekSchema = z.object({
   theme: z.string().max(255).optional().nullable(),
@@ -96,6 +105,7 @@ export async function plansRoutes(app: FastifyInstance) {
       startDate: input.startDate,
       weekStartsOn: input.weekStartsOn as WeekStart,
       weeks: input.weeks,
+      teamDays: teamDaysColumn(input.teamDays),
     }))
     return reply.status(201).send(await getPlan(uid(request), planId))
   })
@@ -118,6 +128,7 @@ export async function plansRoutes(app: FastifyInstance) {
         ...(input.ageGroup !== undefined && { ageGroup: input.ageGroup }),
         ...(input.seasonLabel !== undefined && { seasonLabel: input.seasonLabel }),
         ...(input.weekStartsOn !== undefined && { weekStartsOn: input.weekStartsOn }),
+        ...(input.teamDays !== undefined && { teamDays: teamDaysColumn(input.teamDays) }),
       },
     })
     // Changing the week start moves every week boundary, so the whole plan is

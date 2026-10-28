@@ -23,6 +23,7 @@ const coachFeedback = [requireEditorAccess, requireCapability('player_feedback')
 import { db } from '../../config/database.js'
 import { FamilyError, addFamilyDetails, createPlayerAccount, resendParentInvite, recommendBook, recommendedFor } from '../family/family.service.js'
 import { sendPlayerNoteEmail } from '../../lib/emails.js'
+import { claimQuota } from '../../lib/plan-quota.js'
 import { MAX_TAGS_PER_LIST, cleanTags } from '../../lib/feedback-tags.js'
 import {
   playerAccountExists,
@@ -225,7 +226,9 @@ export async function feedbackRoutes(app: FastifyInstance) {
     secure.post('/sessions/:id/notes', { preHandler: coachFeedback }, async (request, reply) => {
       const id = Number((request.params as { id: string }).id)
       const input = NoteSchema.parse(request.body)
-      const result = await writeNote(userId(request), id, input)
+      // TRIAL-FEEDBACK: a new note on the trial spends one of its five.
+      const uid = userId(request)
+      const result = await writeNote(uid, id, input, { beforeCreate: () => claimQuota(uid, 'feedbackNotes') })
       if (!result) return reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'Player not found' })
       if ('notYours' in result) {
         return reply.status(409).send({

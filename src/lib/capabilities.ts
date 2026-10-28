@@ -98,8 +98,14 @@ export type Capability =
  */
 const PRO_LOOK: Capability[] = ['board_3d', 'ball_sound', 'connected_players']
 
+/**
+ * TRIAL-FEEDBACK (27 Oct 2026, product review → owner: "everything matters"):
+ * the trial now includes the feedback loop — the thing that makes TactiCoach
+ * different — inside small counts: one squad, five feedback notes (LIMITS.free).
+ * It replaced "squads and player feedback are paid" (1 Oct 2026).
+ */
 const FREE: Capability[] = [
-  'editor', 'video_export', 'planner', 'draft_ebooks',
+  'editor', 'video_export', 'planner', 'draft_ebooks', 'player_feedback',
   'video_hd', 'social_export', ...PRO_LOOK,
 ]
 
@@ -194,12 +200,14 @@ export interface PlanLimits {
   seasons: number | null
   /** Coach seats, for club plans. */
   seats: number | null
+  /** Feedback notes to players (the trial only — counted by creation). */
+  feedbackNotes: number | null
 }
 
 /** Paid tiers that count nothing. Spelled out so adding a field can't miss one. */
 const UNCOUNTED = {
   squads: null, videoExports: null, boards: null,
-  drillSheets: null, books: null, sessions: null, seasons: null,
+  drillSheets: null, books: null, sessions: null, seasons: null, feedbackNotes: null,
 } as const
 
 const LIMITS: Record<string, PlanLimits> = {
@@ -207,8 +215,8 @@ const LIMITS: Record<string, PlanLimits> = {
   // CREATION rather than by rows kept — see lib/free-trial.ts. Animation and
   // three badged videos are in; squads (and so player feedback) are not.
   free: {
-    squads: 0, videoExports: 3, boards: 3,
-    drillSheets: 3, books: 1, sessions: 3, seasons: 1, seats: null,
+    squads: 1, videoExports: 3, boards: 3,
+    drillSheets: 3, books: 1, sessions: 3, seasons: 1, seats: null, feedbackNotes: 5,
   },
   basic: {
     squads: 1, videoExports: 10, boards: null,
@@ -218,6 +226,7 @@ const LIMITS: Record<string, PlanLimits> = {
     sessions: 12,
     seasons: null,
     seats: null,
+    feedbackNotes: null,
   },
   pro: { ...UNCOUNTED, seats: null },
   'club-5': { ...UNCOUNTED, seats: 5 },
@@ -229,7 +238,7 @@ const LIMITS: Record<string, PlanLimits> = {
   'club-pro': { ...UNCOUNTED, seats: 15 },
   player: {
     squads: 0, videoExports: 0, boards: 0,
-    drillSheets: 0, books: 0, sessions: 0, seasons: 0, seats: null,
+    drillSheets: 0, books: 0, sessions: 0, seasons: 0, seats: null, feedbackNotes: 0,
   },
   owner: { ...UNCOUNTED, seats: null },
 }
@@ -237,7 +246,7 @@ const LIMITS: Record<string, PlanLimits> = {
 const UNRESTRICTED: PlanLimits = { ...UNCOUNTED, seats: null }
 const NOTHING: PlanLimits = {
   squads: 0, videoExports: 0, boards: 0,
-  drillSheets: 0, books: 0, sessions: 0, seasons: 0, seats: null,
+  drillSheets: 0, books: 0, sessions: 0, seasons: 0, seats: null, feedbackNotes: 0,
 }
 
 /**
