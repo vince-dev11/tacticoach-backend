@@ -25,6 +25,9 @@ Brief: `tacticoach-frontend/docs/briefs/2026-10-29-teach-players.md`.
 - **Place the run:** the player answers the stop-and-think by dragging a ghost; the coach's run is drawn over it.
 - **Player screens:** step mode, busy boards at half speed, question first, three stills; Loop in the editor; "Player's eyes" camera in the 3D player.
 - **Role cards PDF (ROLE-PDF):** four cards to a page, never cut between pages; two of a kind say LEFT / RIGHT (and CENTRE for the middle of three).
+- **Dropdowns and dialog buttons (SELECT-ARROW / BTN-PAIR):** one dropdown arrow everywhere with room round it; Print / Save PDF the same height.
+- **Piece size on the attacking third (PIECE-SIZE):** the third's board is now 1331×720 (was 1000×541), so players and balls are the same size on screen as on every other pitch; saved boards are remapped on open.
+- **TV camera (TV-SMOOTH / TV-STILL / LIVE-60):** the 3D / Stadium TV camera now holds still while the ball plays in the middle of the picture and pans once, gently, when the ball nears the edge (it used to chase the ball every frame, so the pitch never stopped moving); the camera and the stands move on every screen frame (they stepped every other frame — the shaking). The Watch window and share player step at 60 a second (the file stays 30 fps; its TV camera holds and pans the same way). Measured in Chrome: 60 fps, no dropped frames, two pans in a three-move example.
 - `nginx/spa-routes.conf` regenerated for the two new routes — deploy-web picks it up.
 
 ## Admin → Finance and the CRM pipeline (owner-only)
