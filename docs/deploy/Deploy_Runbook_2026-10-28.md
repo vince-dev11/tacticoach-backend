@@ -1,4 +1,4 @@
-# Deploy runbook — 28 Oct 2026 (API + web, migrations 61, 62, 63 and 64)
+# Deploy runbook — 28 Oct 2026 (API + web, migrations 61–65)
 
 Ships everything not yet committed on 28 Oct: the team set-up and the 27 Oct product-review fixes
 ("Part 2" of `Deploy_Runbook_2026-10-27.md`) plus the 28 Oct changes below.
@@ -13,7 +13,19 @@ it is already in the last commits; just do the steps below.
   `deal_value_pence`, `lost_reason` (+ indexes); replied leads start at stage `contacted`;
   new table `lead_activities`
 
+- `65_note_watch_answer` — `player_notes` gets `watched_at`, `answer` (JSON), `answered_at` (all nullable)
+
 All add columns (with defaults) or new tables; old code ignores them.
+
+## The board teaches the player (29 Oct) — migration 65
+Brief: `tacticoach-frontend/docs/briefs/2026-10-29-teach-players.md`.
+- **Ground / Air** per frame on the timeline, also in 3D / Stadium.
+- **Teach layer everywhere:** Show board, Run session, 3D/Stadium live and the 3D video stop at the question and dim to the spotlight; facing, marking and zone lines in 3D.
+- **Board on a player note:** picker in the note sheet; the player watches privately at `/my-football/move/:noteId`, a parent at `/family/move/:noteId` (API: `GET/POST /api/feedback/my-notes/:id/move|answer`, `GET/POST /api/family/notes/:id/move|answer`). Note emails now link to the private page. Coach sees Watched / Answered.
+- **Place the run:** the player answers the stop-and-think by dragging a ghost; the coach's run is drawn over it.
+- **Player screens:** step mode, busy boards at half speed, question first, three stills; Loop in the editor; "Player's eyes" camera in the 3D player.
+- **Role cards PDF (ROLE-PDF):** four cards to a page, never cut between pages; two of a kind say LEFT / RIGHT (and CENTRE for the middle of three).
+- `nginx/spa-routes.conf` regenerated for the two new routes — deploy-web picks it up.
 
 ## Admin → Finance and the CRM pipeline (owner-only)
 - **Finance** (new tab): Profit & loss by month in **INR, cash basis**; Payments (every Stripe
@@ -67,7 +79,7 @@ git add -A && git commit -m "Team set-up; review fixes; nav keeps every item; bo
 ## 1. Server (tmux)
 ```bash
 cd /var/www/html/tacticoach-backend && echo y | NODE_OPTIONS=--max-old-space-size=1024 bash scripts/deploy-api.sh
-#   expect: backup OK → "4 migrations applied" (61–64) → build → pm2 restart → health OK
+#   expect: backup OK → "5 migrations applied" (61–65) → build → pm2 restart → health OK
 curl -s localhost:3001/health
 cd /var/www/html/tacticoach-frontend && bash scripts/deploy-web.sh && sudo nginx -t && sudo systemctl reload nginx
 ```
@@ -90,8 +102,13 @@ If `migrate deploy` fails the script stops before restarting — the old build k
     (camera light off after Stop). A Basic account gets the Pro dialog instead.
 11. Board → Share → Video on a laptop: the file is 16:9, fills the player with no bars, corner flags not on the edge.
 12. Board → Pass tool → press on a player and drag → the arrow starts at the player, who stays put.
-13. Sentry: no new errors in 15 minutes.
+13. Board → Movement → frame 1 **Ground**, frame 2 **Air** → 3D: the second pass rises, the first rolls.
+14. Put a player in the spotlight with a question → Show board and 3D both stop on it.
+15. Feedback → a note → **Watch the move** → pick a private board → send. Player account: My football →
+    Watch the move → the question first → drag the ghost → Check → the coach's run appears.
+    Coach: the note shows Watched · Answered. The board is still private in the Library.
+16. Sentry: no new errors in 15 minutes.
 
 ## Rollback
 Code can be rolled back on its own (`git checkout <previous>` + the deploy scripts); leave
-migrations 61–64 in place — they only add columns and tables.
+migrations 61–65 in place — they only add columns and tables.

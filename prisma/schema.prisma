@@ -1219,6 +1219,14 @@ model PlayerNote {
   /// a child answering an adult in free text is a safeguarding surface this
   /// app does not want. Shown to the coach as acknowledged; nothing else.
   acknowledgedAt DateTime? @map("acknowledged_at")
+  /// NOTE-BOARD (migration 65): when the player (or their parent, for them)
+  /// first opened the move attached to this note. A tick for the coach.
+  watchedAt DateTime? @map("watched_at")
+  /// PLAYER-ANSWER (migration 65): the player's structured answer to the
+  /// board's stop-and-think — a placed run or a tapped choice, never words.
+  /// Shape: lib/note-answer.ts.
+  answer     Json?
+  answeredAt DateTime? @map("answered_at")
   createdAt DateTime  @default(now()) @map("created_at")
   updatedAt DateTime  @updatedAt @map("updated_at")
 

@@ -12,6 +12,8 @@ import { db } from '../../config/database.js'
 import { splitTagLists, tagFrequency } from '../../lib/feedback-tags.js'
 import { coachIdsFor } from '../../lib/club-staff.js'
 import { resolveSquad } from '../users/squads.service.js'
+import { boardPlayerMessage, withoutPlayerNames } from '../share/share.routes.js'
+import type { NoteAnswer } from '../../lib/note-answer.js'
 
 /**
  * How long a coach can fix a note after writing it.
@@ -230,6 +232,9 @@ export async function rosterForSession(viewerId: number, sessionId: number) {
           sentAt: true,
           readAt: true,
           acknowledgedAt: true,
+          watchedAt: true,
+          answer: true,
+          answeredAt: true,
           createdAt: true,
           coachUserId: true,
           coach: { select: { name: true, surname: true } },
@@ -481,6 +486,9 @@ export async function notesForPlayer(playerUserId: number) {
           challenge: true,
           readAt: true,
           acknowledgedAt: true,
+          watchedAt: true,
+          answer: true,
+          answeredAt: true,
           createdAt: true,
           coachUserId: true,
           coach: { select: { name: true, surname: true } },
@@ -539,4 +547,58 @@ export async function markNotesRead(playerUserId: number, noteIds: number[]): Pr
     },
     data: { readAt: new Date() },
   })
+}
+
+// ---- NOTE-BOARD / PLAYER-ANSWER (29 Oct 2026) ------------------------------
+//
+// The move a coach attaches to a note is private: it never has to be
+// published for the one player it was written for to watch it. Who may open
+// it is exactly who may read the note — the player the squad row is linked
+// to, or a parent with an active link to that child (the under-13 window).
+
+export type NoteViewer = { playerUserId: number } | { parentUserId: number }
+
+function noteOwnerWhere(viewer: NoteViewer) {
+  return 'playerUserId' in viewer
+    ? { squadPlayer: { playerUserId: viewer.playerUserId, linkStatus: 'active' as const } }
+    : { squadPlayer: { linkStatus: 'active' as const, playerUser: { parentLinks: { some: { parentUserId: viewer.parentUserId, status: 'active' as const } } } } }
+}
+
+/**
+ * The board behind a sent note, with the players' names taken out, for the
+ * player or parent it was sent to. Opening it is "watched" — recorded once,
+ * shown to the coach as a tick and used for nothing else.
+ */
+export async function moveForNote(viewer: NoteViewer, noteId: number) {
+  const note = await db.playerNote.findFirst({
+    where: { id: noteId, sentAt: { not: null }, boardId: { not: null }, ...noteOwnerWhere(viewer) },
+    select: {
+      id: true, body: true, challenge: true, watchedAt: true, answer: true, answeredAt: true,
+      board: { select: { id: true, title: true, state: true } },
+      coach: { select: { name: true, surname: true } },
+    },
+  })
+  if (!note?.board) return null
+  if (!note.watchedAt) {
+    await db.playerNote.update({ where: { id: note.id }, data: { watchedAt: new Date(), readAt: new Date() } }).catch(() => {})
+  }
+  return {
+    noteId: note.id,
+    body: note.body,
+    challenge: note.challenge,
+    coach: authorName(note.coach),
+    board: { id: note.board.id, title: note.board.title, state: withoutPlayerNames(note.board.state) },
+    message: boardPlayerMessage(note.board.state),
+    answer: note.answer ?? null,
+    answeredAt: note.answeredAt,
+  }
+}
+
+/** The player's answer — the first one stands; a second tap changes nothing. */
+export async function answerNote(viewer: NoteViewer, noteId: number, answer: NoteAnswer): Promise<boolean> {
+  const res = await db.playerNote.updateMany({
+    where: { id: noteId, sentAt: { not: null }, boardId: { not: null }, answeredAt: null, ...noteOwnerWhere(viewer) },
+    data: { answer, answeredAt: new Date(), watchedAt: new Date(), readAt: new Date() },
+  })
+  return res.count > 0
 }

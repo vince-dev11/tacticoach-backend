@@ -38,7 +38,10 @@ import {
   notesForPlayer,
   acknowledgeNote,
   markNotesRead,
+  moveForNote,
+  answerNote,
 } from './feedback.service.js'
+import { noteAnswerSchema } from '../../lib/note-answer.js'
 
 const userId = (request: { user: unknown }): number => (request.user as { sub: number }).sub
 
@@ -288,6 +291,7 @@ export async function feedbackRoutes(app: FastifyInstance) {
             : null,
           digest: note.digest,
           boardId: note.boardId ?? null,
+          noteId: note.id,
           challenge: note.challenge ?? null,
           // The SQUAD ROW, not the note. A guardian link is a standing view of
           // one child's record, so it has to outlive the note that introduced
@@ -325,6 +329,30 @@ export async function feedbackRoutes(app: FastifyInstance) {
         return reply.status(422).send({ statusCode: 422, error: 'Unprocessable Entity', message: 'Note id is not valid' })
       }
       return (await acknowledgeNote(userId(request), id))
+        ? reply.send({ ok: true })
+        : reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'Note not found' })
+    })
+
+    // NOTE-BOARD (29 Oct 2026): GET /feedback/my-notes/:id/move — the board
+    // the coach sent with this note, names removed, for THIS player only. The
+    // board needs no publishing: private by default survives sending a child
+    // their own run. Opening it records "watched" (a tick for the coach).
+    secure.get('/my-notes/:id/move', async (request, reply) => {
+      const id = Number((request.params as { id: string }).id)
+      if (!Number.isInteger(id) || id <= 0) {
+        return reply.status(422).send({ statusCode: 422, error: 'Unprocessable Entity', message: 'Note id is not valid' })
+      }
+      const move = await moveForNote({ playerUserId: userId(request) }, id)
+      return move ? reply.send(move) : reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'Note not found' })
+    })
+
+    // PLAYER-ANSWER (29 Oct 2026): POST /feedback/my-notes/:id/answer — a
+    // placed run or a tapped choice (lib/note-answer.ts). Never words. The
+    // first answer stands.
+    secure.post('/my-notes/:id/answer', async (request, reply) => {
+      const id = Number((request.params as { id: string }).id)
+      const answer = noteAnswerSchema.parse(request.body)
+      return (await answerNote({ playerUserId: userId(request) }, id, answer))
         ? reply.send({ ok: true })
         : reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'Note not found' })
     })

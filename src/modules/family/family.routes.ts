@@ -11,6 +11,8 @@ import {
   FamilyError, acceptPending, addChild, answerBookRequest, answerCoachRequest, answerInvite, childChangeEmail, childClose, childEnableLogin,
   childResetPassword, familyOverview, inviteInfo,
 } from './family.service.js'
+import { moveForNote, answerNote } from '../feedback/feedback.service.js'
+import { noteAnswerSchema } from '../../lib/note-answer.js'
 
 const userId = (request: { user?: unknown }) => (request.user as { sub: number }).sub
 const fail = (reply: FastifyReply, err: unknown) => {
@@ -40,6 +42,21 @@ export async function familyRoutes(app: FastifyInstance) {
     const id = (request: { params: unknown }) => Number((request.params as { id: string }).id)
 
     secure.get('/', async (request, reply) => reply.send(await familyOverview(userId(request))))
+
+    // NOTE-BOARD (29 Oct 2026): the parent's window on a child's move — the
+    // under-13 has no login, so the board the coach sent is watched (and the
+    // stop-and-think answered, by the child, on the parent's phone) here.
+    // Only a parent with an active link to that child; names removed.
+    secure.get('/notes/:id/move', async (request, reply) => {
+      const move = await moveForNote({ parentUserId: userId(request) }, id(request))
+      return move ? reply.send(move) : reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'Note not found' })
+    })
+    secure.post('/notes/:id/answer', async (request, reply) => {
+      const answer = noteAnswerSchema.parse(request.body)
+      return (await answerNote({ parentUserId: userId(request) }, id(request), answer))
+        ? reply.send({ ok: true })
+        : reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'Note not found' })
+    })
 
     secure.post('/links/:id/accept', async (request, reply) => {
       try { return reply.send(await acceptPending(userId(request), id(request))) } catch (err) { return fail(reply, err) }

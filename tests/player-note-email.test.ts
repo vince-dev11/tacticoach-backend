@@ -119,13 +119,17 @@ describe('the note email is a report, not a notification', () => {
     expect(mail.text).not.toContain('weak_foot')
   })
 
-  it('links the board when the coach attached one, and not when they did not', async () => {
+  it('links the move when the coach attached one — the player’s PRIVATE page, not the public board — and not when they did not', async () => {
+    // NOTE-BOARD (29 Oct 2026): the board need not be published; the link
+    // is the note's own move page, which only this player (or parent) can open.
     mockSend({ boardId: 77 })
-    expect((await send()).html).toContain('/share/board/77')
+    const html = (await send()).html
+    expect(html).toMatch(/\/my-football\/move\/\d+/)
+    expect(html).not.toContain('/share/board/77')
 
     sendMailMock.mockClear()
     mockSend({ boardId: null })
-    expect((await send()).html).not.toContain('/share/board/')
+    expect((await send()).html).not.toMatch(/\/move\//)
   })
 
   it('always offers the season, which is the only thing we ask them to open', async () => {

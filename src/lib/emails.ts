@@ -849,6 +849,8 @@ export interface PlayerNoteEmail {
   digest: { total: number; strengths: [string, number][]; workOns: [string, number][] }
   /** An animated board the coach attached to this note, if any. */
   boardId: number | null
+  /** NOTE-BOARD (29 Oct 2026): the note's id — the move is watched privately at /my-football/move/:noteId. */
+  noteId?: number
   /** KIDS-F6: a small home challenge sent with the note, if any. */
   challenge?: string | null
   guardianToken: string | null
@@ -914,7 +916,9 @@ export async function sendPlayerNoteEmail(params: PlayerNoteEmail): Promise<void
   const from = params.clubName ? `${params.coachName} · ${params.clubName}` : params.coachName
   const fromHtml = club ? `${coach} · ${club}` : coach
   const seasonUrl = `${site}/my-football`
-  const boardUrl = params.boardId ? `${site}/share/board/${params.boardId}` : null
+  // NOTE-BOARD: the player's private page for this note's move (the board is
+  // not published for it); the old public link stays for notes without an id.
+  const boardUrl = params.boardId ? (params.noteId ? `${site}/my-football/move/${params.noteId}` : `${site}/share/board/${params.boardId}`) : null
   const guardianUrl = params.guardianToken ? `${site}/guardian/${params.guardianToken}` : null
 
   const when = params.session?.date
