@@ -268,3 +268,13 @@ describe('PRO-GATE · 3D/Stadium, ball sounds and connected players are Pro (6 O
     for (const c of look) expect(can(ent('free', { editorAccess: false }), c)).toBe(false)
   })
 })
+
+describe('RECORD-YOURSELF (28 Oct 2026) · Pro and Club only', () => {
+  it('live_record is Pro and Club, not Basic and not the trial', async () => {
+    const { capabilitiesOf } = await import('../src/lib/capabilities.js')
+    expect(capabilitiesOf('pro')).toContain('live_record')
+    expect(capabilitiesOf('club-5')).toContain('live_record')
+    expect(capabilitiesOf('basic')).not.toContain('live_record')
+    expect(capabilitiesOf('free')).not.toContain('live_record')
+  })
+})

@@ -46,6 +46,8 @@ import {
 // action. See ebook-review.ts for why they must not each have their own.
 import { sentOnly } from '../../lib/sent-only.js'
 import { analyticsRoutes } from './analytics/analytics.routes.js'
+import { financeRoutes } from './finance/finance.routes.js'
+import { crmRoutes, accountsFor, logActivity, endOfToday, LEAD_STAGES, STAGE_LABEL, type LeadStage } from './crm.js'
 import { emailIssuesFor, usersWhoseLastEmailFailed } from './email-issues.js'
 import { forgetGate } from '../../lib/email-verify-gate.js'
 import { transition as transitionEbook, type EbookStatus as EbookStatusValue } from '../ebooks/ebook-review.js'
@@ -145,6 +147,12 @@ export async function adminRoutes(app: FastifyInstance) {
 
   // ===== Analytics (countries, features, funnels, health) ======================
   await app.register(analyticsRoutes)
+
+  // ===== Finance: Stripe ledger, expenses, profit & loss (FINANCE, 28 Oct 2026) =====
+  await app.register(financeRoutes)
+
+  // ===== CRM pipeline: stages, follow-ups, timeline (CRM-PIPELINE, 28 Oct 2026) =====
+  await app.register(crmRoutes)
 
   // ===== Onboarding: bulk resend, personal welcome (ONBOARDING-EMAIL) ===========
   await app.register(onboardingRoutes)
@@ -364,6 +372,8 @@ export async function adminRoutes(app: FastifyInstance) {
       // Support, apart from sales: the complaints are the ones to answer first.
       newSupport: await db.contactMessage.count({ where: { status: 'new', topic: { in: [...SUPPORT_TOPICS] } } }),
       openComplaints: await db.contactMessage.count({ where: { status: { not: 'closed' }, topic: 'complaint' } }),
+      // CRM-PIPELINE: sales follow-ups due today or overdue.
+      followUpsDue: await db.contactMessage.count({ where: { AND: [boxWhere('leads'), { followUpAt: { lte: endOfToday(now) }, stage: { notIn: ['won', 'lost'] } }] } }),
       signupsByWeek: weeks,
     })
   })
@@ -958,7 +968,7 @@ export async function adminRoutes(app: FastifyInstance) {
   // GET /admin/leads?status=&source=&kind=&q=
   // `box` = leads (default) | support — which inbox; `topic` narrows within it.
   app.get('/leads', async (request, reply) => {
-    const { status, source, kind, q, box, topic, channel } = request.query as Record<string, string>
+    const { status, source, kind, q, box, topic, channel, stage, due } = request.query as Record<string, string>
     const inbox: ContactBox = box === 'support' ? 'support' : 'leads'
     const leads = await leadDb().findMany({
       where: {
@@ -969,6 +979,9 @@ export async function adminRoutes(app: FastifyInstance) {
         ...(LeadStatus.safeParse(status).success ? { status: status as 'new' } : {}),
         ...(LeadSource.safeParse(source).success ? { source: source as 'web' } : {}),
         ...(LeadKind.safeParse(kind).success ? { kind: kind as 'coach' } : {}),
+        // CRM-PIPELINE: a stage, and "follow-ups due" (today or overdue, still open).
+        ...((LEAD_STAGES as readonly string[]).includes(stage) ? { stage: stage as LeadStage } : {}),
+        ...(due === '1' ? { followUpAt: { lte: endOfToday() }, stage: { notIn: ['won', 'lost'] as LeadStage[] } } : {}),
         // `none` = not recorded yet, so the gaps can be filled in.
         ...(channel === 'none'
           ? { channel: null }
@@ -985,10 +998,13 @@ export async function adminRoutes(app: FastifyInstance) {
             }
           : {}),
       },
-      orderBy: { createdAt: 'desc' },
+      orderBy: due === '1' ? { followUpAt: 'asc' } : { createdAt: 'desc' },
       take: 500,
     })
-    return reply.send(leads)
+    // CRM-PIPELINE: the account each lead became (matched by email), so a trial
+    // or a paying customer is visible from the lead.
+    const accounts = await accountsFor(leads.map((l) => l.email))
+    return reply.send(leads.map((l) => ({ ...l, account: accounts.get(l.email.toLowerCase()) ?? null })))
   })
 
   // GET /admin/leads/stats — the counts the list header shows.
@@ -1134,14 +1150,32 @@ export async function adminRoutes(app: FastifyInstance) {
         topic: z.enum(CONTACT_TOPICS).optional(),
         // Strict here (a picker, not a spreadsheet); null clears it.
         channel: z.enum(LEAD_CHANNELS).nullable().optional(),
+        // CRM-PIPELINE
+        stage: z.enum(LEAD_STAGES).optional(),
+        followUpAt: z.string().datetime({ offset: true, message: 'Use a date and time' }).nullable().optional(),
+        dealValuePence: z.number().int().min(0).max(100_000_000).nullable().optional(),
+        lostReason: z.string().trim().max(160).nullable().optional(),
       })
       .parse(request.body)
     if (Object.keys(input).length === 0) {
       return reply.status(422).send({ statusCode: 422, error: 'Unprocessable Entity', message: 'Nothing to change' })
     }
+    // Only a stage or follow-up change needs the row as it was (for the timeline).
+    const before = input.stage !== undefined || input.followUpAt !== undefined
+      ? await db.contactMessage.findUnique({ where: { id }, select: { stage: true, followUpAt: true } })
+      : null
+    if ((input.stage !== undefined || input.followUpAt !== undefined) && !before) {
+      return reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'Lead not found' })
+    }
+    const actor = (request.user as { sub?: number } | undefined)?.sub
+    const stageMoved = !!before && !!input.stage && input.stage !== before.stage
     const lead = await leadDb().update({
       where: { id },
       data: {
+        ...(stageMoved ? { stage: input.stage, stageChangedAt: new Date() } : {}),
+        ...(input.followUpAt !== undefined ? { followUpAt: input.followUpAt ? new Date(input.followUpAt) : null } : {}),
+        ...(input.dealValuePence !== undefined ? { dealValuePence: input.dealValuePence } : {}),
+        ...(input.lostReason !== undefined ? { lostReason: input.lostReason || null } : {}),
         ...(input.status ? { status: input.status } : {}),
         ...(input.kind ? { kind: input.kind } : {}),
         ...(input.note !== undefined ? { note: input.note?.trim() || null } : {}),
@@ -1149,6 +1183,13 @@ export async function adminRoutes(app: FastifyInstance) {
         ...(input.channel !== undefined ? { channel: input.channel } : {}),
       },
     })
+    if (stageMoved) {
+      const why = input.stage === 'lost' && input.lostReason ? ` — ${input.lostReason}` : ''
+      await logActivity(id, 'stage', `${STAGE_LABEL[before!.stage as LeadStage]} → ${STAGE_LABEL[input.stage!]}${why}`, actor)
+    }
+    if (before && input.followUpAt !== undefined && (input.followUpAt ? new Date(input.followUpAt).getTime() : null) !== (before.followUpAt?.getTime() ?? null)) {
+      await logActivity(id, 'followup', input.followUpAt ? `Follow up on ${input.followUpAt.slice(0, 10)}` : 'Follow-up cleared', actor)
+    }
     return reply.send(lead)
   })
 
@@ -1174,6 +1215,12 @@ export async function adminRoutes(app: FastifyInstance) {
     const updated = status !== 'sent' || lead.status !== 'new'
       ? lead
       : await leadDb().update({ where: { id }, data: { status: 'replied' } })
+    if (status === 'sent') {
+      // CRM-PIPELINE: the reply is on the timeline, and a new lead is now contacted.
+      await logActivity(id, 'reply', `Emailed: ${input.subject}`, (request.user as { sub?: number } | undefined)?.sub)
+      const stageNow = (lead as unknown as { stage?: string }).stage
+      if (stageNow === 'new') await db.contactMessage.update({ where: { id }, data: { stage: 'contacted', stageChangedAt: new Date() } })
+    }
     return reply.send({ status, lead: updated })
   })
 

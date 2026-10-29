@@ -61,6 +61,12 @@ export type Capability =
   | 'ball_sound'
   /** Connected players — linked blocks with distances (6 Oct 2026: Pro). */
   | 'connected_players'
+  /**
+   * RECORD-YOURSELF (28 Oct 2026, owner): record your camera and voice over
+   * the board and download the video. Pro and Club only — not in the trial.
+   * Recorded and saved in the browser; nothing is uploaded, so the gate is the UI's.
+   */
+  | 'live_record'
 
 /**
  * The tiers, by plan slug.
@@ -130,7 +136,7 @@ const BASIC: Capability[] = ['editor', 'video_export', 'planner', 'draft_ebooks'
 const PRO: Capability[] = [
   ...BASIC,
   'video_hd', 'social_export', 'multi_squad',
-  'own_branding', 'guardian_copies', 'ai', 'publish_ebooks',
+  'own_branding', 'guardian_copies', 'ai', 'publish_ebooks', 'live_record',
   ...PRO_LOOK,
 ]
 

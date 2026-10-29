@@ -98,6 +98,7 @@ export const CAPABILITY_WORDS: Record<Capability, string> = {
   board_3d: '3D and Stadium views',
   ball_sound: 'ball sounds in videos',
   connected_players: 'connected players',
+  live_record: 'record yourself explaining a board (camera and voice), saved on your device',
 }
 
 const LIMIT_WORDS: Record<string, string> = {

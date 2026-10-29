@@ -1375,10 +1375,56 @@ model ContactMessage {
   @@index([source, kind])
   @@index([topic, status])
   @@index([channel])
+  // ---- CRM-PIPELINE (28 Oct 2026, owner) — sales leads only ----
+  /// Where the lead is in the sale. Separate from `status` (the inbox's
+  /// new / replied / closed), which still drives the inbox.
+  stage          LeadStage  @default(new)
+  stageChangedAt DateTime?  @map("stage_changed_at")
+  /// The next time to get back to them. Null = nothing planned.
+  followUpAt     DateTime?  @map("follow_up_at")
+  /// Expected value per month if won (pence, GBP — what the plan costs).
+  dealValuePence Int?       @map("deal_value_pence")
+  lostReason     String?    @map("lost_reason") @db.VarChar(160)
+
+  activities LeadActivity[]
+
   /// Not unique — the same person may use the contact form twice. Dedupe on
   /// import is the importer's job; see admin.routes.
   @@index([email])
+  @@index([stage])
+  @@index([followUpAt])
   @@map("contact_messages")
+}
+
+enum LeadStage {
+  new
+  contacted
+  demo
+  trial
+  won
+  lost
+}
+
+enum LeadActivityKind {
+  note
+  stage
+  followup
+  reply
+}
+
+/// The lead's timeline: notes, stage moves, follow-ups set, replies sent.
+model LeadActivity {
+  id          Int              @id @default(autoincrement())
+  leadId      Int              @map("lead_id")
+  kind        LeadActivityKind
+  text        String           @db.VarChar(1000)
+  createdById Int?             @map("created_by_id")
+  createdAt   DateTime         @default(now()) @map("created_at")
+
+  lead ContactMessage @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  @@index([leadId, createdAt])
+  @@map("lead_activities")
 }
 
 enum LeadSource {
@@ -1993,4 +2039,83 @@ model AssistantQuestion {
 
   @@index([createdAt])
   @@map("assistant_questions")
+}
+
+// ===== FINANCE (28 Oct 2026, owner) ==========================================
+// Admin → Finance: what actually moved through Stripe, what we spent, and the
+// profit and loss. Reported in INR (the business is in India; Stripe settles
+// in INR), cash basis (a payment counts in the month it was paid).
+// Amounts are integers in the currency's minor unit (paise, pence).
+
+enum FinanceTxnKind {
+  subscription
+  book
+  refund
+  fee
+  other
+}
+
+/// One Stripe balance transaction (a charge, a refund, a Stripe fee). Imported
+/// by the owner's "Sync with Stripe"; the balance transaction id makes the
+/// import safe to repeat. Payouts to the bank are not income and are skipped.
+model FinanceTransaction {
+  id             Int            @id @default(autoincrement())
+  stripeTxnId    String         @unique @map("stripe_txn_id") @db.VarChar(64)
+  kind           FinanceTxnKind
+  /// For a refund: what was refunded (subscription or book). Null otherwise.
+  refundOf       FinanceTxnKind? @map("refund_of")
+  /// Settlement currency (INR on a Stripe India account) — what the P&L uses.
+  currency       String         @db.VarChar(3)
+  /// Gross in the settlement currency (negative for refunds and fees).
+  amount         Int
+  /// Stripe's fee on this transaction, settlement currency (positive = a cost).
+  fee            Int            @default(0)
+  net            Int
+  /// What the customer was charged, in their currency (GBP pence…).
+  chargeAmount   Int?           @map("charge_amount")
+  chargeCurrency String?        @map("charge_currency") @db.VarChar(3)
+  /// The charge's payment intent: joins a book sale to its purchase (author share).
+  paymentIntent  String?        @map("payment_intent") @db.VarChar(255)
+  userId         Int?           @map("user_id")
+  description    String         @default("") @db.VarChar(255)
+  occurredAt     DateTime       @map("occurred_at")
+  createdAt      DateTime       @default(now()) @map("created_at")
+
+  @@index([occurredAt])
+  @@index([kind, occurredAt])
+  @@index([paymentIntent])
+  @@map("finance_transactions")
+}
+
+enum ExpenseRepeat {
+  none
+  monthly
+  yearly
+}
+
+/// Money we spent. A repeating expense is a template: its occurrences are
+/// created up to today (repeatOfId + date unique, so it never doubles).
+model FinanceExpense {
+  id          Int           @id @default(autoincrement())
+  /// The day it was paid.
+  date        DateTime      @db.Date
+  category    String        @db.VarChar(30)
+  supplier    String        @default("") @db.VarChar(120)
+  description String        @default("") @db.VarChar(255)
+  /// What was paid, in its own currency.
+  amount      Int
+  currency    String        @db.VarChar(3)
+  /// The INR that left the account (the P&L figure). Equal to amount for INR.
+  amountInr   Int           @map("amount_inr")
+  repeat      ExpenseRepeat @default(none)
+  /// A repeating template stops creating occurrences after this day.
+  repeatUntil DateTime?     @map("repeat_until") @db.Date
+  repeatOfId  Int?          @map("repeat_of_id")
+  createdById Int?          @map("created_by_id")
+  createdAt   DateTime      @default(now()) @map("created_at")
+  updatedAt   DateTime      @updatedAt @map("updated_at")
+
+  @@unique([repeatOfId, date])
+  @@index([date])
+  @@map("finance_expenses")
 }
