@@ -28,6 +28,7 @@ Brief: `tacticoach-frontend/docs/briefs/2026-10-29-teach-players.md`.
 - **Dropdowns and dialog buttons (SELECT-ARROW / BTN-PAIR):** one dropdown arrow everywhere with room round it; Print / Save PDF the same height.
 - **Piece size on the attacking third (PIECE-SIZE):** the third's board is now 1331×720 (was 1000×541), so players and balls are the same size on screen as on every other pitch; saved boards are remapped on open.
 - **TV camera (TV-SMOOTH / TV-STILL / LIVE-60):** the 3D / Stadium TV camera now holds still while the ball plays in the middle of the picture and pans once, gently, when the ball nears the edge (it used to chase the ball every frame, so the pitch never stopped moving); the camera and the stands move on every screen frame (they stepped every other frame — the shaking). The Watch window and share player step at 60 a second (the file stays 30 fps; its TV camera holds and pans the same way). Measured in Chrome: 60 fps, no dropped frames, two pans in a three-move example.
+- **Social clip looks (SOCIAL-V6, 30 Oct):** Pitchside kept; Split, Corner, Playbook and Poster replaced by Broadcast, Headline, Editorial and Ticket (owner-approved designs in `TACTICAL_COACH/02_Marketing/Social_Templates_Proposal_2026-10-30/`). Same bands, same words, same kit-colour swap; the help topic lists the new names.
 - `nginx/spa-routes.conf` regenerated for the two new routes — deploy-web picks it up.
 
 ## Admin → Finance and the CRM pipeline (owner-only)
