@@ -69,6 +69,8 @@ export function referralLink(code: string): string {
  * Never throws — a bad or self-referring code must not stop someone signing up.
  */
 export async function attachReferral(newUserId: number, rawCode: string | null | undefined): Promise<void> {
+  // REFERRALS-HIDDEN: while the programme is off a code is dropped, never recorded.
+  if (!env.REFERRALS_ENABLED) return
   const code = rawCode?.trim().toUpperCase()
   if (!code) return
 

@@ -19,6 +19,9 @@ export default defineConfig({
       S3_BUCKET: 'test-bucket',
       CORS_ORIGINS: 'http://localhost:5280',
       FRONTEND_URL: 'http://localhost:5280',
+      // REFERRALS-HIDDEN: the programme is off by default; the referral
+      // tests check the running programme, referrals-hidden.test.ts the switch.
+      REFERRALS_ENABLED: 'true',
     },
     // Route tests share one mocked Prisma singleton; keep a single fork so
     // mock state never leaks across parallel workers.

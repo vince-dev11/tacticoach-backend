@@ -12,6 +12,7 @@
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { authGuard } from '../../middleware/auth-guard.js'
+import { env } from '../../config/env.js'
 import { latinOnly } from '../../lib/latin-only.js'
 import { db } from '../../config/database.js'
 import { getReferralSummary } from './referrals.service.js'
@@ -50,13 +51,18 @@ function badSignature(signature: string): string | null {
   return signatureProblem(signature)
 }
 
+/** REFERRALS-HIDDEN: the programme's own routes answer this while it is off. */
+const referralsOff = (reply: { status: (n: number) => { send: (b: unknown) => unknown } }) =>
+  reply.status(404).send({ statusCode: 404, error: 'referrals_off', message: 'The referral programme is not running at the moment.' })
+
 export async function referralsRoutes(app: FastifyInstance) {
   // ---- Public ---------------------------------------------------------------
 
   // Returns the inviter's FIRST NAME only. Codes are short and guessable, so a
   // lookup that echoed an email address would be a free enumeration tool.
   // Rate-limited for the same reason.
-  app.get('/lookup', { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (request) => {
+  app.get('/lookup', { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (request, reply) => {
+    if (!env.REFERRALS_ENABLED) return referralsOff(reply)
     const parsed = LookupQuery.safeParse(request.query)
     if (!parsed.success) return { valid: false, firstName: null }
 
@@ -86,7 +92,8 @@ export async function referralsRoutes(app: FastifyInstance) {
     // more detail, they signed it to become a collaborator, and asking them to
     // accept a second, weaker set of terms for the same activity would be
     // confusing at best and arguably contradictory.
-    scoped.get('/me', async (request) => {
+    scoped.get('/me', async (request, reply) => {
+      if (!env.REFERRALS_ENABLED) return referralsOff(reply)
       const id = userId(request)
       const collaborator = await db.collaborator.findUnique({
         where: { userId: id },
@@ -108,10 +115,11 @@ export async function referralsRoutes(app: FastifyInstance) {
 
     // The exact words, served from the API so that what somebody reads and the
     // version recorded against them come from the same place.
-    scoped.get('/agreement', async () => REFERRAL_AGREEMENT)
+    scoped.get('/agreement', async (_request, reply) => (env.REFERRALS_ENABLED ? REFERRAL_AGREEMENT : referralsOff(reply)))
 
     // POST /api/referrals/accept — the click that opens the programme.
     scoped.post('/accept', async (request, reply) => {
+      if (!env.REFERRALS_ENABLED) return referralsOff(reply)
       const id = userId(request)
       const input = SignatureSchema.parse(request.body)
       const problem = badSignature(input.signature)

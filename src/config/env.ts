@@ -61,6 +61,13 @@ const schema = z.object({
   // BILLING (20 Oct 2026): book sales go live with Stripe. A kill switch, in
   // case the shop must close while subscriptions keep running.
   BOOK_SALES: envBool(true),
+  // REFERRALS-HIDDEN (owner, 3 Nov 2026): the referral programme is put away
+  // for now. Off: /api/referrals/lookup, /me, /agreement and /accept answer
+  // 404 `referrals_off`, and a referralCode on register is dropped (no new
+  // referral is recorded). Referrals already recorded keep their credit — that
+  // was promised under the Terms. Collaborations are unaffected. The web app
+  // has its own switch (VITE_ENABLE_REFERRALS); both must be true.
+  REFERRALS_ENABLED: envBool(false),
   // ONBOARDING-EMAIL (20 Oct 2026): the bounce webhook's shared secret
   // (?token=… on the URL given to the email provider). Unset = webhook off.
   EMAIL_WEBHOOK_TOKEN: blankAsUnset,
