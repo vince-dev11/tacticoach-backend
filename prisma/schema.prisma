@@ -95,6 +95,10 @@ model User {
   /// SIGN-IN: when an INVITED person set their password from the link they
   /// were sent. Null = invited but not done yet, or never invited.
   setupCompletedAt   DateTime? @map("setup_completed_at")
+  /// BULK-MAIL (migration 66): when they opted out of team updates (the
+  /// one-click link in every bulk email). Null = receives them. Account and
+  /// service notices are never gated on this.
+  teamUpdatesOptOutAt DateTime? @map("team_updates_opt_out_at")
   /// FAMILY (12 Oct 2026): a player's date of birth, entered by the coach who
   /// creates the account. Decides who needs a parent (under 18) and who may
   /// log in at all (13+). Null for coaches, clubs, parents — and for players

@@ -1103,11 +1103,13 @@ export async function sendAdminMessage(params: {
   name: string
   subject: string
   body: string
-  kind: 'admin_message' | 'lead_reply'
+  kind: 'admin_message' | 'lead_reply' | 'team_update'
   /** The lead's own message, quoted under the reply. */
   quote?: string | null
   userId?: number
   actorId?: number
+  /** BULK-MAIL: the one-click opt-out link, on every team update. */
+  optOutUrl?: string
 }): Promise<DeliveryResult> {
   const paras = params.body.trim().split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean)
   const bodyHtml = paras
@@ -1121,17 +1123,22 @@ export async function sendAdminMessage(params: {
        </div>`
     : ''
   const quoteText = quote ? `\n\n---\nYou wrote:\n${quote.slice(0, 2000)}` : ''
+  // BULK-MAIL: a team update says why it came and how to stop the next one.
+  const optOut = params.kind === 'team_update' && params.optOutUrl ? params.optOutUrl : null
+  const optOutText = optOut ? `\n\nDon't want team updates? Opt out here: ${optOut}` : ''
   try {
     await sendMail({
       to: params.to,
       subject: params.subject.trim(),
-      text: `${params.body.trim()}\n\nThe TactiCoach team${quoteText}`,
+      text: `${params.body.trim()}\n\nThe TactiCoach team${quoteText}${optOutText}`,
       html: layout(
         esc(paras[0]?.slice(0, 90) ?? params.subject),
         `${bodyHtml}<p style="margin:0;color:#6b7280;font-size:13px">The TactiCoach team</p>${quoteHtml}`,
         params.kind === 'lead_reply'
           ? 'You&#39;re receiving this because you wrote to us through tacticoach.co.uk.'
-          : undefined,
+          : optOut
+            ? `You&#39;re receiving this because you have a TactiCoach account. Don&#39;t want team updates? <a href="${esc(optOut)}" style="color:#8a94a3">Opt out</a> — account and billing notices still reach you.`
+            : undefined,
       ),
       // Written by a person, so it comes from the team address (info@ once it
       // exists); replies go to the team inbox via sendMail.

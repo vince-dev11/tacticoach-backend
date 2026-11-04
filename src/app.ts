@@ -24,6 +24,7 @@ import { sessionsRoutes } from './modules/sessions/sessions.routes.js'
 import { stripeWebhookRoutes } from './modules/webhooks/stripe.routes.js'
 import { emailWebhookRoutes } from './modules/webhooks/email.routes.js'
 import { contactRoutes } from './modules/contact/contact.routes.js'
+import { teamUpdatesRoutes } from './modules/account/team-updates.routes.js'
 import { blogRoutes } from './modules/blog/blog.routes.js'
 import { articlesRoutes } from './modules/articles/articles.routes.js'
 import { adminRoutes } from './modules/admin/admin.routes.js'
@@ -177,6 +178,8 @@ export async function buildApp(): Promise<FastifyInstance> {
   // ONBOARDING-EMAIL: bounces from the email provider (own plugin: JSON parsed normally).
   await app.register(emailWebhookRoutes, { prefix: '/api/webhooks' })
   await app.register(contactRoutes, { prefix: '/api/contact' })
+  // BULK-MAIL: the public one-click opt-out from team updates.
+  await app.register(teamUpdatesRoutes, { prefix: '/api/account' })
   await app.register(collaborationsRoutes, { prefix: '/api/collaborations' })
   await app.register(blogRoutes, { prefix: '/api/blog' })
   // COACH-ARTICLES: a coach's own articles (auth; players denied by the lockdown).

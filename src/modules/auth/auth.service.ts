@@ -33,7 +33,7 @@ export async function registerUser(input: RegisterInput, extra: { dateOfBirth?: 
       name: input.name,
       surname: input.surname,
       email: input.email,
-      phone: input.phone ?? null,
+      phone: input.phone?.trim() || null,
       accountType: input.accountType,
       passwordHash,
       locale: storedLocale(input.locale),

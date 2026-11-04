@@ -1,6 +1,9 @@
 import { z } from 'zod'
 import { latinOnly } from '../../lib/latin-only.js'
 
+/** A WhatsApp / phone number with its country code: '+' then digits, spaces, dashes or brackets. */
+export const PHONE_RE = /^\+[0-9][0-9 ()-]{6,28}$/
+
 export const RegisterSchema = z.object({
   // Trimmed before the length check: "   " is not a name.
   name: latinOnly(z.string().trim().min(1).max(100)),
@@ -20,7 +23,8 @@ export const RegisterSchema = z.object({
   }).optional().nullable(),
   email: z.string().email(),
   password: z.string().min(8).max(128),
-  phone: z.string().max(30).optional(),
+  /** WHATSAPP (4 Nov 2026): optional, with the country code. Same rule as the web's lib/whatsapp.ts. */
+  phone: z.string().trim().max(30).regex(PHONE_RE, 'Enter a number with its country code, like +44 7700 900000').optional().or(z.literal('')),
   /** ONBOARDING-EMAIL: the app language at signup, for the emails they get. */
   locale: z.string().trim().max(10).optional(),
   /** The invite code from ?ref= on the signup link. Optional and never trusted:

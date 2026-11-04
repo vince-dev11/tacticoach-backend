@@ -50,3 +50,20 @@ describe('UpdateProfileSchema.accountType', () => {
     expect('role' in UpdateProfileSchema.parse({ name: 'Alex' })).toBe(false)
   })
 })
+
+// WHATSAPP (4 Nov 2026): an optional number with its country code; a bare
+// local number or junk is a field error, blank is accepted and stored as null.
+describe('RegisterSchema.phone (WhatsApp)', () => {
+  const base = { name: 'A', surname: 'B', email: 'a@b.co', password: 'Passw0rd!', password_confirmation: 'Passw0rd!' }
+  it('takes a number with a country code, or nothing', () => {
+    expect(RegisterSchema.parse({ ...base, phone: '+44 7700 900000' }).phone).toBe('+44 7700 900000')
+    expect(RegisterSchema.parse({ ...base, phone: '' }).phone).toBe('')
+    expect(RegisterSchema.parse(base).phone).toBeUndefined()
+  })
+  it('refuses a number without its country code, with a message a coach can act on', () => {
+    const r = RegisterSchema.safeParse({ ...base, phone: '07700 900000' })
+    expect(r.success).toBe(false)
+    if (!r.success) expect(r.error.issues[0].message).toMatch(/country code/)
+    expect(RegisterSchema.safeParse({ ...base, phone: '+44 abc' }).success).toBe(false)
+  })
+})

@@ -1,4 +1,4 @@
-# Deploy runbook — 28 Oct 2026 (API + web, migrations 61–65)
+# Deploy runbook — 28 Oct 2026 (API + web, migrations 61–66)
 
 Ships everything not yet committed on 28 Oct: the team set-up and the 27 Oct product-review fixes
 ("Part 2" of `Deploy_Runbook_2026-10-27.md`) plus the 28 Oct changes below.
@@ -14,6 +14,7 @@ it is already in the last commits; just do the steps below.
   new table `lead_activities`
 
 - `65_note_watch_answer` — `player_notes` gets `watched_at`, `answer` (JSON), `answered_at` (all nullable)
+- `66_team_updates_opt_out` — `users.team_updates_opt_out_at DATETIME NULL` (BULK-MAIL)
 
 All add columns (with defaults) or new tables; old code ignores them.
 
@@ -30,7 +31,11 @@ Brief: `tacticoach-frontend/docs/briefs/2026-10-29-teach-players.md`.
 - **TV camera (TV-SMOOTH / TV-STILL / LIVE-60):** the 3D / Stadium TV camera now holds still while the ball plays in the middle of the picture and pans once, gently, when the ball nears the edge (it used to chase the ball every frame, so the pitch never stopped moving); the camera and the stands move on every screen frame (they stepped every other frame — the shaking). The Watch window and share player step at 60 a second (the file stays 30 fps; its TV camera holds and pans the same way). Measured in Chrome: 60 fps, no dropped frames, two pans in a three-move example.
 - **Social clip looks (SOCIAL-V6, 30 Oct):** Pitchside kept; Split, Corner, Playbook and Poster replaced by Broadcast, Headline, Editorial and Ticket (owner-approved designs in `TACTICAL_COACH/02_Marketing/Social_Templates_Proposal_2026-10-30/`). Same bands, same words, same kit-colour swap; the help topic lists the new names.
 - `nginx/spa-routes.conf` regenerated for the two new routes — deploy-web picks it up.
+- **WhatsApp number (WHATSAPP, owner 4 Nov, API + web, no migration):** an optional "WhatsApp number" on sign-up and on the early-access request — coaches and clubs only, never a player or parent; must carry the country code (`+44 7700 900000`), checked on both sides (`lib/whatsapp.ts`, `auth.schema.ts` PHONE_RE). Sign-up stores it in the existing `users.phone`; early access adds a "WhatsApp: …" line to the lead's message. Admin → Users shows it as a green tap-to-chat link (wa.me); nowhere else. 7 locales. Live check 19: sign-up as a coach → the field sits under Email, `07700…` is refused, `+44 7700 900000` is accepted → Admin → Users shows "WhatsApp +44 7700 900000" on the row.
+- **Email everyone (BULK-MAIL, owner 4 Nov, API + web, migration 66):** Admin → Users → **Email everyone…** — pick *All coaches & clubs* / *Signed in at least once* / *Set up their password*, see the count, write subject + message (`{name}` = first name), confirm the number, get "Sent n of m · failed". One separate email per person (`kind: team_update` in the email log; 120 ms apart; 500 a go — press again for the rest), from `TEAM_MAIL_FROM`, with a one-click **opt out of team updates** link in every copy (`GET /api/account/team-updates/opt-out?u=&t=`, HMAC-signed, signed-out, answers a small page). Players and parents are never included; opted-out accounts are skipped and counted. Owner-only (`requireOwner`), 5 sends/hour. Use it for news and updates, not for account notices (those have their own emails and ignore the opt-out). Live check 20: Admin → Users → Email everyone → *Set up their password* → count shows → send to yourself first (make your own account match) → the mail arrives with "Hi <name>" and the opt-out line → tap it → the page says done → the count drops by one.
 - **Referral programme put away (REFERRALS-HIDDEN, owner 3 Nov, API + web):** off by default on both sides — nothing to set on the server. Web: no "Invite coaches" card on Profile, no `/referrals` page (real 404), no footer link, help topic, Terms §4a or llms.txt line, and a `?ref=` code on sign-up / early access is ignored; the links to `/referrals` on `/collaborate` and `/collaborators` are gone too. API: `/api/referrals/lookup`, `/me`, `/agreement` and `/accept` answer `404 referrals_off`; a `referralCode` on register is dropped. **Kept:** referrals already recorded still earn their credit on the first invoice (promised under the Terms); Admin → Referrals (signatures, PDFs) stays; Collaborations untouched. To run it again: `REFERRALS_ENABLED=true` (API) **and** `VITE_ENABLE_REFERRALS=true` (web build). Live check 18: Profile shows four cards (no Invite coaches); `/referrals` is the not-found page; `/terms` has no §4a; `/collaborate` has no referral button; `GET /api/referrals/me` with a coach token → 404 `referrals_off`.
+- **Sentry TACTICOACH-WEB-K / -N (STALE-BUILD-2, 3 Nov, web only):** "Cannot read properties of undefined (reading 'default')" on /login, once per deploy — the aftermath of the stale-build reload itself (a cancelled `vite:preloadError` makes Vite hand React.lazy an empty module while the page is already reloading). The boundary now knows a reload is in flight and reports nothing; a failure that comes back after the reload still reaches the crash screen. Resolve both in Sentry after deploy.
+- **Sentry TACTICOACH-WEB-M (INJECTED-SCRIPT, 3 Nov, web only):** "Error: Ma" on /reset-password with every frame "inside" the HTML (lines that are `<meta>` tags) — a script injected by the browser or an add-on, not ours. `beforeSend` drops errors whose frames are all in the page document; anything with a frame from a real `.js` file is kept. Resolve in Sentry.
 - **Admin → Referral terms → PDF (ADMIN-PDF-401, 3 Nov, web only):** the button was a plain link to the API, so the browser opened it with no sign-in token and the owner got `401 Invalid or expired token`. It now downloads the PDF with the token (`apiDownload` in `lib/api.ts`); an error shows on the page instead of a JSON screen. Live check 17: Admin → Referral terms → PDF on a signed coach → the file downloads.
 
 ## Admin → Finance and the CRM pipeline (owner-only)
@@ -85,7 +90,7 @@ git add -A && git commit -m "Team set-up; review fixes; nav keeps every item; bo
 ## 1. Server (tmux)
 ```bash
 cd /var/www/html/tacticoach-backend && echo y | NODE_OPTIONS=--max-old-space-size=1024 bash scripts/deploy-api.sh
-#   expect: backup OK → "5 migrations applied" (61–65) → build → pm2 restart → health OK
+#   expect: backup OK → "6 migrations applied" (61–66) → build → pm2 restart → health OK
 curl -s localhost:3001/health
 cd /var/www/html/tacticoach-frontend && bash scripts/deploy-web.sh && sudo nginx -t && sudo systemctl reload nginx
 ```
@@ -117,4 +122,4 @@ If `migrate deploy` fails the script stops before restarting — the old build k
 
 ## Rollback
 Code can be rolled back on its own (`git checkout <previous>` + the deploy scripts); leave
-migrations 61–65 in place — they only add columns and tables.
+migrations 61–66 in place — they only add columns and tables.

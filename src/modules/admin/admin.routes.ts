@@ -20,6 +20,7 @@ import {
   sendPasswordResetEmail, sendArticleApprovedEmail, sendArticleReturnedEmail,
 } from '../../lib/emails.js'
 import { isMailConfigured } from '../../config/mailer.js'
+import { AUDIENCES, BULK_MAX, audienceCount, sendTeamUpdate } from '../../lib/team-updates.js'
 import { storedLocale } from '../../lib/email-i18n.js'
 import { onboardingRoutes } from './onboarding.routes.js'
 import { stripe, stripeConfigured } from '../../config/stripe.js'
@@ -396,6 +397,8 @@ export async function adminRoutes(app: FastifyInstance) {
       id: true, name: true, surname: true, email: true, clubName: true,
       emailVerifiedAt: true, createdAt: true, role: true, accountType: true,
       freeTrialEndsAt: true,
+      // WHATSAPP (4 Nov 2026): the number a coach gave at sign-up, for the tap-to-chat link.
+      phone: true,
       // ONBOARDING-EMAIL: language, invitation and personal-welcome state.
       locale: true, setupInvitedAt: true, setupRemindersSent: true, welcomedAt: true,
       // SIGN-IN: has this person ever signed in, and did they finish their invitation?
@@ -699,6 +702,31 @@ export async function adminRoutes(app: FastifyInstance) {
       actorId: (request.user as { sub?: number } | undefined)?.sub,
     })
     return reply.send({ status })
+  })
+
+  // BULK-MAIL (4 Nov 2026): one message from the team to coaches and clubs.
+  //   GET  /admin/users/bulk-message/count?audience=all|signed_in|set_up
+  //   POST /admin/users/bulk-message { audience, subject, body }
+  // Each copy is a separate email with the person's first name and a one-click
+  // opt-out; players and parents are never included (lib/team-updates.ts).
+  // Awaited, so the admin sees the real counts; capped at BULK_MAX a go.
+  app.get('/users/bulk-message/count', async (request, reply) => {
+    const q = z.object({ audience: z.enum(AUDIENCES) }).safeParse(request.query ?? {})
+    if (!q.success) return reply.status(422).send({ statusCode: 422, message: 'Pick an audience', issues: q.error.issues })
+    return reply.send({ audience: q.data.audience, ...(await audienceCount(q.data.audience)), max: BULK_MAX })
+  })
+  const BulkInput = z.object({
+    audience: z.enum(AUDIENCES),
+    subject: z.string().trim().min(2).max(200),
+    body: z.string().trim().min(2).max(10_000),
+  })
+  app.post('/users/bulk-message', { config: { rateLimit: { max: 5, timeWindow: '1 hour' } } }, async (request, reply) => {
+    const input = BulkInput.parse(request.body)
+    if (!isMailConfigured()) {
+      return reply.status(503).send({ statusCode: 503, error: 'mail_unconfigured', message: "Email isn't configured on the server — nothing went out." })
+    }
+    const result = await sendTeamUpdate({ ...input, actorId: (request.user as { sub?: number } | undefined)?.sub })
+    return reply.send(result)
   })
 
   // GET /admin/users/:id/emails — what this account has been sent.
