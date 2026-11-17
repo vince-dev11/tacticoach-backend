@@ -1,4 +1,4 @@
-// Drill sheets — private by default, shareable to the community, likeable.
+// Drill sheets — shared by default since 17 Nov 2026 (PUBLIC-DEFAULT), private at the coach's choice, likeable.
 // The sheet's rendered image is stored in S3; `data` keeps the source
 // configuration so the owner can re-open and edit it later.
 
@@ -24,6 +24,8 @@ const CreateSheetSchema = z.object({
 })
 
 const UpdateSheetSchema = CreateSheetSchema.partial()
+/** PUBLIC-DEFAULT (owner, 17 Nov 2026): a NEW sheet is shared unless the coach chose private. Create only — PATCH /:id/publish changes it afterwards. */
+const NewSheetSchema = CreateSheetSchema.extend({ published: z.boolean().optional() })
 
 async function withImageUrl<T extends { imageKey?: string | null }>(
   sheet: T,
@@ -80,18 +82,18 @@ export async function drillSheetsRoutes(app: FastifyInstance) {
   // POST /drill-sheets — editor access required (trial or paid)
   app.post('/', { preHandler: requireEditorAccess }, async (request, reply) => {
     const userId = (request.user as any).sub as number
-    const input = CreateSheetSchema.parse(request.body)
+    const input = NewSheetSchema.parse(request.body)
     const sheet = await withQuota(userId, 'drillSheets', async () => db.drillSheet.create({
       data: {
         userId,
         title: input.title,
         description: input.description ?? null,
-        // SHEET-PRIVATE (12 Oct 2026): private by default, like boards. The
-        // picture can carry squad names (often children's); sharing is the
-        // coach's explicit choice — the builder's Private / Shared switch or
-        // the Library card (PATCH /:id/publish).
-        published: false,
-        publishedAt: null,
+        // PUBLIC-DEFAULT (owner's decision, 17 Nov 2026): shared unless the
+        // coach chose Private in the builder (was SHEET-PRIVATE, 12 Oct 2026:
+        // private by default). A shared sheet's pictures are still drawn
+        // WITHOUT squad names by the builder — that rule did not change.
+        published: input.published !== false,
+        publishedAt: input.published !== false ? new Date() : null,
         ...(input.data !== undefined && { data: input.data as Prisma.InputJsonValue }),
       },
     }))

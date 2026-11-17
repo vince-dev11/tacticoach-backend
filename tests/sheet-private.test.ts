@@ -5,21 +5,54 @@ import { describe, it, expect } from 'vitest'
 import { dbMock } from './setup.js'
 import { getApp, accessToken, authHeaders, activeSubscription } from './helpers.js'
 
-describe('SHEET-PRIVATE · a new drill sheet is private', () => {
-  it('POST /api/drill-sheets creates it unpublished', async () => {
+// PUBLIC-DEFAULT (owner's decision, 17 Nov 2026) reversed SHEET-PRIVATE's
+// default: a new sheet is shared unless the coach chose Private.
+describe('PUBLIC-DEFAULT · a new drill sheet is shared unless the coach chose private', () => {
+  it('POST /api/drill-sheets with published:false creates it private', async () => {
     const app = await getApp()
     dbMock.userSubscription.findUnique.mockResolvedValue(activeSubscription() as never)
     dbMock.clubMember.findUnique.mockResolvedValue(null)
     dbMock.club.findUnique.mockResolvedValue(null)
-    dbMock.drillSheet.create.mockResolvedValue({ id: 5, title: 'Rondo', published: false } as never)
+    dbMock.drillSheet.create.mockResolvedValue({ id: 6, title: 'Rondo', published: false } as never)
+    dbMock.drillSheet.create.mockClear()
+    const res = await app.inject({
+      method: 'POST', url: '/api/drill-sheets', headers: authHeaders(await accessToken()),
+      payload: { title: 'Rondo', data: { meta: {} }, published: false },
+    })
+    expect(res.statusCode).toBe(201)
+    const data = (dbMock.drillSheet.create.mock.calls[0][0] as { data: Record<string, unknown> }).data
+    expect(data.published).toBe(false)
+    expect(data.publishedAt).toBeNull()
+  })
+
+  it('PATCH cannot publish: the choice after creation is /:id/publish only', async () => {
+    const app = await getApp()
+    dbMock.userSubscription.findUnique.mockResolvedValue(activeSubscription() as never)
+    dbMock.clubMember.findUnique.mockResolvedValue(null)
+    dbMock.club.findUnique.mockResolvedValue(null)
+    dbMock.drillSheet.findFirst.mockResolvedValue({ id: 5, userId: 1, published: false } as never)
+    dbMock.drillSheet.update.mockResolvedValue({ id: 5 } as never)
+    dbMock.drillSheet.update.mockClear()
+    await app.inject({ method: 'PATCH', url: '/api/drill-sheets/5', headers: authHeaders(await accessToken()), payload: { title: 'Rondo 2', published: true } })
+    const data = (dbMock.drillSheet.update.mock.calls[0][0] as { data: Record<string, unknown> }).data
+    expect(data).not.toHaveProperty('published')
+  })
+
+  it('POST /api/drill-sheets creates it shared when nothing is said', async () => {
+    const app = await getApp()
+    dbMock.userSubscription.findUnique.mockResolvedValue(activeSubscription() as never)
+    dbMock.clubMember.findUnique.mockResolvedValue(null)
+    dbMock.club.findUnique.mockResolvedValue(null)
+    dbMock.drillSheet.create.mockResolvedValue({ id: 5, title: 'Rondo', published: true } as never)
+    dbMock.drillSheet.create.mockClear()
     const res = await app.inject({
       method: 'POST', url: '/api/drill-sheets', headers: authHeaders(await accessToken()),
       payload: { title: 'Rondo', data: { meta: {} } },
     })
     expect(res.statusCode).toBe(201)
     const data = (dbMock.drillSheet.create.mock.calls[0][0] as { data: Record<string, unknown> }).data
-    expect(data.published).toBe(false)
-    expect(data.publishedAt).toBeNull()
+    expect(data.published).toBe(true)
+    expect(data.publishedAt).toBeInstanceOf(Date)
   })
 })
 

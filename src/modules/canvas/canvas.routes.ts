@@ -34,7 +34,7 @@ const CreateBoardSchema = z.object({
   state: z.unknown().optional(),
   tags: TagsSchema.optional(),
   ...DetailsSchema,
-  /** Share to the community library. Off unless the coach ticks it. */
+  /** PUBLIC-DEFAULT (owner, 17 Nov 2026): in the community library unless the coach unticks it (false = private). */
   published: z.boolean().optional(),
 })
 
@@ -211,12 +211,16 @@ export async function canvasRoutes(app: FastifyInstance) {
         userId,
         title: input.title,
         pitchKey: input.pitchKey ?? null,
-        // PRIVATE unless the coach ticked "share to the community" when
-        // saving. Boards were public by default until 30 Sep 2026, which put
-        // a coach's first board — with their real players' names on it — in
-        // the public library without them choosing it.
-        published: input.published === true,
-        publishedAt: input.published === true ? new Date() : null,
+        // PUBLIC-DEFAULT (owner's decision, 17 Nov 2026): a new board is
+        // public — in the community library, with the names as drawn —
+        // unless the coach chose private when saving. History: public until
+        // 30 Sep 2026, then private by default (a first board with real
+        // players' names went public unchosen); the owner reversed that,
+        // knowing it, and the save dialog now says plainly that it is public
+        // and that names on the board will be seen. Boards made before this
+        // keep whatever they were.
+        published: input.published !== false,
+        publishedAt: input.published !== false ? new Date() : null,
         ...(input.state !== undefined && { state: input.state as Prisma.InputJsonValue }),
         ...(input.tags !== undefined && { tags: input.tags }),
         ...(input.ageGroup !== undefined && { ageGroup: input.ageGroup }),

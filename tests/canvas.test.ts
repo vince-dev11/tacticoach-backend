@@ -162,7 +162,22 @@ describe('POST /api/canvas/boards', () => {
       payload: { title: 'High press 4-3-3', pitchKey: 'full' },
     })
     expect(res.statusCode).toBe(201)
-    // Private unless asked: a coach's first board must not be public by accident.
+    // PUBLIC-DEFAULT (owner's decision, 17 Nov 2026): public unless the coach chose private.
+    expect(dbMock.canvasBoard.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ published: true, publishedAt: expect.any(Date) }) }),
+    )
+  })
+
+  it('PUBLIC-DEFAULT: published:false on create keeps the board private', async () => {
+    const app = await getApp()
+    grantEditorAccess()
+    dbMock.canvasBoard.create.mockResolvedValue(boardRow() as never)
+    dbMock.canvasBoard.create.mockClear()
+    const res = await app.inject({
+      method: 'POST', url: '/api/canvas/boards', headers: authHeaders(await accessToken()),
+      payload: { title: 'Line-up', pitchKey: 'full', published: false },
+    })
+    expect(res.statusCode).toBe(201)
     expect(dbMock.canvasBoard.create).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ published: false, publishedAt: null }) }),
     )
