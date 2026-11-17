@@ -1,3 +1,4 @@
+import { stripHiddenNames } from '../../lib/board-names.js'
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import type { Prisma } from '@prisma/client'
@@ -240,7 +241,9 @@ export async function canvasRoutes(app: FastifyInstance) {
       where: { id: Number(id), OR: [{ userId }, { published: true }] },
     })
     if (!board) return reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'Board not found' })
-    return reply.send(await withMediaUrls(board))
+    // NAMES-ALL: someone else's public board comes without the names its coach chose to hide.
+    const served = board.userId === userId ? board : { ...board, state: stripHiddenNames(board.state) }
+    return reply.send(await withMediaUrls(served))
   })
 
   // PATCH /canvas/boards/:id — editor access required
