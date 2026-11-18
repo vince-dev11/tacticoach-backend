@@ -335,6 +335,39 @@ describe('GET /api/canvas/library', () => {
   })
 })
 
+describe('COMMUNITY-FILTERS · topic, age group and format', () => {
+  it('narrows the published boards on the server; values outside the lists are ignored', async () => {
+    const app = await getApp()
+    dbMock.canvasBoard.findMany.mockResolvedValue([] as never)
+    dbMock.canvasBoard.count.mockResolvedValue(0 as never)
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/canvas/library?topic=pressing&age=u11&format=7v7&q=press',
+      headers: authHeaders(await accessToken()),
+    })
+    expect(res.statusCode).toBe(200)
+    const where = (dbMock.canvasBoard.findMany.mock.calls.at(-1)![0] as { where: Record<string, unknown> }).where
+    expect(where.published).toBe(true)
+    expect(where.AND).toEqual([
+      { tags: { array_contains: ['pressing'] } },
+      { ageGroup: 'u11' },
+      { pitchKey: { in: ['pitch_4'] } },
+    ])
+    expect(where.OR).toBeTruthy() // the search still applies
+    expect(dbMock.canvasBoard.count).toHaveBeenLastCalledWith({ where })
+
+    await app.inject({ method: 'GET', url: '/api/canvas/library?topic=dancing&age=u99&format=6v6', headers: authHeaders(await accessToken()) })
+    const loose = (dbMock.canvasBoard.findMany.mock.calls.at(-1)![0] as { where: Record<string, unknown> }).where
+    expect(loose).toEqual({ published: true })
+  })
+
+  it('11-a-side covers the classic and the full portrait pitch; half and third pitches are no format', async () => {
+    const { libraryFilters } = await import('../src/modules/canvas/canvas.routes.js')
+    expect(libraryFilters({ format: '11v11' })).toEqual([{ pitchKey: { in: ['classic', 'pitch_1'] } }])
+    expect(libraryFilters({})).toEqual([])
+  })
+})
+
 describe('COACH-PAGE-OPTIN · library cards follow the coach page switch', () => {
   it('a coach whose page is off: no link to their page and no photo on the card', async () => {
     const app = await getApp()

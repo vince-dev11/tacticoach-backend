@@ -23,6 +23,33 @@ const TagsSchema = z.array(z.enum(BOARD_TAGS)).max(3)
 /** Save-time details (the editor requires them; the API stays lenient so
  *  older clients and partial PATCHes keep working). */
 export const BOARD_AGE_GROUPS = ['u7', 'u9', 'u11', 'u13', 'u15', 'u17', 'senior'] as const
+
+/**
+ * COMMUNITY-FILTERS (18 Nov 2026): the library's Format filter, read from the
+ * board's pitch. Only pitches that ARE a format; half and third pitches,
+ * custom areas and a blank board say nothing about it, so they match "Any" only.
+ */
+export const LIBRARY_FORMAT_PITCHES: Record<string, string[]> = {
+  '5v5': ['pitch_5v5'],
+  '7v7': ['pitch_4'],
+  '8v8': ['pitch_8v8'],
+  '9v9': ['pitch_9v9'],
+  '11v11': ['classic', 'pitch_1'],
+}
+
+/** The library's filters from the query string; a value outside its list is ignored. */
+export function libraryFilters(query: Record<string, unknown>): Prisma.CanvasBoardWhereInput[] {
+  const pick = <T extends string>(v: unknown, allowed: readonly T[]): T | null =>
+    typeof v === 'string' && (allowed as readonly string[]).includes(v) ? (v as T) : null
+  const topic = pick(query.topic, BOARD_TAGS)
+  const age = pick(query.age, BOARD_AGE_GROUPS)
+  const format = pick(query.format, Object.keys(LIBRARY_FORMAT_PITCHES))
+  return [
+    ...(topic ? [{ tags: { array_contains: [topic] } }] : []),
+    ...(age ? [{ ageGroup: age }] : []),
+    ...(format ? [{ pitchKey: { in: LIBRARY_FORMAT_PITCHES[format] } }] : []),
+  ]
+}
 export const BOARD_DIFFICULTIES = ['beginner', 'intermediate', 'advanced'] as const
 const DetailsSchema = {
   ageGroup: z.enum(BOARD_AGE_GROUPS).optional().nullable(),
@@ -152,8 +179,10 @@ export async function canvasRoutes(app: FastifyInstance) {
     // Title, or the coach's name or club. MySQL's default collation makes
     // `contains` case-insensitive.
     const q = String((request.query as Record<string, unknown>).q ?? '').trim().slice(0, 80)
+    const filters = libraryFilters(request.query as Record<string, unknown>)
     const where: Prisma.CanvasBoardWhereInput = {
       published: true,
+      ...(filters.length && { AND: filters }),
       ...(q && {
         OR: [
           { title: { contains: q } },
