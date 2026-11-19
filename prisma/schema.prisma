@@ -1263,6 +1263,12 @@ model BlogPost {
   /// COACH-ARTICLES (20 Oct 2026): the admin's search keywords (meta keywords, related posts).
   seoKeywords    Json?     @map("seo_keywords")
   readMinutes    Int       @default(3) @map("read_minutes")
+  /// BLOG-V4 (19 Nov 2026): who the article is for ("U9–U11"), shown as a label.
+  ageGroup       String?   @map("age_group") @db.VarChar(40)
+  /// BLOG-V4: the pitch formats it suits — ['5v5','7v7',…]; the blog's Format filter.
+  formats        Json?
+  /// BLOG-V4: the practice it describes — { players, area, time, equipment } (free text).
+  practice       Json?
   /// 'team' = written in Admin (the blog as it was); 'coach' = written by a coach, published only after review.
   authorKind     AuthorKind @default(team) @map("author_kind")
   submittedAt    DateTime? @map("submitted_at")

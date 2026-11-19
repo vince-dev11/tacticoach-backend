@@ -5,7 +5,27 @@ import type { FastifyInstance } from 'fastify'
 import { db } from '../../config/database.js'
 import { env } from '../../config/env.js'
 import { presignUrl } from '../../config/s3.js'
-import { authorsFor, bylineOf } from './blog.shared.js'
+import type { Prisma } from '@prisma/client'
+import { BLOG_FORMATS, authorsFor, bylineOf } from './blog.shared.js'
+
+/**
+ * BLOG-V4 (19 Nov 2026): the blog page's topic chips, Format select and search
+ * box, applied here so paging stays right. Unknown values are ignored, so an
+ * old link never errors. No filter → exactly { status: 'published' }.
+ */
+export function blogFilters(query: Record<string, unknown>): Prisma.BlogPostWhereInput {
+  const str = (v: unknown, max: number) => (typeof v === 'string' ? v.trim().slice(0, max) : '')
+  const tag = str(query.tag, 40)
+  const format = str(query.format, 8)
+  const q = str(query.q, 80)
+  const and: Prisma.BlogPostWhereInput[] = [
+    ...(tag ? [{ tags: { array_contains: [tag] } }] : []),
+    ...((BLOG_FORMATS as readonly string[]).includes(format) ? [{ formats: { array_contains: [format] } }] : []),
+    // MySQL's default collation compares case-insensitively.
+    ...(q ? [{ OR: [{ title: { contains: q } }, { excerpt: { contains: q } }] }] : []),
+  ]
+  return and.length ? { status: 'published', AND: and } : { status: 'published' }
+}
 
 const CARD_SELECT = {
   id: true,
@@ -16,6 +36,9 @@ const CARD_SELECT = {
   tags: true,
   publishedAt: true,
   readMinutes: true,
+  // BLOG-V4: the labels on a card (age, formats).
+  ageGroup: true,
+  formats: true,
   // COACH-ARTICLES: the byline (a coach's name and page), null for a team post.
   authorId: true,
   authorKind: true,
@@ -44,15 +67,16 @@ export async function blogRoutes(app: FastifyInstance) {
     const { page = '1', limit = '12' } = request.query as Record<string, string>
     const take = Math.min(50, Number(limit) || 12)
     const skip = (Math.max(1, Number(page) || 1) - 1) * take
+    const where = blogFilters(request.query as Record<string, unknown>)
     const [posts, total] = await Promise.all([
       db.blogPost.findMany({
-        where: { status: 'published' },
+        where,
         orderBy: { publishedAt: 'desc' },
         skip,
         take,
         select: CARD_SELECT,
       }),
-      db.blogPost.count({ where: { status: 'published' } }),
+      db.blogPost.count({ where }),
     ])
     const authors = await authorsFor(posts)
     return reply.send({

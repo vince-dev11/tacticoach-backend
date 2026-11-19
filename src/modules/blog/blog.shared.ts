@@ -43,6 +43,33 @@ export async function withCover<T extends { coverImageKey: string | null }>(post
 }
 
 /** Up to 15 keywords, each short; written by the admin only. */
+/**
+ * BLOG-V4 (19 Nov 2026): who an article is for and the practice it describes.
+ * All optional, all free text the admin types — facts for the reader, never
+ * rules (a format is never inferred from an age group).
+ */
+export const BLOG_FORMATS = ['5v5', '7v7', '8v8', '9v9', '11v11'] as const
+const practiceText = (max: number) => z.string().trim().max(max).optional().nullable()
+export const PracticeSchema = z
+  .object({
+    players: practiceText(40),
+    area: practiceText(40),
+    time: practiceText(40),
+    equipment: practiceText(240),
+  })
+  .nullable()
+export const BlogDetailsSchema = {
+  ageGroup: z.string().trim().max(40).optional().nullable(),
+  formats: z.array(z.enum(BLOG_FORMATS)).max(BLOG_FORMATS.length).optional().nullable(),
+  practice: PracticeSchema.optional(),
+}
+/** An empty practice box is no practice box. */
+export function cleanPractice(p: z.infer<typeof PracticeSchema> | undefined) {
+  if (!p) return null
+  const out = Object.fromEntries(Object.entries(p).filter(([, v]) => typeof v === 'string' && v.trim() !== ''))
+  return Object.keys(out).length ? out : null
+}
+
 export const KeywordsSchema = z.array(z.string().trim().min(1).max(60)).max(15)
 
 /**

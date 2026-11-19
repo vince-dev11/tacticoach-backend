@@ -4,7 +4,7 @@
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { subIsActive } from '../../lib/entitlements.js'
-import type { Prisma } from '@prisma/client'
+import { Prisma } from '@prisma/client'
 import { authGuard } from '../../middleware/auth-guard.js'
 import { requireOwner } from '../../middleware/owner-guard.js'
 import { db } from '../../config/database.js'
@@ -135,10 +135,12 @@ const PostSchema = z.object({
   seoDescription: z.string().max(320).optional().nullable(),
   // COACH-ARTICLES: the admin's search keywords (meta keywords + related posts).
   seoKeywords: KeywordsSchema.optional().nullable(),
+  // BLOG-V4: age label, formats and the practice box (all optional).
+  ...BlogDetailsSchema,
 })
 
 // Slugs, reading time, covers: shared with the coach articles module.
-import { COVER_MAX, COVER_TYPES, KeywordsSchema, authorsFor, bylineOf, readMinutes, slugify, uniqueSlug, withCover } from '../blog/blog.shared.js'
+import { BlogDetailsSchema, COVER_MAX, COVER_TYPES, KeywordsSchema, authorsFor, cleanPractice, bylineOf, readMinutes, slugify, uniqueSlug, withCover } from '../blog/blog.shared.js'
 
 // ---- Routes ------------------------------------------------------------------
 
@@ -253,6 +255,9 @@ export async function adminRoutes(app: FastifyInstance) {
         seoDescription: input.seoDescription ?? null,
         seoKeywords: (input.seoKeywords ?? []) as Prisma.InputJsonValue,
         readMinutes: readMinutes(input.content),
+        ageGroup: input.ageGroup || null,
+        formats: input.formats?.length ? (input.formats as Prisma.InputJsonValue) : Prisma.DbNull,
+        practice: (cleanPractice(input.practice) ?? Prisma.DbNull) as Prisma.InputJsonValue,
         authorId: userId,
         authorKind: 'team',
       },
@@ -281,6 +286,9 @@ export async function adminRoutes(app: FastifyInstance) {
         ...(input.seoTitle !== undefined && { seoTitle: input.seoTitle }),
         ...(input.seoDescription !== undefined && { seoDescription: input.seoDescription }),
         ...(input.seoKeywords !== undefined && { seoKeywords: (input.seoKeywords ?? []) as Prisma.InputJsonValue }),
+        ...(input.ageGroup !== undefined && { ageGroup: input.ageGroup || null }),
+        ...(input.formats !== undefined && { formats: input.formats?.length ? (input.formats as Prisma.InputJsonValue) : Prisma.DbNull }),
+        ...(input.practice !== undefined && { practice: (cleanPractice(input.practice) ?? Prisma.DbNull) as Prisma.InputJsonValue }),
         ...(input.status !== undefined && {
           status: input.status,
           publishedAt:
