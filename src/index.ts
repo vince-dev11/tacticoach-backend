@@ -5,6 +5,7 @@ import { db } from './config/database.js'
 import { describeStorage } from './config/s3.js'
 import { buildApp } from './app.js'
 import { startTrialReminderScheduler } from './jobs/trial-reminders.js'
+import { startActivityRetention } from './jobs/activity-retention.js'
 import { startSetupReminderScheduler } from './jobs/setup-reminders.js'
 import { stripeConfigured } from './config/stripe.js'
 import { stripeMode } from './modules/membership/stripe-catalog.js'
@@ -30,6 +31,7 @@ const start = async () => {
     await app.listen({ port: env.PORT, host: '0.0.0.0' })
     startTrialReminderScheduler()
     startSetupReminderScheduler()
+    startActivityRetention()
     console.log(`🚀  TactiCoach API running on port ${env.PORT}`)
     console.log(`📦  Uploads: ${storage.backend === 's3' ? 'S3' : 'local disk'} → ${storage.location}`)
     if (storage.warning) console.warn(`⚠️   ${storage.warning}`)

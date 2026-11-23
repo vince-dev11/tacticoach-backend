@@ -41,6 +41,7 @@ import { authoringRoutes } from './modules/ebooks/authoring.routes.js'
 import { certificatesRoutes } from './modules/certificates/certificates.routes.js'
 import { playerLockdown } from './middleware/player-guard.js'
 import { familyRoutes } from './modules/family/family.routes.js'
+import { activityRoutes } from './modules/activity/activity.routes.js'
 import { assistantRoutes } from './modules/assistant/assistant.routes.js'
 
 export async function buildApp(): Promise<FastifyInstance> {
@@ -193,6 +194,8 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(coachPageRoutes, { prefix: '/api/coach' })
   await app.register(feedbackRoutes, { prefix: '/api/feedback' })
   await app.register(familyRoutes, { prefix: '/api/family' })
+  // ACTIVITY-LOG (23 Nov 2026): what coach accounts do, for Admin → Analytics.
+  await app.register(activityRoutes, { prefix: '/api/activity' })
   // ASK (21 Oct 2026): coaches only — not on the player allow-list, on purpose.
   await app.register(assistantRoutes, { prefix: '/api/assistant' })
   await app.register(ebooksRoutes, { prefix: '/api/ebooks' })

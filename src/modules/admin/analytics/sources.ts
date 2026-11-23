@@ -23,9 +23,34 @@ import { env } from '../../../config/env.js'
 export type SourceState = 'ok' | 'unconfigured' | 'error'
 export interface SourceStatus { state: SourceState; detail?: string }
 
-export type Range = '7d' | '30d' | '90d'
-export const RANGES: Range[] = ['7d', '30d', '90d']
-export const rangeDays = (r: Range) => ({ '7d': 7, '30d': 30, '90d': 90 })[r]
+export type RangeKey = '7d' | '30d' | '90d'
+export const RANGES: RangeKey[] = ['7d', '30d', '90d']
+/**
+ * ANALYTICS-DATES (23 Nov 2026, owner: "we can also see the date wise so add
+ * that option"): a period is a preset (7 / 30 / 90 days to today) or any
+ * from–to pair of days, inclusive, in UTC. `key` names it for the cache.
+ */
+export interface Range { from: string; to: string; days: number; key: string }
+export const rangeDays = (r: Range) => r.days
+const DAY_MS = 86_400_000
+const ymd = (d: Date) => d.toISOString().slice(0, 10)
+const isDay = (v: unknown): v is string => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v) && !Number.isNaN(Date.parse(`${v}T00:00:00Z`))
+export function rangeOf(q: { range?: string; from?: string; to?: string }, now = new Date()): Range {
+  if (isDay(q.from) && isDay(q.to)) {
+    let from = q.from, to = q.to
+    if (from > to) [from, to] = [to, from]
+    // Never past today, and at most a year and a bit.
+    if (to > ymd(now)) to = ymd(now)
+    const days = Math.min(400, Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / DAY_MS) + 1)
+    from = ymd(new Date(Date.parse(`${to}T00:00:00Z`) - (days - 1) * DAY_MS))
+    return { from, to, days, key: `${from}_${to}` }
+  }
+  const key = (RANGES as string[]).includes(q.range ?? '') ? (q.range as RangeKey) : '30d'
+  const days = ({ '7d': 7, '30d': 30, '90d': 90 } as const)[key]
+  return { from: ymd(new Date(now.getTime() - (days - 1) * DAY_MS)), to: ymd(now), days, key }
+}
+/** The period as database bounds: [start of `from`, start of the day after `to`). */
+export const rangeBounds = (r: Range) => ({ gte: new Date(`${r.from}T00:00:00Z`), lt: new Date(Date.parse(`${r.to}T00:00:00Z`) + DAY_MS) })
 
 // ---- Cache ------------------------------------------------------------------
 // Fifteen minutes. The page is opened by one owner a few times a day; the
@@ -119,7 +144,7 @@ export interface GaReportRequest {
 export async function ga4Report(req: GaReportRequest): Promise<GaRow[]> {
   const token = await googleAccessToken()
   const body: Record<string, unknown> = {
-    dateRanges: [{ startDate: `${rangeDays(req.range)}daysAgo`, endDate: 'today' }],
+    dateRanges: [{ startDate: req.range.from, endDate: req.range.to }],
     dimensions: req.dimensions.map((name) => ({ name })),
     metrics: req.metrics.map((name) => ({ name })),
     limit: req.limit ?? 250,
@@ -181,7 +206,7 @@ export interface FunnelStep { name: string; count: number }
 export async function posthogFunnel(events: string[], range: Range, name: string): Promise<FunnelStep[]> {
   const data = await posthogQuery<{ results: { name: string; count: number }[] }>({
     kind: 'FunnelsQuery',
-    dateRange: { date_from: `-${rangeDays(range)}d` },
+    dateRange: { date_from: range.from, date_to: range.to },
     series: events.map((event) => ({ kind: 'EventsNode', event })),
     funnelsFilter: { funnelWindowInterval: 30, funnelWindowIntervalUnit: 'day' },
   }, name)

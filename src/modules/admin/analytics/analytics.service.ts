@@ -21,7 +21,7 @@ import { env } from '../../../config/env.js'
 import { eventLoopLag, requestSummary } from '../../../lib/request-stats.js'
 import {
   cached, ga4Configured, ga4Report, posthogConfigured, posthogFunnel, posthogSql,
-  rangeDays, sentryConfigured, sentryErrorsPerDay, sentryIssues,
+  rangeBounds, rangeDays, sentryConfigured, sentryErrorsPerDay, sentryIssues,
   type FunnelStep, type Range, type SentryIssue, type SourceStatus,
 } from './sources.js'
 
@@ -60,7 +60,7 @@ export interface CountryRow {
 }
 
 export async function countriesView(range: Range) {
-  return cached(`countries:${range}`, () =>
+  return cached(`countries:${range.key}`, () =>
     sourced(ga4Configured(), async (): Promise<{ rows: CountryRow[]; totals: Omit<CountryRow, 'code' | 'name'> }> => {
       const [audience, events] = await Promise.all([
         ga4Report({ dimensions: ['countryId', 'country'], metrics: ['activeUsers', 'newUsers', 'sessions'], range, orderByMetricDesc: 'activeUsers' }),
@@ -107,16 +107,16 @@ export function isoWeek(d: Date): string {
 
 /** Our own tables: what was CREATED, per ISO week, over the range. */
 export async function dbFeatureTrend(range: Range): Promise<{ weekly: WeeklyPoint[]; totals: Record<string, number> }> {
-  const since = new Date(Date.now() - rangeDays(range) * 86400_000)
-  const sel = { select: { createdAt: true }, where: { createdAt: { gte: since } } } as const
+  const since = rangeBounds(range)
+  const sel = { select: { createdAt: true }, where: { createdAt: since } } as const
   const [users, boards, sheets, sessions, books, notes, subs] = await Promise.all([
     db.user.findMany(sel),
     db.canvasBoard.findMany(sel),
     db.drillSheet.findMany(sel),
     db.trainingSession.findMany(sel),
     db.ebook.findMany(sel),
-    db.playerNote.findMany({ select: { createdAt: true }, where: { createdAt: { gte: since }, sentAt: { not: null } } }),
-    db.userSubscription.findMany({ select: { createdAt: true }, where: { createdAt: { gte: since }, status: 'active', paymentProvider: 'stripe' } }),
+    db.playerNote.findMany({ select: { createdAt: true }, where: { createdAt: since, sentAt: { not: null } } }),
+    db.userSubscription.findMany({ select: { createdAt: true }, where: { createdAt: since, status: 'active', paymentProvider: 'stripe' } }),
   ])
   const series: Record<string, { createdAt: Date }[]> = {
     signups: users, boards, sheets, sessions, books, feedback: notes, paid: subs,
@@ -137,7 +137,7 @@ export async function dbFeatureTrend(range: Range): Promise<{ weekly: WeeklyPoin
 }
 
 export async function featuresView(range: Range) {
-  return cached(`features:${range}`, async () => {
+  return cached(`features:${range.key}`, async () => {
     const [ga, dbTrend] = await Promise.all([
       sourced(ga4Configured(), async () => {
         const [totals, byCountry, daily] = await Promise.all([
@@ -177,7 +177,7 @@ export const FUNNELS: Record<string, { label: string; steps: string[] }> = {
 export interface FunnelResult { key: string; label: string; steps: FunnelStep[]; ordered: boolean }
 
 export async function funnelsView(range: Range) {
-  return cached(`funnels:${range}`, async () => {
+  return cached(`funnels:${range.key}`, async () => {
     // PostHog: strictly ordered, per person. The real thing.
     const posthog = await sourced(posthogConfigured(), async (): Promise<FunnelResult[]> => {
       const out: FunnelResult[] = []
@@ -216,7 +216,7 @@ export async function funnelsView(range: Range) {
 // ---- Health -------------------------------------------------------------------
 
 export async function healthView(range: Range) {
-  return cached(`health:${range}`, async () => {
+  return cached(`health:${range.key}`, async () => {
     // SENTRY-400: the two cards read two different Sentry endpoints, and one
     // failing used to blank both. Each part now fails on its own and says why
     // (`issuesError` / `errorsPerDayError`); only both failing is an error.
@@ -237,10 +237,10 @@ export async function healthView(range: Range) {
       return { issues, errorsPerDay: perDay.ok ? perDay.v : [], ...(issuesError && { issuesError }), ...(errorsPerDayError && { errorsPerDayError }) }
     })
     // Our own signal, always available: emails that failed to send.
-    const since = new Date(Date.now() - rangeDays(range) * 86400_000)
+    const since = rangeBounds(range)
     const [emailsSent, emailsFailed, leadsNew] = await Promise.all([
-      db.emailLog.count({ where: { createdAt: { gte: since }, status: 'sent' } }),
-      db.emailLog.count({ where: { createdAt: { gte: since }, status: 'failed' } }),
+      db.emailLog.count({ where: { createdAt: since, status: 'sent' } }),
+      db.emailLog.count({ where: { createdAt: since, status: 'failed' } }),
       db.contactMessage.count({ where: { status: 'new' } }),
     ])
     return { sentry, db: { emailsSent, emailsFailed, leadsNew } }
@@ -250,13 +250,13 @@ export async function healthView(range: Range) {
 // ---- PostHog extras (features by country from the person's IP, consent-free) ----
 
 export async function posthogFeaturesByCountry(range: Range) {
-  return cached(`ph-features:${range}`, () =>
+  return cached(`ph-features:${range.key}`, () =>
     sourced(posthogConfigured(), async () => {
       const list = ALL_FEATURE_EVENTS.map((e) => `'${e}'`).join(',')
       const rows = await posthogSql(
         `SELECT event, properties.$geoip_country_code AS country, count() AS n, count(DISTINCT person_id) AS people
          FROM events
-         WHERE timestamp >= now() - INTERVAL ${rangeDays(range)} DAY AND event IN (${list})
+         WHERE timestamp >= toDateTime('${range.from} 00:00:00') AND timestamp < toDateTime('${range.to} 00:00:00') + INTERVAL 1 DAY AND event IN (${list})
          GROUP BY event, country ORDER BY n DESC LIMIT 500`,
         'admin_features_by_country',
       )

@@ -142,6 +142,8 @@ model User {
   squads          Squad[]
   squadPlayers    SquadPlayer[]
   aiUsage         AiUsage[]
+  /// ACTIVITY-LOG (23 Nov 2026): what a coach did in the app, for the owner's analytics.
+  activityEvents  ActivityEvent[]
   aiCorrections   AiCorrection[]
   challengeSubmissions ChallengeSubmission[]
   challengeVotes       ChallengeVote[]
@@ -2137,3 +2139,28 @@ model FinanceExpense {
   @@index([date])
   @@map("finance_expenses")
 }
+
+/// ACTIVITY-LOG (23 Nov 2026, owner: "what exactly users are doing"). Our own
+/// record of what COACH and CLUB accounts do in the app — the product events
+/// the frontend already names (board_saved, board_exported …) and the screens
+/// they open — so the owner can see feature use by day, each coach's timeline,
+/// where coaches stop, and who comes back. Never players or parents (refused
+/// by the API). Deleted with the account; kept 13 months (jobs/activity-retention).
+model ActivityEvent {
+  id        BigInt   @id @default(autoincrement())
+  userId    Int      @map("user_id")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// lower_snake_case product event, or 'page_viewed'.
+  event     String   @db.VarChar(60)
+  /// Short, never personal: format, quality, template… (no names, emails or free text).
+  props     Json?
+  /// The screen, with ids taken out ("/editor", "/sessions/:id").
+  path      String?  @db.VarChar(120)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([createdAt])
+  @@index([userId, createdAt])
+  @@index([event, createdAt])
+  @@map("activity_events")
+}
+
