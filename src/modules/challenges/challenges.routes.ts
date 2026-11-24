@@ -101,9 +101,28 @@ export async function challengesRoutes(app: FastifyInstance) {
   })
 
   // POST /challenges — publish next week's scenario. Owner only.
+  // CHALLENGE-DELETE (24 Nov 2026): the same title and start twice is a
+  // double publish, never two challenges — refuse the second (409).
   app.post('/', { preHandler: [authGuard, requireOwner] }, async (request, reply) => {
     const input = CreateChallengeSchema.parse(request.body)
+    const twin = await db.challenge.findFirst({ where: { title: input.title, startsAt: input.startsAt }, select: { id: true } })
+    if (twin) {
+      return reply.status(409).send({ statusCode: 409, error: 'Conflict', message: 'This challenge is already published (same title and start).' })
+    }
     const challenge = await db.challenge.create({ data: input })
     return reply.status(201).send(challenge)
+  })
+
+  // DELETE /challenges/:id — remove a challenge published by mistake. Owner
+  // only. Its entries and votes go with it (cascade); the coaches' boards stay.
+  app.delete('/:id', { preHandler: [authGuard, requireOwner] }, async (request, reply) => {
+    const id = Number((request.params as { id: string }).id)
+    if (!Number.isInteger(id) || id <= 0) {
+      return reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'Challenge not found' })
+    }
+    const found = await db.challenge.findUnique({ where: { id }, select: { id: true, _count: { select: { submissions: true } } } })
+    if (!found) return reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'Challenge not found' })
+    await db.challenge.delete({ where: { id } })
+    return reply.send({ ok: true, removedEntries: found._count.submissions })
   })
 }
