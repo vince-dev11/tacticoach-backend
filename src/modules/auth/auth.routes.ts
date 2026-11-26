@@ -1,3 +1,4 @@
+import { DISPOSABLE_MESSAGE, SAME_INBOX_MESSAGE, inboxOf, isDisposableEmail } from '../../lib/email-checks.js'
 import { forgetGate } from '../../lib/email-verify-gate.js'
 import { randomUUID } from 'node:crypto'
 import type { FastifyInstance } from 'fastify'
@@ -106,6 +107,18 @@ export async function authRoutes(app: FastifyInstance) {
       statusCode: 422, error: 'Validation Error', message: Object.values(issues)[0],
       issues: Object.fromEntries(Object.entries(issues).map(([k, v]) => [k, [v]])),
     })
+    // DISPOSABLE-EMAIL / SAME-INBOX (25 Nov 2026): an email the person will
+    // keep, and one account per inbox. New sign-ups only.
+    if (isDisposableEmail(input.email)) {
+      return reply.status(422).send({ statusCode: 422, error: 'disposable_email', message: DISPOSABLE_MESSAGE, issues: { email: [DISPOSABLE_MESSAGE] } })
+    }
+    if (input.parent?.email && isDisposableEmail(input.parent.email)) {
+      return reply.status(422).send({ statusCode: 422, error: 'disposable_email', message: DISPOSABLE_MESSAGE, issues: { 'parent.email': [DISPOSABLE_MESSAGE] } })
+    }
+    // The exact address already taken keeps its own answer (registerUser); this
+    // catches the same inbox written differently (dots, "+tag", googlemail).
+    const twin = await db.user.findFirst({ where: { emailInbox: inboxOf(input.email), NOT: { email: input.email } }, select: { id: true } })
+    if (twin) return reply.status(409).send({ statusCode: 409, error: 'same_inbox', message: SAME_INBOX_MESSAGE, issues: { email: [SAME_INBOX_MESSAGE] } })
     if (input.accountType === 'player') {
       const missing: Record<string, string> = {}
       if (!input.dateOfBirth) missing.dateOfBirth = 'Enter your date of birth'

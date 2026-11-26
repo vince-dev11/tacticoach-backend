@@ -30,8 +30,11 @@ export async function activateSubscription(params: {
   billingCycle: 'monthly' | 'annual'
   providerSubscriptionId: string
   expiresAt: Date | null
+  /** PADDLE (25 Nov 2026): which gateway the subscription lives on. */
+  provider?: 'stripe' | 'paddle'
 }): Promise<void> {
   const { userId, planId, billingCycle, providerSubscriptionId, expiresAt } = params
+  const paymentProvider = params.provider ?? 'stripe'
   await db.userSubscription.upsert({
     where: { userId },
     update: {
@@ -41,7 +44,7 @@ export async function activateSubscription(params: {
       startedAt: new Date(),
       expiresAt,
       cancelledAt: null,
-      paymentProvider: 'stripe',
+      paymentProvider,
       providerSubscriptionId,
     },
     create: {
@@ -50,7 +53,7 @@ export async function activateSubscription(params: {
       status: 'active',
       billingCycle,
       expiresAt,
-      paymentProvider: 'stripe',
+      paymentProvider,
       providerSubscriptionId,
     },
   })
@@ -75,7 +78,7 @@ export async function activateSubscription(params: {
   // Purchase confirmation — fire-and-forget so email trouble never makes the
   // Stripe webhook fail (Stripe would retry and we'd re-activate needlessly).
   if (plan) {
-    void sendPurchaseEmail(user, plan, billingCycle, expiresAt)
+    void sendPurchaseEmail(user, plan, billingCycle, expiresAt, paymentProvider)
   }
 }
 
@@ -92,4 +95,26 @@ export async function syncSubscriptionFromStripe(
       ...(data.status === 'cancelled' && { cancelledAt: new Date() }),
     },
   })
+}
+
+/**
+ * PADDLE (25 Nov 2026): the same sync for any gateway, plus a plan change made
+ * in the provider (or its portal) — the subscription row follows the price.
+ */
+export async function syncSubscription(
+  providerSubscriptionId: string,
+  data: { status: 'active' | 'cancelled' | 'expired'; expiresAt: Date | null; planId?: number; billingCycle?: 'monthly' | 'annual' },
+): Promise<number> {
+  const res = await db.userSubscription.updateMany({
+    where: { providerSubscriptionId },
+    data: {
+      status: data.status,
+      expiresAt: data.expiresAt,
+      ...(data.status === 'cancelled' && { cancelledAt: new Date() }),
+      ...(data.status === 'active' && { cancelledAt: null }),
+      ...(data.planId ? { planId: data.planId } : {}),
+      ...(data.billingCycle ? { billingCycle: data.billingCycle } : {}),
+    },
+  })
+  return res?.count ?? 0
 }

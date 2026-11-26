@@ -14,6 +14,8 @@
 
 import { db } from '../../config/database.js'
 import { stripe, stripeConfigured } from '../../config/stripe.js'
+import { paddleConfigured } from '../../config/paddle.js'
+import { giveFreeMonths } from '../membership/paddle-billing.js'
 
 /** Plan a comped account lands on when the coach has never subscribed. */
 const DEFAULT_CREDIT_PLAN = 'pro'
@@ -55,6 +57,8 @@ export async function applyPendingCredit(userId: number): Promise<number> {
           expiresAt: true,
           planId: true,
           providerSubscriptionId: true,
+          paymentProvider: true,
+          billingCycle: true,
           plan: { select: { monthlyPrice: true, currency: true } },
         },
       },
@@ -63,9 +67,20 @@ export async function applyPendingCredit(userId: number): Promise<number> {
   if (!user) return 0
 
   const sub = user.subscription
-  const onStripe = !!sub?.providerSubscriptionId && sub.status === 'active'
+  const onPaddle = sub?.paymentProvider === 'paddle' && !!sub.providerSubscriptionId && sub.status === 'active'
+  const onStripe = !onPaddle && !!sub?.providerSubscriptionId && sub.status === 'active'
 
-  if (onStripe && stripeConfigured() && user.stripeCustomerId) {
+  if (onPaddle && paddleConfigured()) {
+    // PADDLE (25 Nov 2026): a discount on the coming invoices (paddle-billing).
+    const monthly = Math.round(Number(sub!.plan.monthlyPrice ?? 0) * 100)
+    await giveFreeMonths({
+      subscriptionId: sub!.providerSubscriptionId!,
+      months,
+      cycle: sub!.billingCycle ?? null,
+      monthlyPence: monthly,
+      currency: sub!.plan.currency ?? 'GBP',
+    })
+  } else if (onStripe && stripeConfigured() && user.stripeCustomerId) {
     const monthly = Number(sub!.plan.monthlyPrice ?? 0)
     const pence = Math.round(monthly * 100) * months
     if (pence > 0) {

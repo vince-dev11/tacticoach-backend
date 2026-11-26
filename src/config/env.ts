@@ -61,6 +61,16 @@ const schema = z.object({
   // BILLING (20 Oct 2026): book sales go live with Stripe. A kill switch, in
   // case the shop must close while subscriptions keep running.
   BOOK_SALES: envBool(true),
+  // DISPOSABLE-EMAIL (25 Nov 2026): refuse throwaway inboxes (yopmail …) at
+  // sign-up and early access. On by default; false only in an emergency.
+  BLOCK_DISPOSABLE_EMAILS: envBool(true),
+  // PADDLE (25 Nov 2026): Paddle Billing as merchant of record. When
+  // PADDLE_API_KEY is set, new plan and book checkouts go to Paddle instead of
+  // Stripe (config/paddle.ts billingProvider). PADDLE_ENV must say which
+  // account the key belongs to — a sandbox key against the live API fails.
+  PADDLE_API_KEY: blankAsUnset,
+  PADDLE_ENV: z.enum(['sandbox', 'production']).default('sandbox'),
+  PADDLE_WEBHOOK_SECRET: blankAsUnset,
   // REFERRALS-HIDDEN (owner, 3 Nov 2026): the referral programme is put away
   // for now. Off: /api/referrals/lookup, /me, /agreement and /accept answer
   // 404 `referrals_off`, and a referralCode on register is dropped (no new

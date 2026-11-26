@@ -77,6 +77,11 @@ model User {
   /// (not localStorage) so a coach sees each tour exactly once across devices.
   toursDone        Json      @default("[]") @map("tours_done")
   stripeCustomerId String?   @unique @map("stripe_customer_id") @db.VarChar(191)
+  /// SAME-INBOX (25 Nov 2026): the inbox the email really delivers to (lib/email-checks inboxOf) —
+  /// so john.smith+2@gmail.com can't open a second account (and trial) for johnsmith@gmail.com.
+  emailInbox       String?   @map("email_inbox") @db.VarChar(191)
+  /// PADDLE (25 Nov 2026): the Paddle customer (ctm_…) — set by the API, never by the browser.
+  paddleCustomerId String?   @unique @map("paddle_customer_id") @db.VarChar(64)
   emailVerifiedAt  DateTime? @map("email_verified_at")
   /// ONBOARDING-EMAIL (20 Oct 2026): the language emails are written in ('en', 'es', 'pt'…). Null = English.
   locale             String?   @db.VarChar(8)
@@ -116,6 +121,8 @@ model User {
   childLinks                  ParentLink[]         @relation("ParentLinkParent")
   parentLinks                 ParentLink[]         @relation("ParentLinkChild")
   bookRequests                BookRequest[]
+  authorPayouts               AuthorPayout[]       @relation("AuthorPayoutPayee")
+  authorPayee                 AuthorPayee?
   bookRecommendationsSent     BookRecommendation[] @relation("BookRecommendationCoach")
   bookRecommendationsReceived BookRecommendation[] @relation("BookRecommendationPlayer")
 
@@ -179,6 +186,7 @@ model User {
   ebookWaitlist     EbookWaitlist[]
 
   @@index([setupInvitedAt])
+  @@index([emailInbox])
   @@map("users")
 }
 
@@ -621,6 +629,10 @@ model CanvasBoard {
   // coach's profile default and may not match a one-off session.
   ageGroup     String?   @map("age_group") @db.VarChar(16)
   difficulty   String?   @db.VarChar(16)
+  /// SHOWCASE (25 Nov 2026): shown on the public website's "Press play on a real
+  /// session" (1 = first). Chosen by the owner only; null = not on the website.
+  /// Only while the board stays published.
+  showcaseRank Int?      @map("showcase_rank")
   createdAt    DateTime  @default(now()) @map("created_at")
   updatedAt    DateTime  @updatedAt @map("updated_at")
 
@@ -631,6 +643,7 @@ model CanvasBoard {
 
   @@index([userId])
   @@index([published, publishedAt])
+  @@index([showcaseRank])
   @@map("canvas_boards")
 }
 
@@ -2038,6 +2051,67 @@ model EbookSessionPack {
 
 /// BILLING (20 Oct 2026): Stripe webhook events already handled. Stripe
 /// delivers at least once; a re-delivered event is recognised here and skipped.
+/// PADDLE (25 Nov 2026): webhook events already handled (Paddle delivers at
+/// least once). Same pattern as stripe_events.
+model PaddleEvent {
+  id        String   @id @db.VarChar(64)
+  type      String   @db.VarChar(100)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("paddle_events")
+}
+
+/// PADDLE: our plans/books as Paddle products and prices, created by the API on
+/// first use. `key` is ours ("product:pro", "price:pro:monthly:899:GBP",
+/// "product:book"); a new amount gets a new key, so an old price is never reused.
+model PaddleCatalog {
+  key       String   @id @db.VarChar(120)
+  paddleId  String   @unique @map("paddle_id") @db.VarChar(64)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("paddle_catalog")
+}
+
+/// ROYALTIES (25 Nov 2026): money TactiCoach paid an author or co-author from
+/// its bank for their share of book sales. Records only — no money moves here.
+/// A mistaken record is voided, never deleted, so the history stays true.
+model AuthorPayout {
+  id          Int       @id @default(autoincrement())
+  /// Null once the payee deleted their account; `payeeName` keeps the record readable for the accounts.
+  userId      Int?      @map("user_id")
+  payeeName   String    @map("payee_name") @db.VarChar(150)
+  amountPence Int       @map("amount_pence")
+  currency    String    @default("GBP") @db.VarChar(3)
+  paidAt      DateTime  @map("paid_at")
+  /// The bank / PayPal reference, so the CA can match it to the statement.
+  reference   String    @db.VarChar(120)
+  note        String?   @db.VarChar(255)
+  createdById Int       @map("created_by_id")
+  voidedAt    DateTime? @map("voided_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  user User? @relation("AuthorPayoutPayee", fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId, paidAt])
+  @@map("author_payouts")
+}
+
+/// ROYALTIES: who a payee is for payment and tax — kept by the owner. Never
+/// bank account numbers (the owner pays from the bank's own saved payees).
+model AuthorPayee {
+  userId          Int      @id @map("user_id")
+  legalName       String   @map("legal_name") @db.VarChar(150)
+  country         String   @db.VarChar(2)
+  method          String   @default("bank") @db.VarChar(20)
+  taxFormReceived Boolean  @default(false) @map("tax_form_received")
+  note            String?  @db.VarChar(255)
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("author_payees")
+}
+
 model StripeEvent {
   id        String   @id @db.VarChar(255)
   type      String   @db.VarChar(100)

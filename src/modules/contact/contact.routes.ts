@@ -2,6 +2,7 @@
 // Field names are snake_case to match the existing frontend client
 // (src/lib/contact.ts sends { first_name, last_name, email, message }).
 
+import { DISPOSABLE_MESSAGE, isDisposableEmail } from '../../lib/email-checks.js'
 import type { FastifyInstance } from 'fastify'
 import { z } from 'zod'
 import { isMailConfigured, sendMail } from '../../config/mailer.js'
@@ -36,6 +37,11 @@ export async function contactRoutes(app: FastifyInstance) {
       const email = input.email.trim().toLowerCase()
       const message = input.message.trim()
       const topic: ContactTopic = input.topic ?? 'other'
+      // DISPOSABLE-EMAIL (25 Nov 2026): an early-access or demo request needs an
+      // email we can reach later. Support messages are always accepted.
+      if ((LEAD_TOPICS as readonly string[]).includes(topic) && isDisposableEmail(email)) {
+        return reply.status(422).send({ statusCode: 422, error: 'disposable_email', message: DISPOSABLE_MESSAGE, issues: { email: [DISPOSABLE_MESSAGE] } })
+      }
       const thanks = { message: 'Thanks! Your message has been sent — we will get back to you soon.' }
 
       // The same message from the same address in the last day is the same

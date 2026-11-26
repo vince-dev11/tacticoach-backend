@@ -22,6 +22,7 @@ import { clubsRoutes } from './modules/clubs/clubs.routes.js'
 import { drillSheetsRoutes } from './modules/drill-sheets/drill-sheets.routes.js'
 import { sessionsRoutes } from './modules/sessions/sessions.routes.js'
 import { stripeWebhookRoutes } from './modules/webhooks/stripe.routes.js'
+import { paddleWebhookRoutes } from './modules/webhooks/paddle.routes.js'
 import { emailWebhookRoutes } from './modules/webhooks/email.routes.js'
 import { contactRoutes } from './modules/contact/contact.routes.js'
 import { teamUpdatesRoutes } from './modules/account/team-updates.routes.js'
@@ -176,6 +177,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(drillSheetsRoutes, { prefix: '/api/drill-sheets' })
   await app.register(sessionsRoutes, { prefix: '/api/sessions' })
   await app.register(stripeWebhookRoutes, { prefix: '/api/webhooks' })
+  await app.register(paddleWebhookRoutes, { prefix: '/api/webhooks' })
   // ONBOARDING-EMAIL: bounces from the email provider (own plugin: JSON parsed normally).
   await app.register(emailWebhookRoutes, { prefix: '/api/webhooks' })
   await app.register(contactRoutes, { prefix: '/api/contact' })

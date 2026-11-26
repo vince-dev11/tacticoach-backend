@@ -163,7 +163,7 @@ export const POLICY_CHUNKS: Chunk[] = [
   {
     id: 'policy:refunds',
     title: 'Refunds and cancelling',
-    text: 'Subscriptions: a full refund if the coach asks within 14 days of their first payment, no refund after that. Cancelling keeps the plan until the end of the paid period. Refunds are requested through the Contact page; the assistant cannot make refunds or change plans.',
+    text: 'Subscriptions: a full refund if the coach asks within 14 days of their first payment (everything paid in those 14 days, including a plan change), no refund after that unless their country\'s law gives more. Cancelling keeps the plan until the end of the paid period. Changing plan starts at once and is charged today, less what is left of the current plan; a smaller plan leaves credit for the next bills. Payments and refunds are handled by Paddle, TactiCoach\'s reseller. Refunds are requested through the Contact page or paddle.net; the assistant cannot make refunds or change plans.',
     url: '/help/account#planBilling',
   },
   {

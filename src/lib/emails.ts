@@ -7,6 +7,7 @@
 //     fail a signup or a Stripe webhook).
 
 import { env } from '../config/env.js'
+import { paddleConfigured } from '../config/paddle.js'
 import { isMailConfigured, sendMail } from '../config/mailer.js'
 import { tagLabel } from './feedback-tag-labels.js'
 import {
@@ -353,9 +354,15 @@ export async function sendPurchaseEmail(
   plan: { name: string },
   billingCycle: 'monthly' | 'annual',
   expiresAt: Date | null,
+  provider: 'stripe' | 'paddle' = 'stripe',
 ): Promise<void> {
   const dashboard = `${env.FRONTEND_URL}/dashboard`
   const renews = expiresAt ? ` Your subscription renews on ${expiresAt.toDateString()}.` : ''
+  // PADDLE (26 Nov 2026): Paddle is the seller of record and emails the
+  // receipt and tax invoice itself — we never send a second invoice.
+  const receipt = provider === 'paddle'
+    ? 'Your receipt and invoice come separately from Paddle, our reseller. You can download every invoice from Profile → Manage billing.'
+    : 'A payment receipt is sent separately by Stripe.'
   await sendSafely(
     {
       to: user.email,
@@ -364,7 +371,7 @@ export async function sendPurchaseEmail(
         `Hi ${user.name},\n\n` +
         `Thanks for subscribing! Your ${plan.name} plan (billed ${billingCycle}) is now active.${renews}\n\n` +
         `Everything is unlocked — jump back in: ${dashboard}\n\n` +
-        `A payment receipt is sent separately by Stripe.\n\n` +
+        `${receipt}\n\n` +
         `The TactiCoach team`,
       html: layout(
         `Your ${plan.name} plan is active — everything is unlocked.`,
@@ -372,7 +379,7 @@ export async function sendPurchaseEmail(
          <h1 style="margin:0 0 12px;font-size:21px">You&#39;re on ${plan.name} 🎉</h1>
          <p style="margin:0 0 12px">Hi ${user.name}, thanks for subscribing! Your <strong>${plan.name}</strong> plan (billed ${billingCycle}) is now active.${renews}</p>
          ${button(dashboard, 'Open your dashboard')}
-         <p style="margin:0;color:#6b7280;font-size:13px">A payment receipt is sent separately by Stripe. You can manage your plan any time from your profile.</p>`,
+         <p style="margin:0;color:#6b7280;font-size:13px">${receipt} You can manage your plan any time from your profile.</p>`,
       ),
     },
     'purchase',
@@ -397,6 +404,11 @@ export async function sendBookReceiptEmail(params: {
     ? 'Free (a gift from TactiCoach)'
     : new Intl.NumberFormat('en-GB', { style: 'currency', currency: params.currency }).format(params.pricePence / 100)
   const order = `TC-B${String(params.orderId).padStart(6, '0')}`
+  // PADDLE (26 Nov 2026): this is our order note; the tax invoice comes from
+  // Paddle, the seller of record, when Paddle took the payment.
+  const invoiceNote = !params.granted && paddleConfigured()
+    ? 'Your receipt and invoice come separately from Paddle, our reseller.'
+    : ''
   await sendSafely(
     {
       to: user.email,
@@ -405,6 +417,7 @@ export async function sendBookReceiptEmail(params: {
         `Hi ${user.name},\n\n` +
         `${book.title} is now in your library. Read it any time: ${read}\n\n` +
         `Order ${order}\nDate: ${params.paidAt.toDateString()}\nPrice: ${price}\n\n` +
+        (invoiceNote ? `${invoiceNote}\n\n` : '') +
         `The TactiCoach team`,
       html: layout(
         `${book.title} is in your library.`,
@@ -416,7 +429,8 @@ export async function sendBookReceiptEmail(params: {
            <tr><td style="padding:10px 0 4px">Order</td><td align="right" style="padding:10px 0 4px">${order}</td></tr>
            <tr><td style="padding:4px 0">Date</td><td align="right" style="padding:4px 0">${params.paidAt.toDateString()}</td></tr>
            <tr><td style="padding:4px 0"><strong>Price</strong></td><td align="right" style="padding:4px 0"><strong>${price}</strong></td></tr>
-         </table>`,
+         </table>
+         ${invoiceNote ? `<p style="margin:12px 0 0;color:#6b7280;font-size:13px">${invoiceNote}</p>` : ''}`,
       ),
     },
     'book_receipt',

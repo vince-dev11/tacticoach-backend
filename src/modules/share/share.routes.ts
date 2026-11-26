@@ -81,6 +81,9 @@ export function boardPlayerMessage(state: unknown): string {
   return typeof meta?.playerMessage === 'string' ? meta.playerMessage.trim().slice(0, 160) : ''
 }
 
+/** SHOWCASE: how many sessions the website shows. */
+export const SHOWCASE_MAX = 6
+
 const PREVIEW_TOKEN = /^[A-Za-z0-9_-]{16,32}$/
 type PreviewBlock = { kind?: unknown; refId?: unknown; title?: unknown; minutes?: unknown; keyPoint?: unknown; board?: unknown }
 
@@ -148,6 +151,36 @@ export async function shareRoutes(app: FastifyInstance) {
   })
 
   // GET /share/board/:id — a published board's video/thumbnail + attribution
+  // GET /share/showcase — SHOWCASE (25 Nov 2026): the sessions the owner picked
+  // for the public website, in order. Light on purpose (no board data): the
+  // home page shows the list and a picture, and loads one board through
+  // /share/board/:id only when a visitor presses play. Only boards that are
+  // still published; an unpublished board drops off the website by itself.
+  app.get('/showcase', async (_request, reply) => {
+    const rows = await db.canvasBoard.findMany({
+      where: { showcaseRank: { not: null }, published: true },
+      orderBy: { showcaseRank: 'asc' },
+      take: SHOWCASE_MAX,
+      select: {
+        id: true, title: true, thumbnailKey: true, ageGroup: true, tags: true, hasAnimation: true,
+        user: { select: { name: true, surname: true, clubName: true } },
+      },
+    })
+    const sessions = await Promise.all((rows ?? []).map(async (b) => ({
+      id: b.id,
+      title: b.title,
+      ageGroup: b.ageGroup,
+      tags: Array.isArray(b.tags) ? (b.tags as unknown[]).filter((t): t is string => typeof t === 'string').slice(0, 3) : [],
+      animated: b.hasAnimation,
+      author: `${b.user.name} ${b.user.surname}`.trim(),
+      clubName: b.user.clubName,
+      thumbnailUrl: b.thumbnailKey ? await presignUrl(b.thumbnailKey) : null,
+    })))
+    // Public, the same for everyone, and changes rarely: let browsers keep it a few minutes.
+    reply.header('Cache-Control', 'public, max-age=300')
+    return reply.send({ sessions })
+  })
+
   app.get('/board/:id', async (request, reply) => {
     const id = Number((request.params as { id: string }).id)
     const board = await db.canvasBoard.findFirst({

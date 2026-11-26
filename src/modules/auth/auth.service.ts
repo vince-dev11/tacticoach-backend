@@ -1,3 +1,4 @@
+import { inboxOf } from '../../lib/email-checks.js'
 import { forgetGate } from '../../lib/email-verify-gate.js'
 import { storedLocale } from '../../lib/email-i18n.js'
 import crypto from 'node:crypto'
@@ -33,6 +34,7 @@ export async function registerUser(input: RegisterInput, extra: { dateOfBirth?: 
       name: input.name,
       surname: input.surname,
       email: input.email,
+      emailInbox: inboxOf(input.email),
       phone: input.phone?.trim() || null,
       accountType: input.accountType,
       passwordHash,

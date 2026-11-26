@@ -26,6 +26,11 @@ import { onboardingRoutes } from './onboarding.routes.js'
 import { stripe, stripeConfigured } from '../../config/stripe.js'
 import { stripeMode } from '../membership/stripe-catalog.js'
 import { bookCheckoutProvider } from '../ebooks/payment-provider.js'
+import { billingProvider, paddleConfigured } from '../../config/paddle.js'
+import { cancelSubscription as paddleCancelSubscription, completedTransactions, refundTransaction } from '../membership/paddle-billing.js'
+import { inboxOf } from '../../lib/email-checks.js'
+import { SHOWCASE_MAX } from '../share/share.routes.js'
+import { PAYEE_METHODS, RoyaltyError, monthCsv, payoutRoster, payoutsFor, recordPayout, savePayee, voidPayout } from '../ebooks/royalties.service.js'
 import { grantBook, refundPurchase, listOrders, PurchaseError } from '../ebooks/purchases.service.js'
 import { boxWhere, CONTACT_TOPICS, SUPPORT_TOPICS, type ContactBox } from '../contact/topics.js'
 import { createAccountSetupToken, createPasswordResetTokenFor } from '../auth/auth.service.js'
@@ -554,6 +559,8 @@ export async function adminRoutes(app: FastifyInstance) {
         name: input.name,
         surname: input.surname,
         email,
+        // SAME-INBOX: the owner may create any account; this only lets a later self sign-up see it.
+        emailInbox: inboxOf(email),
         accountType: input.accountType,
         clubName: input.clubName ?? null,
         ...(dob ? { dateOfBirth: dob } : {}),
@@ -837,8 +844,9 @@ export async function adminRoutes(app: FastifyInstance) {
     const id = Number((request.params as { id: string }).id)
     const sub = await db.userSubscription.findUnique({ where: { userId: id }, select: { paymentProvider: true } })
     if (!sub) return reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'No subscription' })
-    if (sub.paymentProvider === 'stripe') {
-      return reply.status(409).send({ statusCode: 409, error: 'Conflict', message: 'This is a paid subscription — cancel it in Stripe' })
+    if (sub.paymentProvider === 'stripe' || sub.paymentProvider === 'paddle') {
+      const where = sub.paymentProvider === 'paddle' ? 'Paddle' : 'Stripe'
+      return reply.status(409).send({ statusCode: 409, error: 'Conflict', message: `This is a paid subscription — cancel it in ${where}` })
     }
     await db.userSubscription.update({ where: { userId: id }, data: { status: 'expired', expiresAt: new Date(), cancelledAt: new Date() } })
     return reply.status(204).send()
@@ -856,7 +864,15 @@ export async function adminRoutes(app: FastifyInstance) {
         webhookSecret: !!env.STRIPE_WEBHOOK_SECRET,
         webhookUrl: `${env.FRONTEND_URL}/api/webhooks/stripe`,
       },
-      books: { live: !!bookCheckoutProvider(), switch: env.BOOK_SALES },
+      // PADDLE (25 Nov 2026): once its key is set Paddle takes new payments.
+      paddle: {
+        configured: paddleConfigured(),
+        env: env.PADDLE_ENV,
+        webhookSecret: !!env.PADDLE_WEBHOOK_SECRET,
+        webhookUrl: `${env.FRONTEND_URL}/api/webhooks/paddle`,
+      },
+      provider: billingProvider(),
+      books: { live: !!bookCheckoutProvider(), switch: env.BOOK_SALES, provider: bookCheckoutProvider()?.name ?? null },
       email: {
         configured: isMailConfigured(),
         from: env.MAIL_FROM,
@@ -872,7 +888,46 @@ export async function adminRoutes(app: FastifyInstance) {
   // `force` lets the owner refund outside the window as a goodwill gesture.
   app.post('/users/:id/refund-subscription', async (request, reply) => {
     const id = Number((request.params as { id: string }).id)
-    const { force } = z.object({ note: z.string().max(255).optional(), force: z.boolean().default(false) }).parse(request.body ?? {})
+    const { force, note } = z.object({ note: z.string().max(255).optional(), force: z.boolean().default(false) }).parse(request.body ?? {})
+    // PADDLE (25 Nov 2026): a Paddle plan is refunded through Paddle — a refund
+    // adjustment on the latest payment (Paddle approves it, then the webhook
+    // reverses referral and commission) and the subscription ends now.
+    const paddleSub = await db.userSubscription.findUnique({ where: { userId: id } })
+    if (paddleSub?.paymentProvider === 'paddle' && paddleSub.providerSubscriptionId) {
+      if (!paddleConfigured()) {
+        return reply.status(503).send({ statusCode: 503, error: 'Service Unavailable', message: 'Billing is not configured on this server' })
+      }
+      const paid = await completedTransactions(paddleSub.providerSubscriptionId)
+      if (!paid.length) {
+        return reply.status(409).send({ statusCode: 409, error: 'no_payment', message: 'No completed payment found for this subscription.' })
+      }
+      const firstAt = new Date(paid[0].billed_at ?? paid[0].created_at).getTime()
+      const withinWindow = Date.now() - firstAt <= 14 * 86_400_000
+      if (!withinWindow && !force) {
+        return reply.status(409).send({ statusCode: 409, error: 'outside_window', message: 'The first payment was more than 14 days ago, so the refund rule does not apply. Refund anyway only as goodwill.' })
+      }
+      // REFUND-PADDLE (26 Nov 2026): with plan changes charged at once (P4), a
+      // coach can pay twice in the first 14 days (first payment + an upgrade).
+      // The policy promises back what was paid in that window, so every
+      // payment in it is refunded; outside it (goodwill, or a UK yearly
+      // renewal) only the latest. A £0 payment (covered by credit) is skipped.
+      const windowEnd = firstAt + 14 * 86_400_000
+      const amountOf = (t: (typeof paid)[number]) => Number(t.details?.totals?.total ?? 0)
+      const toRefund = (withinWindow
+        ? paid.filter((t) => new Date(t.billed_at ?? t.created_at).getTime() <= windowEnd)
+        : [paid[paid.length - 1]]).filter((t) => amountOf(t) > 0)
+      if (!toRefund.length) {
+        return reply.status(409).send({ statusCode: 409, error: 'no_payment', message: 'Nothing was paid that can be refunded.' })
+      }
+      const adjustments = []
+      for (const t of toRefund) adjustments.push(await refundTransaction(t.id, note || 'Refund on request (Refund Policy)'))
+      await paddleCancelSubscription(paddleSub.providerSubscriptionId, 'immediately')
+      await db.userSubscription.update({ where: { userId: id }, data: { status: 'expired', expiresAt: new Date(), cancelledAt: new Date() } })
+      return reply.send({
+        refunded: true, refundId: adjustments[0].id, status: adjustments[0].status, payments: toRefund.length,
+        amount: toRefund.reduce((sum, t) => sum + amountOf(t), 0), currency: toRefund[0].currency_code.toLowerCase(), withinWindow,
+      })
+    }
     if (!stripeConfigured()) {
       return reply.status(503).send({ statusCode: 503, error: 'Service Unavailable', message: 'Billing is not configured on this server' })
     }
@@ -1274,6 +1329,119 @@ export async function adminRoutes(app: FastifyInstance) {
       select: { id: true, to: true, kind: true, subject: true, status: true, error: true, createdAt: true },
     })
     return reply.send(rows)
+  })
+
+  // ---- Website showcase (SHOWCASE, 25 Nov 2026) --------------------------------
+  // The owner picks up to six PUBLISHED boards for the home page's "Press play
+  // on a real session". Players' names are taken out when a board is played
+  // (share.routes withoutPlayerNames); titles and text on the board are the
+  // owner's check (Admin says so).
+
+  // GET /admin/showcase — the boards on the website now, in order.
+  app.get('/showcase', async (_request, reply) => {
+    const rows = await db.canvasBoard.findMany({
+      where: { showcaseRank: { not: null } },
+      orderBy: { showcaseRank: 'asc' },
+      select: { id: true, title: true, published: true, ageGroup: true, hasAnimation: true, showcaseRank: true, user: { select: { name: true, surname: true, email: true } } },
+    })
+    return reply.send(rows)
+  })
+
+  // PUT /admin/showcase { boardIds: [12, 7, 30] } — the whole list, in order.
+  app.put('/showcase', async (request, reply) => {
+    const { boardIds } = z.object({
+      boardIds: z.array(z.number().int().positive()).max(SHOWCASE_MAX, `The website shows at most ${SHOWCASE_MAX} sessions.`)
+        .refine((ids) => new Set(ids).size === ids.length, 'Each board can be in the list once.'),
+    }).parse(request.body)
+    if (boardIds.length) {
+      const found = await db.canvasBoard.findMany({ where: { id: { in: boardIds } }, select: { id: true, published: true } })
+      const missing = boardIds.filter((id) => !found.some((b) => b.id === id))
+      if (missing.length) return reply.status(404).send({ statusCode: 404, error: 'not_found', message: `No board with id ${missing.join(', ')}.` })
+      const privateOnes = found.filter((b) => !b.published).map((b) => b.id)
+      if (privateOnes.length) return reply.status(409).send({ statusCode: 409, error: 'not_public', message: `Board ${privateOnes.join(', ')} is private — only public boards can go on the website.` })
+    }
+    await db.$transaction([
+      db.canvasBoard.updateMany({ where: { showcaseRank: { not: null }, id: { notIn: boardIds } }, data: { showcaseRank: null } }),
+      ...boardIds.map((id, i) => db.canvasBoard.update({ where: { id }, data: { showcaseRank: i + 1 } })),
+    ])
+    return reply.send({ boardIds })
+  })
+
+  // ---- Author payouts (ROYALTIES, 25 Nov 2026) ---------------------------------
+  // TactiCoach is paid 100% of each book sale and pays the author side from
+  // its bank. These routes keep the ledger; none of them moves money.
+
+  const royaltyError = (reply: import('fastify').FastifyReply, err: unknown) => {
+    if (err instanceof RoyaltyError) return reply.status(err.statusCode).send({ statusCode: err.statusCode, error: err.code, message: err.message })
+    throw err
+  }
+
+  // GET /admin/author-payouts — who is owed what (co-author split applied).
+  app.get('/author-payouts', async (_request, reply) => reply.send(await payoutRoster()))
+
+  // GET /admin/author-payouts/user/:userId — one payee's recorded payouts.
+  app.get('/author-payouts/user/:userId', async (request, reply) => {
+    const userId = Number((request.params as { userId: string }).userId)
+    return reply.send(await payoutsFor(userId))
+  })
+
+  // POST /admin/author-payouts { userId, amountPence, reference, paidAt?, note? }
+  app.post('/author-payouts', async (request, reply) => {
+    const input = z.object({
+      userId: z.number().int().positive(),
+      amountPence: z.number().int().positive().max(10_000_000),
+      reference: z.string().trim().min(1, 'Add the bank or PayPal reference.').max(120),
+      paidAt: z.coerce.date().optional(),
+      note: z.string().max(255).optional().nullable(),
+    }).parse(request.body)
+    const adminId = (request.user as { sub: number }).sub
+    try {
+      return reply.status(201).send(await recordPayout(adminId, input))
+    } catch (err) {
+      return royaltyError(reply, err)
+    }
+  })
+
+  // POST /admin/author-payouts/:id/void — a payout recorded by mistake.
+  app.post('/author-payouts/:id/void', async (request, reply) => {
+    const id = Number((request.params as { id: string }).id)
+    try {
+      return reply.send(await voidPayout(id))
+    } catch (err) {
+      return royaltyError(reply, err)
+    }
+  })
+
+  // PUT /admin/author-payees/:userId { legalName, country, method, taxFormReceived, note? }
+  // Who they are for payment and tax. Never bank account numbers.
+  app.put('/author-payees/:userId', async (request, reply) => {
+    const userId = Number((request.params as { userId: string }).userId)
+    const input = z.object({
+      legalName: z.string().trim().min(2, 'Add their legal name.').max(150),
+      country: z.string().trim().length(2, 'Use the two-letter country code, e.g. GB.'),
+      method: z.enum(PAYEE_METHODS),
+      taxFormReceived: z.boolean().default(false),
+      note: z.string().max(255).optional().nullable(),
+    }).parse(request.body)
+    try {
+      return reply.send(await savePayee(userId, input))
+    } catch (err) {
+      return royaltyError(reply, err)
+    }
+  })
+
+  // GET /admin/author-payouts/export.csv?month=2026-11 — for the accountant.
+  app.get('/author-payouts/export.csv', async (request, reply) => {
+    const { month } = request.query as { month?: string }
+    try {
+      const csv = await monthCsv(month ?? new Date().toISOString().slice(0, 7))
+      return reply
+        .header('Content-Type', 'text/csv; charset=utf-8')
+        .header('Content-Disposition', `attachment; filename="author-payouts-${(month ?? '').replace(/[^0-9-]/g, '') || 'month'}.csv"`)
+        .send(csv)
+    } catch (err) {
+      return royaltyError(reply, err)
+    }
   })
 
   // ---- Book orders ----------------------------------------------------------

@@ -238,7 +238,8 @@ describe('PAY-AMOUNT / PAY-TWICE / PAY-STALE · book money adds up', () => {
 
   it('starting a new checkout closes the old, unpaid checkout page', () => {
     const svc = readFileSync('src/modules/ebooks/purchases.service.ts', 'utf8')
-    expect(svc).toMatch(/existing\?\.status === 'pending' && existing\.providerRef\?\.startsWith\('cs_'\)\) \{\s*await expireBookCheckout\(existing\.providerRef\)/)
+    // PADDLE (25 Nov 2026): a Paddle transaction (txn_) is closed the same way.
+    expect(svc).toMatch(/existing\?\.status === 'pending' && \(existing\.providerRef\?\.startsWith\('cs_'\) \|\| existing\.providerRef\?\.startsWith\('txn_'\)\)\) \{\s*await expireBookCheckout\(existing\.providerRef\)/)
   })
 
   it('PAY-PERIOD: the end of the paid period is read on either API version', async () => {

@@ -7,6 +7,7 @@
 
 import { db } from '../../config/database.js'
 import { authorEarnings, AUTHOR_SHARE_PERCENT } from './purchases.service.js'
+import { authorBalance } from './royalties.service.js'
 
 /** A reader must have got this far through a book before rating it. */
 export const REVIEW_MIN_PERCENT = 50
@@ -264,6 +265,9 @@ export async function authorDashboard(authorId: number) {
   const since = dayOf(new Date(Date.now() - (DASHBOARD_DAYS - 1) * 86_400_000))
 
   const earnings = await authorEarnings(ids)
+  // ROYALTIES (25 Nov 2026): what THIS author has been paid and is owed (their
+  // own share, co-author split applied), from the payout ledger.
+  const balance = await authorBalance(authorId).catch(() => null)
   const [stats, progress, ratings, recent] = ids.length
     ? await Promise.all([
         statDb().findMany({ where: { ebookId: { in: ids }, day: { gte: since } } }).catch(() => []),
@@ -341,8 +345,13 @@ export async function authorDashboard(authorId: number) {
       grossPence: earnings.grossPence,
       refundedPence: earnings.refundedPence,
       authorSidePence: earnings.authorSidePence,
-      paidOutPence: earnings.paidOutPence,
-      owedPence: earnings.owedPence,
+      paidOutPence: balance?.paidOutPence ?? 0,
+      owedPence: balance?.owedPence ?? 0,
+      /** Their share still inside the 14-day refund window. */
+      pendingPence: balance?.pendingPence ?? 0,
+      holdDays: balance?.holdDays ?? 14,
+      minPayoutPence: balance?.minPayoutPence ?? 1000,
+      lastPayoutAt: balance?.lastPayoutAt ?? null,
       sharePercent: AUTHOR_SHARE_PERCENT,
     },
     series,

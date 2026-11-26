@@ -11,6 +11,18 @@ import { allQuotas } from '../../lib/plan-quota.js'
 import { ensureStripeCustomer } from './membership.service.js'
 import { ensurePortalConfiguration, ensurePrice, toMinorUnits } from './stripe-catalog.js'
 import { subIsActive } from '../../lib/entitlements.js'
+import { billingProvider, PaddleError } from '../../config/paddle.js'
+import {
+  accessEndsAt,
+  cancelSubscription as paddleCancel,
+  changePlan as paddleChangePlan,
+  checkoutUrl,
+  createPlanTransaction,
+  ensurePlanPrice,
+  getSubscription as paddleSubscription,
+  portalUrl as paddlePortalUrl,
+  undoScheduledCancel,
+} from './paddle-billing.js'
 
 const CheckoutSchema = z.object({
   planSlug: z.string().min(1),
@@ -88,7 +100,8 @@ export async function membershipRoutes(app: FastifyInstance) {
   // is moved in place (one subscription, prorated) instead of being sent to a
   // second checkout — two live subscriptions would bill them twice.
   app.post('/checkout', { preHandler: authGuard }, async (request, reply) => {
-    if (!stripeConfigured()) {
+    const provider = billingProvider()
+    if (!provider) {
       return reply.status(503).send({ statusCode: 503, error: 'Service Unavailable', message: 'Billing is not configured on this server' })
     }
     const userId = (request.user as any).sub as number
@@ -108,10 +121,58 @@ export async function membershipRoutes(app: FastifyInstance) {
     if (!price || Number(price) <= 0) {
       return reply.status(422).send({ statusCode: 422, error: 'Unprocessable Entity', message: 'This plan has no price for that billing cycle' })
     }
+    const current = await db.userSubscription.findUnique({ where: { userId } })
+
+    // PADDLE (25 Nov 2026): already paying through Paddle → change the plan on
+    // that subscription. Not paying → a Paddle transaction opened on our
+    // /checkout page. (A coach still on Stripe stays there, below.)
+    if (current?.paymentProvider === 'paddle' && current.providerSubscriptionId && subIsActive(current)) {
+      const sub = await paddleSubscription(current.providerSubscriptionId)
+      if (sub.status === 'active' || sub.status === 'trialing' || sub.status === 'past_due') {
+        const paddlePriceId = await ensurePlanPrice(plan, cycle, toMinorUnits(price))
+        const samePrice = sub.items[0]?.price.id === paddlePriceId
+        if (samePrice && !sub.scheduled_change) {
+          return reply.status(409).send({ statusCode: 409, error: 'same_plan', message: 'You are already on this plan.' })
+        }
+        if (!samePrice) {
+          try {
+            await paddleChangePlan(sub.id, paddlePriceId, { userId, planId: plan.id, cycle })
+          } catch (err) {
+            // PADDLE-CYCLE: say what happened — never a bare 500 on a money step.
+            if (!(err instanceof PaddleError)) throw err
+            request.log.warn({ code: err.code, status: err.status }, 'Paddle plan change refused')
+            const declined = /payment|declin|card/i.test(`${err.code} ${err.message}`)
+            return reply.status(declined ? 402 : 502).send({
+              statusCode: declined ? 402 : 502,
+              error: declined ? 'payment_failed' : 'change_failed',
+              message: declined
+                ? 'Your card was declined, so your plan has not changed. Update your card in Manage billing, then try again.'
+                : 'We could not change your plan just now. Nothing was charged. Please try again in a few minutes.',
+            })
+          }
+        }
+        // Choosing a plan again undoes a pending cancel.
+        if (sub.scheduled_change?.action === 'cancel') await undoScheduledCancel(sub.id)
+        await db.userSubscription.update({
+          where: { userId },
+          data: { planId: plan.id, billingCycle: cycle, status: 'active', cancelledAt: null },
+        })
+        return reply.send({ url: `${env.FRONTEND_URL}/billing/success?changed=1`, changed: true, chargedNow: !samePrice })
+      }
+    }
+    const onStripe = current?.paymentProvider === 'stripe' && !!current.providerSubscriptionId && subIsActive(current)
+    if (provider === 'paddle' && !onStripe) {
+      const paddlePriceId = await ensurePlanPrice(plan, cycle, toMinorUnits(price))
+      const txnId = await createPlanTransaction({ userId, planId: plan.id, cycle, priceId: paddlePriceId })
+      return reply.send({ url: checkoutUrl(txnId, '/billing/success'), provider: 'paddle' })
+    }
+    if (!stripeConfigured()) {
+      return reply.status(503).send({ statusCode: 503, error: 'Service Unavailable', message: 'Billing is not configured on this server' })
+    }
+
     const priceId = await ensurePrice(plan, cycle, toMinorUnits(price))
 
     // Already paying by card? Change the plan on that subscription.
-    const current = await db.userSubscription.findUnique({ where: { userId } })
     if (current?.paymentProvider === 'stripe' && current.providerSubscriptionId && subIsActive(current)) {
       const sub = await stripe().subscriptions.retrieve(current.providerSubscriptionId)
       if (sub.status === 'active' || sub.status === 'trialing' || sub.status === 'past_due') {
@@ -159,10 +220,19 @@ export async function membershipRoutes(app: FastifyInstance) {
   // POST /membership/portal → { url } — Stripe's own page to update the card,
   // download invoices, change billing details or cancel (at period end).
   app.post('/portal', { preHandler: authGuard }, async (request, reply) => {
+    const userId = (request.user as any).sub as number
+    // PADDLE: the coach's OWN Paddle customer, looked up here — never sent by the browser.
+    const paddleUser = await db.user.findUnique({
+      where: { id: userId },
+      select: { paddleCustomerId: true, subscription: { select: { paymentProvider: true, providerSubscriptionId: true } } },
+    })
+    if (paddleUser?.paddleCustomerId && billingProvider() === 'paddle' && paddleUser.subscription?.paymentProvider !== 'stripe') {
+      const sid = paddleUser.subscription?.paymentProvider === 'paddle' ? paddleUser.subscription.providerSubscriptionId : null
+      return reply.send({ url: await paddlePortalUrl(paddleUser.paddleCustomerId, sid) })
+    }
     if (!stripeConfigured()) {
       return reply.status(503).send({ statusCode: 503, error: 'Service Unavailable', message: 'Billing is not configured on this server' })
     }
-    const userId = (request.user as any).sub as number
     const user = await db.user.findUnique({ where: { id: userId }, select: { stripeCustomerId: true } })
     if (!user?.stripeCustomerId) {
       return reply.status(404).send({ statusCode: 404, error: 'no_billing', message: 'There is no card billing on this account yet.' })
@@ -183,6 +253,11 @@ export async function membershipRoutes(app: FastifyInstance) {
       return reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'No subscription to cancel' })
     }
     let expiresAt = sub.expiresAt
+    if (sub.paymentProvider === 'paddle' && sub.providerSubscriptionId && billingProvider() === 'paddle') {
+      // PADDLE: stops at the end of the paid period; the webhook confirms it.
+      const updatedSub = await paddleCancel(sub.providerSubscriptionId, 'next_billing_period')
+      expiresAt = accessEndsAt(updatedSub) ?? expiresAt
+    }
     if (sub.paymentProvider === 'stripe' && sub.providerSubscriptionId && stripeConfigured()) {
       const updatedSub = await stripe().subscriptions.update(sub.providerSubscriptionId, { cancel_at_period_end: true })
       const end = updatedSub.items.data[0]?.current_period_end

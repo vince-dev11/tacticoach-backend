@@ -129,7 +129,7 @@ export async function startCheckout(userId: number, slug: string, consent: boole
   // PAY-STALE (security scan, 23 Oct 2026): the row is reused, so an earlier
   // checkout page — maybe at an older, lower price — must not stay payable.
   // Close it first; a session that already completed or expired is ignored.
-  if (existing?.status === 'pending' && existing.providerRef?.startsWith('cs_')) {
+  if (existing?.status === 'pending' && (existing.providerRef?.startsWith('cs_') || existing.providerRef?.startsWith('txn_'))) {
     await expireBookCheckout(existing.providerRef)
   }
   const purchase = existing
@@ -149,6 +149,7 @@ export async function startCheckout(userId: number, slug: string, consent: boole
     currency: 'GBP',
     title: book.title,
     customerEmail: user.email,
+    userId: user.id,
     successUrl: `${back}/bought`,
     cancelUrl: back,
   })
@@ -181,7 +182,7 @@ export async function markPaid(
   if (purchase.status === 'paid') {
     // PAY-TWICE: the same delivery again changes nothing; a SECOND, different
     // payment for a book they already own (two checkout tabs) goes back.
-    if (paid && purchase.providerRef && purchase.providerRef !== providerRef && providerRef.startsWith('pi_')) {
+    if (paid && purchase.providerRef && purchase.providerRef !== providerRef && (providerRef.startsWith('pi_') || providerRef.startsWith('txn_'))) {
       await refundBookPayment(providerRef).catch((err) => captureError(err, { source: 'ebooks:markPaid', tags: { step: 'refund-duplicate' } }))
       captureError(new Error(`Duplicate book payment refunded (purchase ${purchaseId})`), { source: 'ebooks:markPaid', tags: { step: 'duplicate' } })
     }
@@ -293,7 +294,7 @@ export async function refundPurchase(id: number, note?: string | null, opts: { a
   // BILLING: a Stripe sale is refunded in Stripe too. Unless the money already
   // went back from the Stripe dashboard (the charge.refunded webhook calls this
   // with `alreadyRefunded`), in which case only our record changes.
-  if (row.provider === 'stripe' && !opts.alreadyRefunded) await refundBookPayment(row.providerRef)
+  if ((row.provider === 'stripe' || row.provider === 'paddle') && !opts.alreadyRefunded) await refundBookPayment(row.providerRef)
   const updated = await db.ebookPurchase.update({
     where: { id },
     data: { status: 'refunded', refundedAt: new Date(), ...(note ? { note: note.slice(0, 255) } : {}) },

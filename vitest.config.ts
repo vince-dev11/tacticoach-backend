@@ -22,6 +22,12 @@ export default defineConfig({
       // REFERRALS-HIDDEN: the programme is off by default; the referral
       // tests check the running programme, referrals-hidden.test.ts the switch.
       REFERRALS_ENABLED: 'true',
+      // PADDLE (26 Nov 2026): a developer's .env with sandbox keys switched
+      // billing to Paddle under the Stripe tests. Off unless a test turns it
+      // on (paddle-billing.test.ts sets its own in vi.hoisted).
+      PADDLE_API_KEY: '',
+      PADDLE_WEBHOOK_SECRET: '',
+      PADDLE_ENV: 'sandbox',
     },
     // Route tests share one mocked Prisma singleton; keep a single fork so
     // mock state never leaks across parallel workers.
