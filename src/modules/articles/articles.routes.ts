@@ -12,6 +12,7 @@
 // off the blog until re-approved (the simple rule; a live copy that stays up
 // while the edit is reviewed can come later if coaches ask).
 
+import { sentOnly } from '../../lib/sent-only.js'
 import type { FastifyInstance } from 'fastify'
 import type { Prisma } from '@prisma/client'
 import { z } from 'zod'
@@ -88,7 +89,8 @@ export async function articlesRoutes(app: FastifyInstance) {
     const existing = await db.blogPost.findFirst({ where: { id, authorId: mine(request), authorKind: 'coach' } })
     if (!existing) return notFound(reply)
     if (!EDITABLE.has(existing.status)) return notFound(reply)
-    const input = ArticleInput.partial().parse(request.body)
+    // BLOG-PATCH-DEFAULTS (27 Nov 2026): only what was sent — a title-only save must not empty the article.
+    const input = sentOnly(ArticleInput.partial().parse(request.body), request.body)
     const post = await db.blogPost.update({
       where: { id },
       data: {

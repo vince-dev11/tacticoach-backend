@@ -191,7 +191,7 @@ describe('public blog', () => {
     const body = res.json()
     expect(body.posts[0].coverUrl).toContain('signed')
     expect(dbMock.blogPost.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { status: 'published' } }),
+      expect.objectContaining({ where: { status: 'published', OR: [{ publishedAt: null }, { publishedAt: { lte: expect.any(Date) } }] } }),
     )
   })
 

@@ -164,7 +164,7 @@ describe('COACH-ARTICLES · the public blog', () => {
     expect(coach.author).toEqual({ name: 'Ana Silva', coachSlug: 'ana' })
     expect(team.author).toBeNull()
     expect(coach.authorId).toBeUndefined()
-    expect(dbMock.blogPost.findMany.mock.calls[0][0].where).toEqual({ status: 'published' })
+    expect(dbMock.blogPost.findMany.mock.calls[0][0].where).toEqual({ status: 'published', OR: [{ publishedAt: null }, { publishedAt: { lte: expect.any(Date) } }] })
   })
 
   it('a single post carries the keywords and byline, never the review note', async () => {

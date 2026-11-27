@@ -136,6 +136,9 @@ const PostSchema = z.object({
   content: z.string().max(200_000).default(''),
   tags: z.array(z.string().max(40)).max(10).default([]),
   status: z.enum(['draft', 'published']).default('draft'),
+  // BLOG-SCHEDULE (27 Nov 2026): when a published post goes live. A future
+  // time schedules it; null or a past time means now.
+  publishAt: z.string().datetime({ offset: true, message: 'Choose a date and time' }).optional().nullable(),
   seoTitle: z.string().max(255).optional().nullable(),
   seoDescription: z.string().max(320).optional().nullable(),
   // COACH-ARTICLES: the admin's search keywords (meta keywords + related posts).
@@ -143,6 +146,22 @@ const PostSchema = z.object({
   // BLOG-V4: age label, formats and the practice box (all optional).
   ...BlogDetailsSchema,
 })
+
+/**
+ * BLOG-SCHEDULE: when a published post goes live.
+ *   a future `publishAt`           → then (scheduled)
+ *   `publishAt` null / in the past → now if it was only scheduled or never
+ *                                    published; otherwise its first publish date stays
+ *   `publishAt` not sent           → what it had, or now
+ */
+export function goesLiveAt(publishAt: string | null | undefined, existing: Date | null, now: Date = new Date()): Date {
+  if (publishAt) {
+    const at = new Date(publishAt)
+    if (at.getTime() > now.getTime()) return at
+  }
+  if (publishAt === undefined) return existing ?? now
+  return existing && existing.getTime() <= now.getTime() ? existing : now
+}
 
 // Slugs, reading time, covers: shared with the coach articles module.
 import { BlogDetailsSchema, COVER_MAX, COVER_TYPES, KeywordsSchema, authorsFor, cleanPractice, bylineOf, readMinutes, slugify, uniqueSlug, withCover } from '../blog/blog.shared.js'
@@ -255,7 +274,7 @@ export async function adminRoutes(app: FastifyInstance) {
         content: input.content,
         tags: input.tags as Prisma.InputJsonValue,
         status: input.status,
-        publishedAt: input.status === 'published' ? new Date() : null,
+        publishedAt: input.status === 'published' ? goesLiveAt(input.publishAt, null) : null,
         seoTitle: input.seoTitle ?? null,
         seoDescription: input.seoDescription ?? null,
         seoKeywords: (input.seoKeywords ?? []) as Prisma.InputJsonValue,
@@ -276,7 +295,10 @@ export async function adminRoutes(app: FastifyInstance) {
     const existing = await db.blogPost.findUnique({ where: { id } })
     if (!existing) return reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'Post not found' })
 
-    const input = PostSchema.partial().parse(request.body)
+    // BLOG-PATCH-DEFAULTS (27 Nov 2026): only what was sent. `.partial()` keeps
+    // the create defaults, so saving just the SEO fields (the Approve flow does)
+    // emptied the content and tags and pulled the post back to draft.
+    const input = sentOnly(PostSchema.partial().parse(request.body), request.body)
     const post = await db.blogPost.update({
       where: { id },
       data: {
@@ -297,7 +319,11 @@ export async function adminRoutes(app: FastifyInstance) {
         ...(input.status !== undefined && {
           status: input.status,
           publishedAt:
-            input.status === 'published' ? (existing.publishedAt ?? new Date()) : existing.publishedAt,
+            input.status === 'published' ? goesLiveAt(input.publishAt, existing.publishedAt) : existing.publishedAt,
+        }),
+        // Rescheduling (or publishing now) a post that is already "published".
+        ...(input.status === undefined && input.publishAt !== undefined && existing.status === 'published' && {
+          publishedAt: goesLiveAt(input.publishAt, existing.publishedAt),
         }),
       },
     })

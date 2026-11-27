@@ -9,11 +9,22 @@ import type { Prisma } from '@prisma/client'
 import { BLOG_FORMATS, authorsFor, bylineOf } from './blog.shared.js'
 
 /**
+ * BLOG-SCHEDULE (27 Nov 2026, owner: "schedule a blog post and it posts at
+ * that date and time"): a scheduled post is `published` with a publish date in
+ * the future, and every public read asks for posts whose date has arrived. No
+ * background job: nothing to miss if the server restarts, and the post is
+ * live at the minute it was set for.
+ */
+export function livePosts(now: Date = new Date()): Prisma.BlogPostWhereInput {
+  return { status: 'published', OR: [{ publishedAt: null }, { publishedAt: { lte: now } }] }
+}
+
+/**
  * BLOG-V4 (19 Nov 2026): the blog page's topic chips, Format select and search
  * box, applied here so paging stays right. Unknown values are ignored, so an
- * old link never errors. No filter → exactly { status: 'published' }.
+ * old link never errors. No filter → exactly the live posts.
  */
-export function blogFilters(query: Record<string, unknown>): Prisma.BlogPostWhereInput {
+export function blogFilters(query: Record<string, unknown>, now: Date = new Date()): Prisma.BlogPostWhereInput {
   const str = (v: unknown, max: number) => (typeof v === 'string' ? v.trim().slice(0, max) : '')
   const tag = str(query.tag, 40)
   const format = str(query.format, 8)
@@ -24,7 +35,8 @@ export function blogFilters(query: Record<string, unknown>): Prisma.BlogPostWher
     // MySQL's default collation compares case-insensitively.
     ...(q ? [{ OR: [{ title: { contains: q } }, { excerpt: { contains: q } }] }] : []),
   ]
-  return and.length ? { status: 'published', AND: and } : { status: 'published' }
+  const live = livePosts(now)
+  return and.length ? { AND: [live, ...and] } : live
 }
 
 const CARD_SELECT = {
@@ -90,7 +102,7 @@ export async function blogRoutes(app: FastifyInstance) {
   // GET /blog/rss.xml — for subscribers and content distribution
   app.get('/rss.xml', async (_request, reply) => {
     const posts = await db.blogPost.findMany({
-      where: { status: 'published' },
+      where: livePosts(),
       orderBy: { publishedAt: 'desc' },
       take: 20,
       select: { slug: true, title: true, excerpt: true, publishedAt: true },
@@ -121,7 +133,7 @@ ${items}
   // GET /blog/sitemap.xml — blog URLs for search engines
   app.get('/sitemap.xml', async (_request, reply) => {
     const posts = await db.blogPost.findMany({
-      where: { status: 'published' },
+      where: livePosts(),
       orderBy: { publishedAt: 'desc' },
       select: { slug: true, updatedAt: true },
     })
@@ -147,7 +159,7 @@ ${urls}
   app.get('/:slug', async (request, reply) => {
     const { slug } = request.params as { slug: string }
     const post = await db.blogPost.findFirst({
-      where: { slug, status: 'published' },
+      where: { slug, ...livePosts() },
     })
     if (!post) {
       return reply.status(404).send({ statusCode: 404, error: 'Not Found', message: 'Post not found' })

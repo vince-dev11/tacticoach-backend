@@ -18,19 +18,21 @@ const row = (o: Record<string, unknown> = {}) => ({
 })
 
 describe('BLOG-V4 · filters', () => {
-  it('no filter is exactly the published posts (unchanged)', () => {
-    expect(blogFilters({})).toEqual({ status: 'published' })
+  // BLOG-SCHEDULE (27 Nov 2026): "published" now means live — its date has arrived.
+  const LIVE = { status: 'published', OR: [{ publishedAt: null }, { publishedAt: { lte: expect.any(Date) } }] }
+  it('no filter is exactly the live posts', () => {
+    expect(blogFilters({})).toEqual(LIVE)
   })
   it('topic, format and search narrow the list; unknown values are ignored', () => {
     expect(blogFilters({ tag: 'Tactics', format: '7v7', q: ' rondo ' })).toEqual({
-      status: 'published',
       AND: [
+        LIVE,
         { tags: { array_contains: ['Tactics'] } },
         { formats: { array_contains: ['7v7'] } },
         { OR: [{ title: { contains: 'rondo' } }, { excerpt: { contains: 'rondo' } }] },
       ],
     })
-    expect(blogFilters({ format: '6v6', tag: '', q: '   ' })).toEqual({ status: 'published' })
+    expect(blogFilters({ format: '6v6', tag: '', q: '   ' })).toEqual(LIVE)
   })
   it('GET /api/blog pages with the same filter it counts with', async () => {
     const app = await getApp()
@@ -38,7 +40,7 @@ describe('BLOG-V4 · filters', () => {
     dbMock.blogPost.count.mockResolvedValue(0 as never)
     const res = await app.inject({ method: 'GET', url: '/api/blog?format=9v9' })
     expect(res.statusCode).toBe(200)
-    const where = { status: 'published', AND: [{ formats: { array_contains: ['9v9'] } }] }
+    const where = { AND: [LIVE, { formats: { array_contains: ['9v9'] } }] }
     expect(dbMock.blogPost.findMany).toHaveBeenCalledWith(expect.objectContaining({ where }))
     expect(dbMock.blogPost.count).toHaveBeenCalledWith({ where })
   })

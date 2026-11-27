@@ -41,3 +41,12 @@ Web app only. No API change, no migration.
    - Capterra, G2 and a Product Hunt launch.
 3. **Same facts everywhere:** the one-line description, features and prices on the site, `llms.txt`, social profiles and directory listings.
 4. **Patience:** weeks to months after launch.
+
+## Search engine verification (27 Nov 2026)
+
+Two files added to the web app's `public/` folder; they must stay there after verification:
+
+- `google6b1ef1693b6d33a8.html` — Google Search Console (property `https://tacticoach.co.uk`, URL-prefix type).
+- `BingSiteAuth.xml` — Bing Webmaster Tools (site added, "Not verified" until this file is live).
+
+After the deploy: press **Verify** in each tool, then submit `https://tacticoach.co.uk/sitemap.xml` in both.
